@@ -33,7 +33,11 @@ docker pull ghcr.io/mudler/skillserver:latest
 
 ## Configuration
 
-SkillServer supports both **environment variables** and **command-line flags**. Flags take precedence over environment variables.
+SkillServer supports both **environment variables** and **command-line flags** with this precedence order:
+
+1. Command-line flags
+2. Environment variables
+3. Built-in defaults
 
 ### Environment Variables
 
@@ -43,15 +47,27 @@ SkillServer supports both **environment variables** and **command-line flags**. 
 | `SKILLSERVER_PORT` | `PORT` | `8080` | Port for the web server |
 | `SKILLSERVER_GIT_REPOS` | `GIT_REPOS` | (empty) | Comma-separated Git repository URLs |
 | `SKILLSERVER_ENABLE_LOGGING` | (none) | `false` | Enable logging to stderr (default: false to avoid interfering with MCP stdio) |
+| `SKILLSERVER_MCP_TRANSPORT` | (none) | `both` | MCP transport mode: `stdio`, `http`, or `both` |
+| `SKILLSERVER_MCP_HTTP_PATH` | (none) | `/mcp` | Absolute HTTP route path for MCP Streamable HTTP |
+| `SKILLSERVER_MCP_SESSION_TIMEOUT` | (none) | `30m` | Session timeout for MCP HTTP mode (`time.ParseDuration` format) |
+| `SKILLSERVER_MCP_STATELESS` | (none) | `false` | Enable stateless MCP HTTP mode |
+| `SKILLSERVER_MCP_ENABLE_EVENT_STORE` | (none) | `true` | Enable in-memory MCP event store for replay support |
+| `SKILLSERVER_MCP_EVENT_STORE_MAX_BYTES` | (none) | `10485760` | Max bytes for MCP in-memory event store (10 MiB) |
 
 ### Command-Line Flags
 
-| Flag | Description |
-|------|-------------|
-| `--dir` | Directory to store skills (overrides `SKILLSERVER_DIR` or `SKILLS_DIR`) |
-| `--port` | Port for the web server (overrides `SKILLSERVER_PORT` or `PORT`) |
-| `--git-repos` | Comma-separated list of Git repository URLs (overrides `SKILLSERVER_GIT_REPOS` or `GIT_REPOS`) |
-| `--enable-logging` | Enable logging to stderr (overrides `SKILLSERVER_ENABLE_LOGGING`). Default: false (disabled to avoid interfering with MCP stdio protocol) |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dir` | `./skills` | Directory to store skills (overrides `SKILLSERVER_DIR` or `SKILLS_DIR`) |
+| `--port` | `8080` | Port for the web server (overrides `SKILLSERVER_PORT` or `PORT`) |
+| `--git-repos` | (empty) | Comma-separated list of Git repository URLs (overrides `SKILLSERVER_GIT_REPOS` or `GIT_REPOS`) |
+| `--enable-logging` | `false` | Enable logging to stderr (overrides `SKILLSERVER_ENABLE_LOGGING`) |
+| `--mcp-transport` | `both` | MCP transport mode: `stdio`, `http`, or `both` |
+| `--mcp-http-path` | `/mcp` | Absolute HTTP route path for MCP Streamable HTTP |
+| `--mcp-session-timeout` | `30m` | Session timeout for MCP HTTP mode |
+| `--mcp-stateless` | `false` | Enable stateless MCP HTTP mode |
+| `--mcp-enable-event-store` | `true` | Enable in-memory MCP event store |
+| `--mcp-event-store-max-bytes` | `10485760` | Max bytes for in-memory MCP event store |
 
 ## Usage
 
@@ -79,6 +95,29 @@ export SKILLSERVER_PORT=8080
 export SKILLSERVER_ENABLE_LOGGING=true
 ./skillserver
 ```
+
+### Transport Mode Examples
+
+```bash
+# Default mode: both stdio + HTTP transport on /mcp
+./skillserver
+
+# Stdio only (legacy/local MCP client mode)
+./skillserver --mcp-transport stdio
+
+# HTTP only (remote MCP clients via Streamable HTTP)
+./skillserver --mcp-transport http --mcp-http-path /mcp
+
+# Both transports with custom HTTP tuning
+./skillserver \
+  --mcp-transport both \
+  --mcp-http-path /mcp \
+  --mcp-session-timeout 45m \
+  --mcp-enable-event-store true \
+  --mcp-event-store-max-bytes 2097152
+```
+
+`both` mode behavior: if stdio disconnects/exits, the HTTP transport remains active.
 
 ### With Git Synchronization
 
@@ -113,9 +152,100 @@ docker run -p 8080:8080 \
   --dir /app/skills --port 8080 --git-repos "https://github.com/user/repo.git"
 ```
 
+With MCP HTTP transport enabled:
+
+```bash
+docker run -p 8080:8080 \
+  -v $(pwd)/skills:/app/skills \
+  ghcr.io/mudler/skillserver:latest \
+  --dir /app/skills \
+  --port 8080 \
+  --mcp-transport http \
+  --mcp-http-path /mcp
+```
+
+### Remote MCP (Streamable HTTP) Usage
+
+```bash
+# Start server in HTTP mode (or keep default "both")
+./skillserver --mcp-transport http --mcp-http-path /mcp
+
+ENDPOINT="http://localhost:8080/mcp"
+
+# 1) Initialize a session
+curl -i -X POST "$ENDPOINT" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2025-06-18" \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl-client","version":"1.0.0"}}}'
+
+# Capture the Mcp-Session-Id response header from the initialize call
+SESSION_ID="<paste-session-id>"
+
+# 2) Close the session when done
+curl -i -X DELETE "$ENDPOINT" \
+  -H "Mcp-Session-Id: $SESSION_ID"
+```
+
+For stateless mode (`--mcp-stateless=true`), clients do not need session lifecycle calls.
+
+### MCP HTTP Troubleshooting
+
+#### Session Initialization Issues
+
+Symptoms:
+- `POST /mcp` does not return `200 OK`
+- No `Mcp-Session-Id` in response headers (stateful mode)
+
+Checks:
+- Confirm MCP HTTP transport is enabled: `--mcp-transport http` or `--mcp-transport both`
+- Confirm path is absolute and correct: `--mcp-http-path /mcp`
+- Send required initialize headers and payload:
+  - `Content-Type: application/json`
+  - `Accept: application/json, text/event-stream`
+  - `MCP-Protocol-Version: 2025-06-18`
+
+#### Header / Protocol Mismatch
+
+Symptoms:
+- `405 Method Not Allowed` on `GET /mcp` without a session
+- `400 Bad Request` when replaying streams
+- `404 session not found` after posting with stale/invalid `Mcp-Session-Id`
+
+Remediation:
+- Initialize first with `POST` and keep the returned `Mcp-Session-Id` for subsequent stateful requests
+- Keep `MCP-Protocol-Version` consistent per session
+- If using replay (`Last-Event-ID`), ensure event store is enabled (`--mcp-enable-event-store=true`)
+
+#### Route Conflict Symptoms
+
+Symptoms:
+- MCP client receives HTML instead of JSON/SSE
+- MCP requests hit UI/API handlers instead of MCP handler
+
+Remediation:
+- Use a dedicated MCP path such as `/mcp` (default)
+- Avoid reusing broad UI/API paths such as `/` or `/api/*`
+- Verify route with:
+  - `curl -i -X OPTIONS http://localhost:8080/mcp`
+  - Expected: handler responds on MCP route methods (`GET`, `POST`, `DELETE`, `OPTIONS`)
+
+#### Quick Rollback to Stdio Mode
+
+Use stdio-only mode to immediately disable MCP HTTP exposure:
+
+```bash
+# Flag-based rollback
+./skillserver --mcp-transport stdio
+
+# Environment-based rollback
+export SKILLSERVER_MCP_TRANSPORT=stdio
+./skillserver
+```
+
 ## MCP Client Configuration
 
-SkillServer runs as an MCP server over stdio, making it compatible with any MCP client. Here are configuration examples for popular clients:
+SkillServer supports MCP over stdio and Streamable HTTP. The examples below are stdio-based client configurations.
 
 **Note:** When using SkillServer as an MCP server, logging is disabled by default to avoid interfering with the stdio protocol. Enable it only for debugging purposes.
 
