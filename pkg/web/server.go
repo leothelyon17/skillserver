@@ -19,6 +19,8 @@ import (
 //go:embed ui
 var uiFiles embed.FS
 
+const defaultMCPRoutePath = "/mcp"
+
 // Server wraps the Echo server
 type Server struct {
 	echo          *echo.Echo
@@ -30,8 +32,17 @@ type Server struct {
 	configManager *git.ConfigManager
 }
 
-// NewServer creates a new web server
-func NewServer(skillManager domain.SkillManager, fsManager *domain.FileSystemManager, gitRepos []string, gitSyncer *git.GitSyncer, configManager *git.ConfigManager, enableLogging bool) *Server {
+// NewServer creates a new web server.
+func NewServer(
+	skillManager domain.SkillManager,
+	fsManager *domain.FileSystemManager,
+	gitRepos []string,
+	gitSyncer *git.GitSyncer,
+	configManager *git.ConfigManager,
+	enableLogging bool,
+	mcpHandler http.Handler,
+	mcpPath string,
+) *Server {
 	e := echo.New()
 
 	// Middleware
@@ -82,6 +93,20 @@ func NewServer(skillManager domain.SkillManager, fsManager *domain.FileSystemMan
 	api.DELETE("/git-repos/:id", server.deleteGitRepo)
 	api.POST("/git-repos/:id/sync", server.syncGitRepo)
 	api.POST("/git-repos/:id/toggle", server.toggleGitRepo)
+
+	// Register MCP routes before the UI catch-all route so /mcp is not intercepted.
+	if mcpHandler != nil {
+		resolvedMCPPath := mcpPath
+		if resolvedMCPPath == "" {
+			resolvedMCPPath = defaultMCPRoutePath
+		}
+
+		wrappedMCPHandler := echo.WrapHandler(mcpHandler)
+		e.GET(resolvedMCPPath, wrappedMCPHandler)
+		e.POST(resolvedMCPPath, wrappedMCPHandler)
+		e.DELETE(resolvedMCPPath, wrappedMCPHandler)
+		e.OPTIONS(resolvedMCPPath, wrappedMCPHandler)
+	}
 
 	// Serve UI
 	uiFS, err := fs.Sub(uiFiles, "ui")

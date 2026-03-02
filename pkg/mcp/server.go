@@ -10,8 +10,9 @@ import (
 
 // Server wraps the MCP server and provides access to the skill manager
 type Server struct {
-	mcpServer    *mcp.Server
-	skillManager domain.SkillManager
+	mcpServer        *mcp.Server
+	skillManager     domain.SkillManager
+	runWithTransport func(context.Context, mcp.Transport) error
 }
 
 // NewServer creates a new MCP server for skills
@@ -91,8 +92,9 @@ func NewServer(skillManager domain.SkillManager) *Server {
 	})
 
 	return &Server{
-		mcpServer:    mcpServer,
-		skillManager: skillManager,
+		mcpServer:        mcpServer,
+		skillManager:     skillManager,
+		runWithTransport: mcpServer.Run,
 	}
 }
 
@@ -103,5 +105,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 // RunWithTransport starts the MCP server with the given transport (e.g. in-memory for in-process embedding).
 func (s *Server) RunWithTransport(ctx context.Context, transport mcp.Transport) error {
+	if s.runWithTransport != nil {
+		return s.runWithTransport(ctx, transport)
+	}
 	return s.mcpServer.Run(ctx, transport)
 }

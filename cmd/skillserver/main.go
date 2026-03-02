@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -94,7 +95,16 @@ func main() {
 	port := flag.String("port", defaultPort, "Port for the web server (env: SKILLSERVER_PORT or PORT)")
 	gitReposFlag := flag.String("git-repos", defaultGitRepos, "Comma-separated list of Git repository URLs to sync (env: SKILLSERVER_GIT_REPOS or GIT_REPOS)")
 	enableLogging := flag.Bool("enable-logging", defaultEnableLogging, "Enable logging to stderr (env: SKILLSERVER_ENABLE_LOGGING). Default: false (disabled to avoid interfering with MCP stdio)")
+	mcpFlagValues := registerMCPRuntimeFlags(flag.CommandLine)
 	flag.Parse()
+
+	// Parse and validate MCP runtime config (flags > env > defaults).
+	// Runtime wiring will consume this in later work packages.
+	mcpRuntimeConfig, err := parseMCPRuntimeConfig(flag.CommandLine, mcpFlagValues, os.LookupEnv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid MCP runtime configuration: %v\n", err)
+		os.Exit(2)
+	}
 
 	// Setup logger based on flag
 	logger := setupLogger(*enableLogging)
@@ -184,58 +194,47 @@ func main() {
 		log.Println("Git syncer started")
 	}
 
-	// Create context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// Create MCP server and optional HTTP transport handler.
+	mcpServer := mcp.NewServer(skillManager)
+
+	var mcpHandler http.Handler
+	mcpPath := ""
+	if requiresMCPHTTP(mcpRuntimeConfig.Transport) {
+		mcpPath = mcpRuntimeConfig.HTTPPath
+		mcpHandler = mcpServer.NewStreamableHTTPHandler(mcp.StreamableHTTPConfig{
+			SessionTimeout:     mcpRuntimeConfig.SessionTimeout,
+			Stateless:          mcpRuntimeConfig.Stateless,
+			EnableEventStore:   mcpRuntimeConfig.EnableEventStore,
+			EventStoreMaxBytes: mcpRuntimeConfig.EventStoreMaxBytes,
+		})
+	}
+
+	webServer := web.NewServer(
+		skillManager,
+		fsManager,
+		gitRepos,
+		gitSyncer,
+		configManager,
+		*enableLogging,
+		mcpHandler,
+		mcpPath,
+	)
 
 	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
 
-	// Start web server in a goroutine (non-blocking)
-	webServer := web.NewServer(skillManager, fsManager, gitRepos, gitSyncer, configManager, *enableLogging)
-	go func() {
-		addr := fmt.Sprintf(":%s", finalPort)
-		if *enableLogging {
-			log.Printf("Starting web server on %s", addr)
-		}
-		if err := webServer.Start(addr); err != nil {
-			log.Printf("Web server error: %v", err)
-		}
-	}()
-
-	// Start MCP server on main thread (blocking, stdio)
-	mcpServer := mcp.NewServer(skillManager)
-
-	// Handle shutdown in a goroutine
-	go func() {
-		<-sigChan
-		if *enableLogging {
-			log.Println("Shutting down...")
-		}
-
-		// Stop Git syncer
-		if gitSyncer != nil {
-			gitSyncer.Stop()
-		}
-
-		// Shutdown web server
-		if err := webServer.Shutdown(); err != nil {
-			log.Printf("Error shutting down web server: %v", err)
-		}
-
-		cancel()
-		if *enableLogging {
-			log.Println("Shutdown complete")
-		}
-	}()
-
-	// Run MCP server (blocks main thread)
-	// Note: No logging here to avoid interfering with stdio protocol
-	if err := mcpServer.Run(ctx); err != nil {
-		// Only log errors if logging is enabled
-		if *enableLogging {
-			log.Printf("MCP server error: %v", err)
-		}
+	if err := runRuntime(context.Background(), runtimeDependencies{
+		logger:        logger,
+		enableLogging: *enableLogging,
+		mcpConfig:     mcpRuntimeConfig,
+		port:          finalPort,
+		webServer:     webServer,
+		mcpServer:     mcpServer,
+		gitSyncer:     gitSyncer,
+		signalChan:    sigChan,
+	}); err != nil && *enableLogging {
+		log.Printf("Runtime error: %v", err)
 	}
 }
