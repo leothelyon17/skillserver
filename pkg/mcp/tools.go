@@ -133,12 +133,14 @@ type ListSkillResourcesOutput struct {
 
 // SkillResourceInfo represents resource information in MCP responses
 type SkillResourceInfo struct {
-	Type     string `json:"type"`      // "script", "reference", or "asset"
+	Type     string `json:"type"`      // "script", "reference", "prompt", or "asset"
 	Path     string `json:"path"`      // Relative path from skill root
 	Name     string `json:"name"`      // Filename only
 	Size     int64  `json:"size"`      // File size in bytes
 	MimeType string `json:"mime_type"` // MIME type
 	Readable bool   `json:"readable"`  // true if text file, false if binary
+	Origin   string `json:"origin"`    // "direct" or "imported"
+	Writable bool   `json:"writable"`  // true if resource can be modified
 }
 
 // ReadSkillResourceInput is the input for read_skill_resource tool
@@ -170,6 +172,8 @@ type GetSkillResourceInfoOutput struct {
 	Size     int64  `json:"size"`
 	MimeType string `json:"mime_type"`
 	Readable bool   `json:"readable"`
+	Origin   string `json:"origin"`
+	Writable bool   `json:"writable"`
 }
 
 // listSkillResources lists all resources in a skill's optional directories
@@ -192,6 +196,8 @@ func listSkillResources(ctx context.Context, req *mcp.CallToolRequest, input Lis
 			Size:     res.Size,
 			MimeType: res.MimeType,
 			Readable: res.Readable,
+			Origin:   resolveResourceOrigin(res.Origin),
+			Writable: res.Writable,
 		}
 	}
 
@@ -250,5 +256,15 @@ func getSkillResourceInfo(ctx context.Context, req *mcp.CallToolRequest, input G
 		Size:     info.Size,
 		MimeType: info.MimeType,
 		Readable: info.Readable,
+		Origin:   resolveResourceOrigin(info.Origin),
+		Writable: info.Writable,
 	}, nil
+}
+
+func resolveResourceOrigin(origin domain.ResourceOrigin) string {
+	if origin == "" {
+		return string(domain.ResourceOriginDirect)
+	}
+
+	return string(origin)
 }

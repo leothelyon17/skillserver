@@ -10,7 +10,7 @@ An MCP/REST server with WebUI serving as a centralized skills database for AI Ag
 - **Web Interface**: Local web UI for creating, editing, and organizing skills with resource management
 - **Git Synchronization**: Automatically syncs with Git repositories (skills from repos are read-only)
 - **Full-Text Search**: Powered by Bleve for fast skill searching
-- **Resource Management**: Support for scripts, references, and assets directories per skill
+- **Resource Management**: Dynamic discovery for scripts, references, assets, agents, prompts, and imported read-only resources
 - **Agent Skills Spec Compliant**: Full support for the Agent Skills specification format
 
 <img width="580" alt="Screenshot 2026-01-28 at 11-08-16 skillserver" src="https://github.com/user-attachments/assets/c8db8890-b888-4354-8e7e-0d2a8c37af04" />
@@ -53,6 +53,7 @@ SkillServer supports both **environment variables** and **command-line flags** w
 | `SKILLSERVER_MCP_STATELESS` | (none) | `false` | Enable stateless MCP HTTP mode |
 | `SKILLSERVER_MCP_ENABLE_EVENT_STORE` | (none) | `true` | Enable in-memory MCP event store for replay support |
 | `SKILLSERVER_MCP_EVENT_STORE_MAX_BYTES` | (none) | `10485760` | Max bytes for MCP in-memory event store (10 MiB) |
+| `SKILLSERVER_ENABLE_IMPORT_DISCOVERY` | (none) | `true` | Enable imported resource discovery and `imports/...` virtual read paths |
 
 ### Command-Line Flags
 
@@ -68,6 +69,7 @@ SkillServer supports both **environment variables** and **command-line flags** w
 | `--mcp-stateless` | `false` | Enable stateless MCP HTTP mode |
 | `--mcp-enable-event-store` | `true` | Enable in-memory MCP event store |
 | `--mcp-event-store-max-bytes` | `10485760` | Max bytes for in-memory MCP event store |
+| `--enable-import-discovery` | `true` | Enable imported resource discovery and `imports/...` virtual read paths |
 
 ## Usage
 
@@ -93,6 +95,12 @@ export SKILLSERVER_PORT=8080
 ./skillserver --enable-logging
 # Or using environment variable
 export SKILLSERVER_ENABLE_LOGGING=true
+./skillserver
+
+# Roll back to legacy direct-only discovery behavior
+./skillserver --enable-import-discovery=false
+# Or using environment variable
+export SKILLSERVER_ENABLE_IMPORT_DISCOVERY=false
 ./skillserver
 ```
 
@@ -395,6 +403,8 @@ Skills follow the [Agent Skills specification](https://agentskills.io). Each ski
 - **scripts/** (optional): Executable code (Python, Bash, JavaScript, etc.)
 - **references/** (optional): Additional documentation files
 - **assets/** (optional): Static resources (templates, images, data files)
+- **agents/** (optional): Agent prompt files
+- **prompts/** (optional): Prompt files (system, assistant, etc.)
 
 Example structure:
 ```
@@ -402,11 +412,17 @@ my-skill/
 ├── SKILL.md
 ├── scripts/
 │   └── process.py
+├── agents/
+│   └── coach.md
+├── prompts/
+│   └── system.md
 ├── references/
 │   └── API.md
 └── assets/
     └── template.docx
 ```
+
+Imported resources referenced by `SKILL.md` links/includes are exposed as virtual read-only paths under `imports/...` (for example `imports/prompts/shared.md`).
 
 ## API Endpoints
 
@@ -421,11 +437,11 @@ my-skill/
 - `GET /api/skills/search?q=query` - Search skills
 
 #### Resources
-- `GET /api/skills/:name/resources` - List all resources (scripts, references, assets)
+- `GET /api/skills/:name/resources` - List resources with legacy buckets (`scripts`, `references`, `assets`) plus additive groups (`prompts`, `imported`, `groups`) when present; each resource includes `origin` and `writable`
 - `GET /api/skills/:name/resources/*` - Get/download a resource file
-- `POST /api/skills/:name/resources` - Upload/create a resource (multipart/form-data or JSON)
-- `PUT /api/skills/:name/resources/*` - Update a resource file
-- `DELETE /api/skills/:name/resources/*` - Delete a resource
+- `POST /api/skills/:name/resources` - Upload/create a direct resource (multipart/form-data or JSON); imported `imports/...` targets are blocked
+- `PUT /api/skills/:name/resources/*` - Update a direct resource file; imported `imports/...` targets are blocked
+- `DELETE /api/skills/:name/resources/*` - Delete a direct resource; imported `imports/...` targets are blocked
 
 ### MCP Tools
 
@@ -435,9 +451,29 @@ my-skill/
 - `search_skills` - Search for skills by query string
 
 #### Resources
-- `list_skill_resources` - List all resources (scripts, references, assets) in a skill
-- `read_skill_resource` - Read the content of a resource file (UTF-8 for text, base64 for binary, max 1MB)
-- `get_skill_resource_info` - Get metadata about a resource without reading content
+- `list_skill_resources` - List resources in a skill, including additive prompt/imported resources; each item includes `origin` and `writable`
+- `read_skill_resource` - Read the content of a resource file (UTF-8 for text, base64 for binary, max 1MB), including `imports/...` paths when import discovery is enabled
+- `get_skill_resource_info` - Get metadata (`type`, `origin`, `writable`, size, mime) without reading content
+
+## Dynamic Resource Discovery and Rollout Control
+
+- Direct resources are discovered from `scripts/`, `references/`, `assets/`, `agents/`, and `prompts/`.
+- Imported references found in `SKILL.md` are surfaced as virtual read-only paths under `imports/...`.
+- `origin` is `direct` or `imported`.
+- `writable` is `false` for imported resources and git-backed skill resources.
+
+### Import Discovery Rollback
+
+```bash
+# Disable imported discovery and imports/... read paths
+./skillserver --enable-import-discovery=false
+
+# Equivalent env override
+export SKILLSERVER_ENABLE_IMPORT_DISCOVERY=false
+./skillserver
+```
+
+Detailed rollout and rollback procedure: [`docs/operations/dynamic-resource-import-discovery-rollout.md`](/home/jeff/skillserver/docs/operations/dynamic-resource-import-discovery-rollout.md)
 
 ## Web Interface
 
@@ -450,15 +486,15 @@ The web UI provides a user-friendly interface for managing skills:
 - **Search**: Full-text search across all skills
 
 ### Resource Management
-- **Upload Resources**: Upload files to scripts/, references/, or assets/ directories
+- **Upload Resources**: Upload files to direct writable groups (`scripts/`, `references/`, `assets/`, `agents/`, `prompts/`)
 - **View Resources**: Click text files to view/edit, binary files to download
-- **Edit Resources**: Edit text-based resources (scripts, markdown references)
-- **Delete Resources**: Remove resources from skills (read-only skills protected)
+- **Edit Resources**: Edit text-based direct resources when `writable=true`
+- **Delete Resources**: Remove direct resources from skills (read-only/imported resources protected)
 
 ### Features
 - **Read-Only Indicators**: Skills from git repositories are clearly marked and protected
 - **Real-time Validation**: Skill name validation according to Agent Skills spec
-- **Resource Browser**: Organized view of scripts, references, and assets per skill
+- **Resource Browser**: Dynamic grouped view for legacy and additive resource groups (`prompts`, `imported`)
 - **Tabbed Interface**: Switch between skill content and resources
 
 Access the web UI at `http://localhost:8080` (or your configured port).
@@ -475,6 +511,14 @@ make build
 
 ```bash
 make test
+```
+
+### UI Regression Tests (Playwright)
+
+```bash
+npm install
+npx playwright install chromium
+npm run test:playwright
 ```
 
 ### Running

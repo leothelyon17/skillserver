@@ -431,18 +431,27 @@ func (s *Server) listSkillResources(c *echo.Context) error {
 		})
 	}
 
-	// Group resources by type
+	// Group resources by type/origin while preserving legacy buckets.
 	scripts := []map[string]any{}
 	references := []map[string]any{}
 	assets := []map[string]any{}
+	prompts := []map[string]any{}
+	imported := []map[string]any{}
 
 	for _, res := range resources {
+		origin := string(res.Origin)
+		if origin == "" {
+			origin = string(domain.ResourceOriginDirect)
+		}
+
 		resourceMap := map[string]any{
 			"path":      res.Path,
 			"name":      res.Name,
 			"size":      res.Size,
 			"mime_type": res.MimeType,
 			"readable":  res.Readable,
+			"origin":    origin,
+			"writable":  res.Writable,
 			"modified":  res.Modified.Format(time.RFC3339),
 		}
 
@@ -451,17 +460,38 @@ func (s *Server) listSkillResources(c *echo.Context) error {
 			scripts = append(scripts, resourceMap)
 		case domain.ResourceTypeReference:
 			references = append(references, resourceMap)
+		case domain.ResourceTypePrompt:
+			prompts = append(prompts, resourceMap)
 		case domain.ResourceTypeAsset:
 			assets = append(assets, resourceMap)
 		}
+
+		if origin == string(domain.ResourceOriginImported) {
+			imported = append(imported, resourceMap)
+		}
 	}
 
-	return c.JSON(http.StatusOK, map[string]any{
+	response := map[string]any{
 		"scripts":    scripts,
 		"references": references,
 		"assets":     assets,
 		"readOnly":   skill.ReadOnly,
-	})
+		"groups": map[string]any{
+			"scripts":    scripts,
+			"references": references,
+			"assets":     assets,
+		},
+	}
+	if len(prompts) > 0 {
+		response["prompts"] = prompts
+		response["groups"].(map[string]any)["prompts"] = prompts
+	}
+	if len(imported) > 0 {
+		response["imported"] = imported
+		response["groups"].(map[string]any)["imported"] = imported
+	}
+
+	return c.JSON(http.StatusOK, response)
 }
 
 // getSkillResource gets a specific resource file
@@ -607,6 +637,12 @@ func (s *Server) createSkillResource(c *echo.Context) error {
 		fileContent = []byte(req.Content)
 	}
 
+	if domain.IsImportedResourcePath(resourcePath) {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "cannot create imported read-only resources",
+		})
+	}
+
 	// Validate path
 	if err := domain.ValidateResourcePath(resourcePath); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
@@ -654,6 +690,8 @@ func (s *Server) createSkillResource(c *echo.Context) error {
 		"size":      info.Size,
 		"mime_type": info.MimeType,
 		"readable":  info.Readable,
+		"origin":    string(info.Origin),
+		"writable":  info.Writable,
 		"modified":  info.Modified.Format(time.RFC3339),
 	})
 }
@@ -679,6 +717,11 @@ func (s *Server) updateSkillResource(c *echo.Context) error {
 	if skill.ReadOnly {
 		return c.JSON(http.StatusForbidden, map[string]string{
 			"error": "cannot update resources in read-only skill from git repository",
+		})
+	}
+	if domain.IsImportedResourcePath(resourcePath) {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "cannot update imported read-only resources",
 		})
 	}
 
@@ -737,6 +780,8 @@ func (s *Server) updateSkillResource(c *echo.Context) error {
 		"size":      info.Size,
 		"mime_type": info.MimeType,
 		"readable":  info.Readable,
+		"origin":    string(info.Origin),
+		"writable":  info.Writable,
 		"modified":  info.Modified.Format(time.RFC3339),
 	})
 }
@@ -762,6 +807,11 @@ func (s *Server) deleteSkillResource(c *echo.Context) error {
 	if skill.ReadOnly {
 		return c.JSON(http.StatusForbidden, map[string]string{
 			"error": "cannot delete resources from read-only skill from git repository",
+		})
+	}
+	if domain.IsImportedResourcePath(resourcePath) {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "cannot delete imported read-only resources",
 		})
 	}
 
@@ -1180,7 +1230,7 @@ func (s *Server) updateGitRepo(c *echo.Context) error {
 				enabledRepos = append(enabledRepos, repo.URL)
 			}
 		}
-		
+
 		// Update syncer repos
 		if err := s.gitSyncer.UpdateRepos(enabledRepos); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -1426,7 +1476,7 @@ func (s *Server) toggleGitRepo(c *echo.Context) error {
 				enabledRepos = append(enabledRepos, repo.URL)
 			}
 		}
-		
+
 		// Update syncer repos
 		if err := s.gitSyncer.UpdateRepos(enabledRepos); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{
