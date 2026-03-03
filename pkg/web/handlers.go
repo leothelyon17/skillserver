@@ -49,6 +49,15 @@ type UpdateSkillRequest struct {
 	AllowedTools  string            `json:"allowed-tools,omitempty"`
 }
 
+func skillNameFromRoute(c *echo.Context) string {
+	repo := strings.TrimSpace(c.Param("repo"))
+	name := strings.TrimSpace(c.Param("name"))
+	if repo != "" && name != "" {
+		return repo + "/" + name
+	}
+	return name
+}
+
 // listSkills lists all skills
 func (s *Server) listSkills(c *echo.Context) error {
 	skills, err := s.skillManager.ListSkills()
@@ -79,7 +88,7 @@ func (s *Server) listSkills(c *echo.Context) error {
 
 // getSkill gets a single skill by name
 func (s *Server) getSkill(c *echo.Context) error {
-	name := c.Param("name")
+	name := skillNameFromRoute(c)
 	skill, err := s.skillManager.ReadSkill(name)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{
@@ -223,7 +232,7 @@ func (s *Server) createSkill(c *echo.Context) error {
 
 // updateSkill updates an existing skill
 func (s *Server) updateSkill(c *echo.Context) error {
-	name := c.Param("name")
+	name := skillNameFromRoute(c)
 
 	// Check if skill exists and is read-only
 	existingSkill, err := s.skillManager.ReadSkill(name)
@@ -333,7 +342,7 @@ func (s *Server) updateSkill(c *echo.Context) error {
 
 // deleteSkill deletes a skill
 func (s *Server) deleteSkill(c *echo.Context) error {
-	name := c.Param("name")
+	name := skillNameFromRoute(c)
 
 	// Check if skill exists and is read-only
 	existingSkill, err := s.skillManager.ReadSkill(name)
@@ -414,7 +423,7 @@ func (s *Server) searchSkills(c *echo.Context) error {
 
 // listSkillResources lists all resources in a skill
 func (s *Server) listSkillResources(c *echo.Context) error {
-	skillName := c.Param("name")
+	skillName := skillNameFromRoute(c)
 
 	// Check if skill exists
 	skill, err := s.skillManager.ReadSkill(skillName)
@@ -496,7 +505,7 @@ func (s *Server) listSkillResources(c *echo.Context) error {
 
 // getSkillResource gets a specific resource file
 func (s *Server) getSkillResource(c *echo.Context) error {
-	skillName := c.Param("name")
+	skillName := skillNameFromRoute(c)
 	resourcePath := c.Param("*")
 
 	if resourcePath == "" {
@@ -547,7 +556,7 @@ func (s *Server) getSkillResource(c *echo.Context) error {
 
 // createSkillResource creates/uploads a new resource
 func (s *Server) createSkillResource(c *echo.Context) error {
-	skillName := c.Param("name")
+	skillName := skillNameFromRoute(c)
 
 	// Check if skill exists and is not read-only
 	skill, err := s.skillManager.ReadSkill(skillName)
@@ -698,7 +707,7 @@ func (s *Server) createSkillResource(c *echo.Context) error {
 
 // updateSkillResource updates an existing resource
 func (s *Server) updateSkillResource(c *echo.Context) error {
-	skillName := c.Param("name")
+	skillName := skillNameFromRoute(c)
 	resourcePath := c.Param("*")
 
 	if resourcePath == "" {
@@ -788,7 +797,7 @@ func (s *Server) updateSkillResource(c *echo.Context) error {
 
 // deleteSkillResource deletes a resource
 func (s *Server) deleteSkillResource(c *echo.Context) error {
-	skillName := c.Param("name")
+	skillName := skillNameFromRoute(c)
 	resourcePath := c.Param("*")
 
 	if resourcePath == "" {
