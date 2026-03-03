@@ -895,8 +895,8 @@
 
                     this.isLoading = true;
 
-                    const url = this.editingSkill 
-                        ? `/api/skills/${this.editingSkill.name}`
+                    const url = this.editingSkill
+                        ? this.buildSkillApiPath(this.editingSkill.name)
                         : '/api/skills';
                     
                     const method = this.editingSkill ? 'PUT' : 'POST';
@@ -925,7 +925,7 @@
                             if (this.editingSkill) {
                                 // Reload the skill data to get updated info
                                 try {
-                                    const skillResponse = await fetch(`/api/skills/${this.skillName}`);
+                                    const skillResponse = await fetch(this.buildSkillApiPath(this.skillName));
                                     if (skillResponse.ok) {
                                         const updatedSkill = await skillResponse.json();
                                         this.editingSkill = updatedSkill;
@@ -942,7 +942,7 @@
                             } else {
                                 // For new skills, switch to edit mode with the saved skill
                                 try {
-                                    const skillResponse = await fetch(`/api/skills/${this.skillName}`);
+                                    const skillResponse = await fetch(this.buildSkillApiPath(this.skillName));
                                     if (skillResponse.ok) {
                                         const newSkill = await skillResponse.json();
                                         this.editSkill(newSkill);
@@ -989,6 +989,28 @@
                     }
 
                     return normalized;
+                },
+
+                buildSkillApiPath(skillName, suffix = '') {
+                    const encodedSkillName = encodeURIComponent(skillName);
+                    if (!suffix) {
+                        return `/api/skills/${encodedSkillName}`;
+                    }
+                    const normalizedSuffix = suffix.replace(/^\/+/, '');
+                    return `/api/skills/${encodedSkillName}/${normalizedSuffix}`;
+                },
+
+                buildSkillResourceApiPath(skillName, resourcePath = '') {
+                    const basePath = this.buildSkillApiPath(skillName, 'resources');
+                    if (!resourcePath) {
+                        return basePath;
+                    }
+
+                    const encodedResourcePath = resourcePath
+                        .split('/')
+                        .map((segment) => encodeURIComponent(segment))
+                        .join('/');
+                    return `${basePath}/${encodedResourcePath}`;
                 },
 
                 getResourceGroupConfig(groupKey) {
@@ -1127,10 +1149,16 @@
                     this.resources = this.getDefaultResourceGroups();
                     
                     try {
-                        const response = await fetch(`/api/skills/${this.editingSkill.name}/resources`);
+                        const response = await fetch(this.buildSkillResourceApiPath(this.editingSkill.name));
                         if (response.ok) {
                             const data = await response.json();
                             this.resources = this.normalizeResourceGroups(data);
+                        } else {
+                            const errorPayload = await response.json().catch(() => null);
+                            const errorMessage = errorPayload && errorPayload.error
+                                ? errorPayload.error
+                                : `HTTP ${response.status}`;
+                            this.showToast(`Failed to load resources: ${errorMessage}`, 'error');
                         }
                     } catch (error) {
                         console.error('Failed to load resources:', error);
@@ -1140,13 +1168,13 @@
                 async viewResource(resource, type) {
                     if (!resource.readable) {
                         // For binary files, download
-                        window.open(`/api/skills/${this.editingSkill.name}/resources/${resource.path}`, '_blank');
+                        window.open(this.buildSkillResourceApiPath(this.editingSkill.name, resource.path), '_blank');
                         return;
                     }
                     
                     // For text files, show in editor
                     try {
-                        const response = await fetch(`/api/skills/${this.editingSkill.name}/resources/${resource.path}`);
+                        const response = await fetch(this.buildSkillResourceApiPath(this.editingSkill.name, resource.path));
                         if (response.ok) {
                             const content = await response.text();
                             const writable = this.isResourceWritable(resource);
@@ -1195,7 +1223,7 @@
                         return;
                     }
                     try {
-                        const response = await fetch(`/api/skills/${this.editingSkill.name}/resources/${path}`, {
+                        const response = await fetch(this.buildSkillResourceApiPath(this.editingSkill.name, path), {
                             method: 'PUT',
                             headers: {
                                 'Content-Type': 'text/plain',
@@ -1237,7 +1265,7 @@
 
                     this.isLoading = true;
                     try {
-                        const response = await fetch(`/api/skills/${this.editingSkill.name}/resources`, {
+                        const response = await fetch(this.buildSkillResourceApiPath(this.editingSkill.name), {
                             method: 'POST',
                             body: formData,
                         });
@@ -1265,7 +1293,7 @@
 
                     this.isLoading = true;
                     try {
-                        const response = await fetch(`/api/skills/${this.editingSkill.name}/resources/${path}`, {
+                        const response = await fetch(this.buildSkillResourceApiPath(this.editingSkill.name, path), {
                             method: 'DELETE',
                         });
 
@@ -1298,7 +1326,7 @@
 
                     this.isLoading = true;
                     try {
-                        const response = await fetch(`/api/skills/${name}`, {
+                        const response = await fetch(this.buildSkillApiPath(name), {
                             method: 'DELETE',
                         });
 
