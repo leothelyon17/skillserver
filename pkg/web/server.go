@@ -68,9 +68,12 @@ func NewServer(
 	api := e.Group("/api")
 	api.GET("/skills", server.listSkills)
 	api.GET("/skills/:name", server.getSkill)
+	api.GET("/skills/by-id/:repo/:name", server.getSkill)
 	api.POST("/skills", server.createSkill)
 	api.PUT("/skills/:name", server.updateSkill)
+	api.PUT("/skills/by-id/:repo/:name", server.updateSkill)
 	api.DELETE("/skills/:name", server.deleteSkill)
+	api.DELETE("/skills/by-id/:repo/:name", server.deleteSkill)
 	api.GET("/skills/search", server.searchSkills)
 
 	// Import/Export routes
@@ -81,10 +84,15 @@ func NewServer(
 
 	// Resource management routes
 	api.GET("/skills/:name/resources", server.listSkillResources)
+	api.GET("/skills/by-id/:repo/:name/resources", server.listSkillResources)
 	api.GET("/skills/:name/resources/*", server.getSkillResource)
+	api.GET("/skills/by-id/:repo/:name/resources/*", server.getSkillResource)
 	api.POST("/skills/:name/resources", server.createSkillResource)
+	api.POST("/skills/by-id/:repo/:name/resources", server.createSkillResource)
 	api.PUT("/skills/:name/resources/*", server.updateSkillResource)
+	api.PUT("/skills/by-id/:repo/:name/resources/*", server.updateSkillResource)
 	api.DELETE("/skills/:name/resources/*", server.deleteSkillResource)
+	api.DELETE("/skills/by-id/:repo/:name/resources/*", server.deleteSkillResource)
 
 	// Git repository management routes
 	api.GET("/git-repos", server.listGitRepos)

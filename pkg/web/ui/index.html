@@ -992,12 +992,24 @@
                 },
 
                 buildSkillApiPath(skillName, suffix = '') {
-                    const encodedSkillName = encodeURIComponent(skillName);
+                    const normalizedSkillName = (skillName || '').trim();
+                    const parts = normalizedSkillName.split('/').filter(Boolean);
+                    let basePath;
+
+                    if (parts.length === 2) {
+                        const encodedRepo = encodeURIComponent(parts[0]);
+                        const encodedName = encodeURIComponent(parts[1]);
+                        basePath = `/api/skills/by-id/${encodedRepo}/${encodedName}`;
+                    } else {
+                        const encodedSkillName = encodeURIComponent(normalizedSkillName);
+                        basePath = `/api/skills/${encodedSkillName}`;
+                    }
+
                     if (!suffix) {
-                        return `/api/skills/${encodedSkillName}`;
+                        return basePath;
                     }
                     const normalizedSuffix = suffix.replace(/^\/+/, '');
-                    return `/api/skills/${encodedSkillName}/${normalizedSuffix}`;
+                    return `${basePath}/${normalizedSuffix}`;
                 },
 
                 buildSkillResourceApiPath(skillName, resourcePath = '') {
