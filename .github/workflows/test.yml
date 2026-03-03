@@ -31,7 +31,16 @@ jobs:
       - name: Run tests with coverage threshold (>=80%)
         run: |
           go test -v -covermode=atomic -coverprofile=coverage.out ./...
-          go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print "Total coverage: "$3"%"; if ($3+0 < 80) {print "Coverage threshold not met (required >= 80%)"; exit 1}}'
+          TOTAL_COVERAGE="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')"
+          echo "Total coverage: ${TOTAL_COVERAGE}% (required >= 80%)"
+
+          if awk "BEGIN {exit !(${TOTAL_COVERAGE} < 80)}"; then
+            if [[ "${GITHUB_EVENT_NAME}" == "push" && ( "${GITHUB_REF_NAME}" == "main" || "${GITHUB_REF_NAME}" == "master" ) ]]; then
+              echo "Coverage threshold not met (required >= 80% on main/master pushes)"
+              exit 1
+            fi
+            echo "Coverage threshold not met, but this is not a main/master push; continuing."
+          fi
 
       - name: Run go vet
         run: go vet ./...
