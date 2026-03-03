@@ -200,6 +200,55 @@ func TestSkillResourceWriteGuards_AllowDirectResourceUpdate(t *testing.T) {
 	}
 }
 
+func TestListSkillResources_ByIDRoute_SupportsGitBackedSkillNames(t *testing.T) {
+	t.Parallel()
+
+	skillsDir := t.TempDir()
+	repoName := "agents"
+	skillDir := filepath.Join(skillsDir, repoName, "screen-reader-testing")
+	if err := os.MkdirAll(filepath.Join(skillDir, "references"), 0o755); err != nil {
+		t.Fatalf("failed to create fixture directories: %v", err)
+	}
+
+	skillMarkdown := `---
+name: screen-reader-testing
+description: Fixture git-backed skill
+---
+# Screen Reader Testing
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMarkdown), 0o644); err != nil {
+		t.Fatalf("failed to write fixture skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "references", "guide.md"), []byte("# Guide\n"), 0o644); err != nil {
+		t.Fatalf("failed to write fixture resource: %v", err)
+	}
+
+	manager, err := domain.NewFileSystemManager(skillsDir, []string{repoName})
+	if err != nil {
+		t.Fatalf("failed to create file system manager: %v", err)
+	}
+
+	server := NewServer(manager, manager, nil, nil, nil, false, nil, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/skills/by-id/agents/screen-reader-testing/resources", nil)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload := decodeJSONObject(t, rec.Body.Bytes())
+	if readOnly, ok := payload["readOnly"].(bool); !ok || !readOnly {
+		t.Fatalf("expected readOnly=true for git-backed skill, got %v", payload["readOnly"])
+	}
+
+	resource := findResourceByPath(t, payload["references"], "references/guide.md")
+	if writable, ok := resource["writable"].(bool); !ok || writable {
+		t.Fatalf("expected git-backed resource writable=false, got %v", resource["writable"])
+	}
+}
+
 func newResourceFixtureServer(t *testing.T) *Server {
 	t.Helper()
 	return newFixtureServer(t, true)
