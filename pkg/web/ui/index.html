@@ -243,107 +243,75 @@
             
             <!-- Resources Tab -->
             <div x-show="activeTab === 'resources' && editingSkill !== null">
-                <div class="resource-section">
-                    <div class="resource-section-header flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                        <h3><i class="fas fa-code mr-2"></i>Scripts</h3>
-                        <button @click="showUploadDialog('script')" class="btn btn-small btn-primary w-full sm:w-auto" :disabled="editingSkill && editingSkill.readOnly">
-                            <i class="fas fa-upload mr-1"></i>Upload
-                        </button>
-                    </div>
-                    <div 
-                        class="resource-list bg-gray-50 dark:bg-gray-900/50"
-                        @dragover.prevent="dragOverType = 'script'"
-                        @dragleave.prevent="if (event.relatedTarget === null || !event.currentTarget.contains(event.relatedTarget)) dragOverType = null"
-                        @drop.prevent="handleDrop($event, 'script')"
-                        :class="{'border-2 border-blue-500 dark:border-blue-400 border-dashed bg-blue-50 dark:bg-blue-900/30': dragOverType === 'script'}"
-                    >
-                        <template x-for="resource in resources.scripts" :key="resource.path">
-                            <div class="resource-item flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700">
-                                <div class="resource-item-info flex-1 min-w-0" @click="viewResource(resource, 'script')">
-                                    <div class="resource-item-name text-gray-900 dark:text-gray-100" x-text="resource.name"></div>
-                                    <div class="resource-item-meta text-gray-600 dark:text-gray-400" x-text="`${formatSize(resource.size)} • ${resource.mime_type}`"></div>
+                <template x-for="group in getResourceGroupsForDisplay()" :key="group.key">
+                    <div class="resource-section">
+                        <div class="resource-section-header flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                            <h3>
+                                <i :class="`${group.iconClass} mr-2`"></i>
+                                <span x-text="group.label"></span>
+                            </h3>
+                            <button
+                                x-show="canUploadToGroup(group)"
+                                @click="showUploadDialog(group.uploadType)"
+                                class="btn btn-small btn-primary w-full sm:w-auto"
+                                :disabled="(editingSkill && editingSkill.readOnly) || isLoading"
+                            >
+                                <i class="fas fa-upload mr-1"></i>Upload
+                            </button>
+                        </div>
+                        <div
+                            class="resource-list bg-gray-50 dark:bg-gray-900/50"
+                            @dragover.prevent="handleResourceDragOver(group)"
+                            @dragleave.prevent="if (event.relatedTarget === null || !event.currentTarget.contains(event.relatedTarget)) dragOverType = null"
+                            @drop.prevent="handleResourceDrop($event, group)"
+                            :class="{
+                                'border-2 border-blue-500 dark:border-blue-400 border-dashed bg-blue-50 dark:bg-blue-900/30': dragOverType === group.key && canUploadToGroup(group)
+                            }"
+                        >
+                            <template x-for="resource in group.items" :key="resource.path">
+                                <div class="resource-item flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700">
+                                    <div class="resource-item-info flex-1 min-w-0 cursor-pointer" @click="viewResource(resource, group.uploadType || group.key)">
+                                        <div class="resource-item-name text-gray-900 dark:text-gray-100 flex flex-wrap items-center gap-2">
+                                            <span x-text="resource.name"></span>
+                                            <span
+                                                class="text-[11px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wide"
+                                                :class="originBadgeClass(getResourceOrigin(resource))"
+                                                x-text="getResourceOrigin(resource)"
+                                            ></span>
+                                            <span
+                                                x-show="!isResourceWritable(resource)"
+                                                class="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300"
+                                            >
+                                                Read only
+                                            </span>
+                                        </div>
+                                        <div class="resource-item-meta text-gray-600 dark:text-gray-400" x-text="formatResourceMeta(resource)"></div>
+                                    </div>
+                                    <div class="resource-item-actions flex items-center gap-2">
+                                        <button
+                                            x-show="isResourceWritable(resource)"
+                                            @click.stop="deleteResource(resource.path)"
+                                            class="btn btn-small btn-danger"
+                                            :disabled="(editingSkill && editingSkill.readOnly) || isLoading"
+                                        >
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                        <span
+                                            x-show="!isResourceWritable(resource)"
+                                            class="text-xs text-gray-500 dark:text-gray-400"
+                                        >
+                                            <i class="fas fa-lock mr-1"></i>Locked
+                                        </span>
+                                    </div>
                                 </div>
-                                <div class="resource-item-actions flex gap-2">
-                                    <button @click.stop="deleteResource(resource.path)" class="btn btn-small btn-danger" :disabled="editingSkill && editingSkill.readOnly">
-                                        <i class="fas fa-trash"></i>
-                                    </button>
-                                </div>
+                            </template>
+                            <div x-show="group.items.length === 0" class="empty-resource-state text-gray-500 dark:text-gray-400">
+                                <i :class="`${group.iconClass} text-4xl mb-2 text-gray-300 dark:text-gray-600`"></i>
+                                <p x-text="`No ${group.label.toLowerCase()}`"></p>
                             </div>
-                        </template>
-                        <div x-show="!resources.scripts || resources.scripts.length === 0" class="empty-resource-state text-gray-500 dark:text-gray-400">
-                            <i class="fas fa-code text-4xl mb-2 text-gray-300 dark:text-gray-600"></i>
-                            <p>No scripts</p>
                         </div>
                     </div>
-                </div>
-                
-                <div class="resource-section">
-                    <div class="resource-section-header flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                        <h3><i class="fas fa-book mr-2"></i>References</h3>
-                        <button @click="showUploadDialog('reference')" class="btn btn-small btn-primary w-full sm:w-auto" :disabled="editingSkill && editingSkill.readOnly">
-                            <i class="fas fa-upload mr-1"></i>Upload
-                        </button>
-                    </div>
-                    <div 
-                        class="resource-list"
-                        @dragover.prevent="dragOverType = 'reference'"
-                        @dragleave.prevent="if (event.relatedTarget === null || !event.currentTarget.contains(event.relatedTarget)) dragOverType = null"
-                        @drop.prevent="handleDrop($event, 'reference')"
-                        :class="{'border-2 border-blue-500 border-dashed bg-blue-50': dragOverType === 'reference'}"
-                    >
-                        <template x-for="resource in resources.references" :key="resource.path">
-                            <div class="resource-item flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                                <div class="resource-item-info flex-1 min-w-0" @click="viewResource(resource, 'reference')">
-                                    <div class="resource-item-name" x-text="resource.name"></div>
-                                    <div class="resource-item-meta" x-text="`${formatSize(resource.size)} • ${resource.mime_type}`"></div>
-                                </div>
-                                <div class="resource-item-actions flex gap-2">
-                                    <button @click.stop="deleteResource(resource.path)" class="btn btn-small btn-danger" :disabled="editingSkill && editingSkill.readOnly">
-                                        <i class="fas fa-trash"></i>
-                                    </button>
-                                </div>
-                            </div>
-                        </template>
-                        <div x-show="!resources.references || resources.references.length === 0" class="empty-resource-state text-gray-500 dark:text-gray-400">
-                            <i class="fas fa-book text-4xl mb-2 text-gray-300 dark:text-gray-600"></i>
-                            <p>No references</p>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="resource-section">
-                    <div class="resource-section-header flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                        <h3><i class="fas fa-image mr-2"></i>Assets</h3>
-                        <button @click="showUploadDialog('asset')" class="btn btn-small btn-primary w-full sm:w-auto" :disabled="editingSkill && editingSkill.readOnly">
-                            <i class="fas fa-upload mr-1"></i>Upload
-                        </button>
-                    </div>
-                    <div 
-                        class="resource-list"
-                        @dragover.prevent="dragOverType = 'asset'"
-                        @dragleave.prevent="if (event.relatedTarget === null || !event.currentTarget.contains(event.relatedTarget)) dragOverType = null"
-                        @drop.prevent="handleDrop($event, 'asset')"
-                        :class="{'border-2 border-blue-500 border-dashed bg-blue-50': dragOverType === 'asset'}"
-                    >
-                        <template x-for="resource in resources.assets" :key="resource.path">
-                            <div class="resource-item flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                                <div class="resource-item-info flex-1 min-w-0" @click="viewResource(resource, 'asset')">
-                                    <div class="resource-item-name" x-text="resource.name"></div>
-                                    <div class="resource-item-meta" x-text="`${formatSize(resource.size)} • ${resource.mime_type}`"></div>
-                                </div>
-                                <div class="resource-item-actions flex gap-2">
-                                    <button @click.stop="deleteResource(resource.path)" class="btn btn-small btn-danger" :disabled="editingSkill && editingSkill.readOnly">
-                                        <i class="fas fa-trash"></i>
-                                    </button>
-                                </div>
-                            </div>
-                        </template>
-                        <div x-show="!resources.assets || resources.assets.length === 0" class="empty-resource-state text-gray-500 dark:text-gray-400">
-                            <i class="fas fa-image text-4xl mb-2 text-gray-300 dark:text-gray-600"></i>
-                            <p>No assets</p>
-                        </div>
-                    </div>
-                </div>
+                </template>
             </div>
         </div>
 
@@ -390,7 +358,8 @@
             >
                 <div class="flex justify-between items-center p-4 border-b border-gray-200 dark:border-gray-700">
                     <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                        <i class="fas fa-edit mr-2"></i>Edit <span x-text="resourceEditorModal.name"></span>
+                        <i :class="resourceEditorModal.writable ? 'fas fa-edit mr-2' : 'fas fa-eye mr-2'"></i>
+                        <span x-text="resourceEditorModal.writable ? 'Edit ' : 'View '"></span><span x-text="resourceEditorModal.name"></span>
                     </h3>
                     <button 
                         @click="resourceEditorModal.show = false"
@@ -402,6 +371,8 @@
                 <div class="flex-1 overflow-auto p-4">
                     <textarea 
                         x-model="resourceEditorModal.content"
+                        :readonly="!resourceEditorModal.writable"
+                        :disabled="!resourceEditorModal.writable"
                         class="w-full h-full min-h-[400px] p-3 border border-gray-300 dark:border-gray-600 rounded font-mono text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100"
                         style="font-family: 'Monaco', 'Courier New', monospace;"
                     ></textarea>
@@ -414,6 +385,7 @@
                         Cancel
                     </button>
                     <button 
+                        x-show="resourceEditorModal.writable"
                         @click="saveResourceContent()"
                         class="px-4 py-2 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 transition"
                     >
@@ -696,7 +668,9 @@
                     content: '',
                     originalContent: '',
                     path: '',
-                    name: ''
+                    name: '',
+                    writable: true,
+                    origin: 'direct'
                 },
                 toasts: [],
                 isLoading: false,
@@ -989,6 +963,141 @@
                     }
                 },
 
+                getDefaultResourceGroups() {
+                    return {
+                        scripts: [],
+                        references: [],
+                        assets: []
+                    };
+                },
+
+                normalizeResourceGroups(data) {
+                    const normalized = this.getDefaultResourceGroups();
+                    const hasGroupsObject = data && typeof data.groups === 'object' && data.groups !== null && !Array.isArray(data.groups);
+
+                    if (hasGroupsObject) {
+                        for (const [groupKey, groupItems] of Object.entries(data.groups)) {
+                            normalized[groupKey] = Array.isArray(groupItems) ? groupItems : [];
+                        }
+                    }
+
+                    const additiveKeys = ['scripts', 'references', 'assets', 'prompts', 'imported'];
+                    for (const key of additiveKeys) {
+                        if (Array.isArray(data[key])) {
+                            normalized[key] = data[key];
+                        }
+                    }
+
+                    return normalized;
+                },
+
+                getResourceGroupConfig(groupKey) {
+                    const knownGroups = {
+                        scripts: { label: 'Scripts', iconClass: 'fas fa-code', uploadType: 'script' },
+                        references: { label: 'References', iconClass: 'fas fa-book', uploadType: 'reference' },
+                        assets: { label: 'Assets', iconClass: 'fas fa-image', uploadType: 'asset' },
+                        prompts: { label: 'Prompts', iconClass: 'fas fa-comment-dots', uploadType: 'prompt' },
+                        imported: { label: 'Imported', iconClass: 'fas fa-file-import', uploadType: null }
+                    };
+
+                    if (knownGroups[groupKey]) {
+                        return knownGroups[groupKey];
+                    }
+
+                    const label = groupKey
+                        .replace(/[_-]+/g, ' ')
+                        .split(' ')
+                        .filter(Boolean)
+                        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+                        .join(' ');
+
+                    return {
+                        label: label || 'Resources',
+                        iconClass: 'fas fa-folder-open',
+                        uploadType: null
+                    };
+                },
+
+                getResourceGroupsForDisplay() {
+                    const groups = this.resources || this.getDefaultResourceGroups();
+                    const preferredOrder = ['scripts', 'references', 'assets', 'prompts', 'imported'];
+                    const groupKeys = Object.keys(groups).filter((key) => Array.isArray(groups[key]));
+
+                    groupKeys.sort((left, right) => {
+                        const leftIndex = preferredOrder.indexOf(left);
+                        const rightIndex = preferredOrder.indexOf(right);
+
+                        if (leftIndex !== -1 || rightIndex !== -1) {
+                            if (leftIndex === -1) return 1;
+                            if (rightIndex === -1) return -1;
+                            return leftIndex - rightIndex;
+                        }
+
+                        return left.localeCompare(right);
+                    });
+
+                    return groupKeys.map((key) => {
+                        const config = this.getResourceGroupConfig(key);
+                        return {
+                            key,
+                            label: config.label,
+                            iconClass: config.iconClass,
+                            uploadType: config.uploadType,
+                            items: groups[key]
+                        };
+                    });
+                },
+
+                canUploadToGroup(group) {
+                    return !!(group && group.uploadType && !(this.editingSkill && this.editingSkill.readOnly));
+                },
+
+                handleResourceDragOver(group) {
+                    if (!this.canUploadToGroup(group)) {
+                        this.dragOverType = null;
+                        return;
+                    }
+                    this.dragOverType = group.key;
+                },
+
+                handleResourceDrop(event, group) {
+                    this.dragOverType = null;
+                    if (!this.canUploadToGroup(group)) {
+                        return;
+                    }
+                    const files = event.dataTransfer.files;
+                    if (files.length > 0) {
+                        this.uploadResource(files[0], group.uploadType);
+                    }
+                },
+
+                getResourceOrigin(resource) {
+                    if (!resource || typeof resource.origin !== 'string' || resource.origin.trim() === '') {
+                        return 'direct';
+                    }
+                    return resource.origin;
+                },
+
+                isResourceWritable(resource) {
+                    return !!(resource && resource.writable !== false);
+                },
+
+                originBadgeClass(origin) {
+                    if (origin === 'imported') {
+                        return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300';
+                    }
+                    return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300';
+                },
+
+                formatResourceMeta(resource) {
+                    const parts = [];
+                    parts.push(this.formatSize(resource.size || 0));
+                    if (resource.mime_type) {
+                        parts.push(resource.mime_type);
+                    }
+                    return parts.join(' • ');
+                },
+
                 cancelEdit() {
                     this.showEditor = false;
                     this.editingSkill = null;
@@ -999,22 +1108,29 @@
                     this.skillCompatibility = '';
                     this.nameValidationError = '';
                     this.activeTab = 'content';
-                    this.resources = { scripts: [], references: [], assets: [] };
+                    this.resources = this.getDefaultResourceGroups();
                     this.viewingResource = null;
+                    this.dragOverType = null;
+                    this.resourceEditorModal = {
+                        show: false,
+                        content: '',
+                        originalContent: '',
+                        path: '',
+                        name: '',
+                        writable: true,
+                        origin: 'direct'
+                    };
                 },
 
                 async loadResources() {
                     if (!this.editingSkill) return;
+                    this.resources = this.getDefaultResourceGroups();
                     
                     try {
                         const response = await fetch(`/api/skills/${this.editingSkill.name}/resources`);
                         if (response.ok) {
                             const data = await response.json();
-                            this.resources = {
-                                scripts: data.scripts || [],
-                                references: data.references || [],
-                                assets: data.assets || []
-                            };
+                            this.resources = this.normalizeResourceGroups(data);
                         }
                     } catch (error) {
                         console.error('Failed to load resources:', error);
@@ -1033,10 +1149,13 @@
                         const response = await fetch(`/api/skills/${this.editingSkill.name}/resources/${resource.path}`);
                         if (response.ok) {
                             const content = await response.text();
+                            const writable = this.isResourceWritable(resource);
                             this.viewingResource = {
                                 path: resource.path,
                                 name: resource.name,
                                 type: type,
+                                writable: writable,
+                                origin: this.getResourceOrigin(resource),
                                 content: content,
                                 originalContent: content
                             };
@@ -1046,7 +1165,9 @@
                                 content: content,
                                 originalContent: content,
                                 path: resource.path,
-                                name: resource.name
+                                name: resource.name,
+                                writable: writable,
+                                origin: this.getResourceOrigin(resource)
                             };
                         }
                     } catch (error) {
@@ -1056,6 +1177,10 @@
                 },
 
                 async saveResourceContent() {
+                    if (!this.resourceEditorModal.writable) {
+                        this.showToast('This resource is read-only and cannot be edited', 'warning');
+                        return;
+                    }
                     if (this.resourceEditorModal.content !== this.resourceEditorModal.originalContent) {
                         await this.updateResource(this.resourceEditorModal.path, this.resourceEditorModal.content);
                         this.resourceEditorModal.show = false;
@@ -1065,6 +1190,10 @@
                 },
 
                 async updateResource(path, content) {
+                    if (!this.resourceEditorModal.writable) {
+                        this.showToast('This resource is read-only and cannot be edited', 'warning');
+                        return;
+                    }
                     try {
                         const response = await fetch(`/api/skills/${this.editingSkill.name}/resources/${path}`, {
                             method: 'PUT',
@@ -1098,14 +1227,6 @@
                         }
                     };
                     input.click();
-                },
-
-                handleDrop(event, type) {
-                    this.dragOverType = null;
-                    const files = event.dataTransfer.files;
-                    if (files.length > 0) {
-                        this.uploadResource(files[0], type);
-                    }
                 },
 
                 async uploadResource(file, type) {

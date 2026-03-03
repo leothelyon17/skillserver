@@ -17,6 +17,7 @@ coverage.out
 
 # Dependency directories
 vendor/
+node_modules/
 
 # Go workspace file
 go.work
@@ -44,6 +45,8 @@ temp/
 # Build artifacts
 dist/
 build/
+playwright-report/
+test-results/
 
 # Environment files
 .env

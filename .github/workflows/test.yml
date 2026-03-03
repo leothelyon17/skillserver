@@ -28,8 +28,10 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Run tests
-        run: go test -v ./...
+      - name: Run tests with coverage threshold (>=80%)
+        run: |
+          go test -v -covermode=atomic -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print "Total coverage: "$3"%"; if ($3+0 < 80) {print "Coverage threshold not met (required >= 80%)"; exit 1}}'
 
       - name: Run go vet
         run: go vet ./...

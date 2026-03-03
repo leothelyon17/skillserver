@@ -1,0 +1,11 @@
+{
+  "name": "skillserver-ui-tests",
+  "private": true,
+  "scripts": {
+    "test:playwright": "playwright test",
+    "test:playwright:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.0"
+  }
+}

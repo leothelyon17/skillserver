@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -23,9 +24,10 @@ type SkillManager interface {
 
 // FileSystemManager implements SkillManager using the file system
 type FileSystemManager struct {
-	skillsDir string
-	searcher  *Searcher
-	gitRepos  []string // List of git repo directory names (for read-only detection)
+	skillsDir             string
+	searcher              *Searcher
+	gitRepos              []string // List of git repo directory names (for read-only detection)
+	enableImportDiscovery bool
 }
 
 // NewFileSystemManager creates a new FileSystemManager
@@ -40,9 +42,10 @@ func NewFileSystemManager(skillsDir string, gitRepos []string) (*FileSystemManag
 	}
 
 	manager := &FileSystemManager{
-		skillsDir: skillsDir,
-		searcher:  searcher,
-		gitRepos:  gitRepos,
+		skillsDir:             skillsDir,
+		searcher:              searcher,
+		gitRepos:              gitRepos,
+		enableImportDiscovery: true,
 	}
 
 	// Initial index build
@@ -126,7 +129,7 @@ func (m *FileSystemManager) ListSkills() ([]Skill, error) {
 			continue
 		}
 		parts := strings.Split(relPath, string(filepath.Separator))
-		
+
 		// Check if this skill is from a git repo (path has multiple parts and first part is a repo name)
 		if len(parts) > 1 {
 			repoName := parts[0]
@@ -308,6 +311,11 @@ func (m *FileSystemManager) UpdateGitRepos(gitRepoNames []string) {
 	m.gitRepos = gitRepoNames
 }
 
+// SetImportDiscoveryEnabled toggles import discovery and virtual imports/... read support.
+func (m *FileSystemManager) SetImportDiscoveryEnabled(enabled bool) {
+	m.enableImportDiscovery = enabled
+}
+
 // getSkillPath returns the full path to a skill directory given its ID
 func (m *FileSystemManager) getSkillPath(skillID string) (string, error) {
 	// Check if this is a git repo skill (format: repoName/skillName)
@@ -342,9 +350,11 @@ func (m *FileSystemManager) ListSkillResources(skillID string) ([]SkillResource,
 	if err != nil {
 		return nil, err
 	}
+	writable := !m.isGitRepoPath(skillPath)
+	allowedRoot := m.getSkillAllowedRoot(skillPath)
 
 	var resources []SkillResource
-	resourceDirs := []string{"scripts", "references", "assets"}
+	resourceDirs := []string{"scripts", "references", "assets", "agents", "prompts"}
 
 	for _, dir := range resourceDirs {
 		dirPath := filepath.Join(skillPath, dir)
@@ -357,7 +367,7 @@ func (m *FileSystemManager) ListSkillResources(skillID string) ([]SkillResource,
 		for _, entry := range entries {
 			if entry.IsDir() {
 				// Recursively list subdirectories
-				subResources, err := m.listResourcesInDir(skillPath, filepath.Join(dir, entry.Name()))
+				subResources, err := m.listResourcesInDir(skillPath, filepath.Join(dir, entry.Name()), writable)
 				if err == nil {
 					resources = append(resources, subResources...)
 				}
@@ -383,21 +393,47 @@ func (m *FileSystemManager) ListSkillResources(skillID string) ([]SkillResource,
 
 			resources = append(resources, SkillResource{
 				Type:     GetResourceType(resourcePath),
+				Origin:   ResourceOriginDirect,
 				Path:     filepath.ToSlash(resourcePath), // Use forward slashes for consistency
 				Name:     entry.Name(),
 				Size:     info.Size(),
 				MimeType: mimeType,
 				Readable: readable,
+				Writable: writable,
 				Modified: info.ModTime(),
 			})
 		}
 	}
 
+	if m.enableImportDiscovery {
+		resources = append(resources, m.listImportedSkillResources(skillPath, allowedRoot)...)
+	}
+	resources = dedupeSkillResourcesByCanonicalTarget(resources, skillPath, allowedRoot)
+	sortSkillResources(resources)
+
 	return resources, nil
 }
 
+func (m *FileSystemManager) getSkillAllowedRoot(skillPath string) string {
+	if !m.isGitRepoPath(skillPath) {
+		return skillPath
+	}
+
+	relPath, err := filepath.Rel(m.skillsDir, skillPath)
+	if err != nil {
+		return skillPath
+	}
+
+	parts := strings.Split(relPath, string(filepath.Separator))
+	if len(parts) == 0 || parts[0] == "" || parts[0] == "." || parts[0] == ".." {
+		return skillPath
+	}
+
+	return filepath.Join(m.skillsDir, parts[0])
+}
+
 // listResourcesInDir recursively lists resources in a subdirectory
-func (m *FileSystemManager) listResourcesInDir(skillPath, relPath string) ([]SkillResource, error) {
+func (m *FileSystemManager) listResourcesInDir(skillPath, relPath string, writable bool) ([]SkillResource, error) {
 	var resources []SkillResource
 	fullPath := filepath.Join(skillPath, relPath)
 
@@ -409,7 +445,7 @@ func (m *FileSystemManager) listResourcesInDir(skillPath, relPath string) ([]Ski
 	for _, entry := range entries {
 		if entry.IsDir() {
 			// Recursively list subdirectories
-			subResources, err := m.listResourcesInDir(skillPath, filepath.Join(relPath, entry.Name()))
+			subResources, err := m.listResourcesInDir(skillPath, filepath.Join(relPath, entry.Name()), writable)
 			if err == nil {
 				resources = append(resources, subResources...)
 			}
@@ -435,11 +471,13 @@ func (m *FileSystemManager) listResourcesInDir(skillPath, relPath string) ([]Ski
 
 		resources = append(resources, SkillResource{
 			Type:     GetResourceType(resourcePath),
+			Origin:   ResourceOriginDirect,
 			Path:     filepath.ToSlash(resourcePath),
 			Name:     entry.Name(),
 			Size:     info.Size(),
 			MimeType: mimeType,
 			Readable: readable,
+			Writable: writable,
 			Modified: info.ModTime(),
 		})
 	}
@@ -447,10 +485,186 @@ func (m *FileSystemManager) listResourcesInDir(skillPath, relPath string) ([]Ski
 	return resources, nil
 }
 
+func (m *FileSystemManager) listImportedSkillResources(skillPath, allowedRoot string) []SkillResource {
+	skillMarkdownPath := filepath.Join(skillPath, "SKILL.md")
+	markdownBytes, err := os.ReadFile(skillMarkdownPath)
+	if err != nil {
+		return nil
+	}
+
+	markdown := string(markdownBytes)
+	if _, content, err := ParseFrontmatter(markdown); err == nil {
+		markdown = content
+	}
+
+	candidates := ParseImportCandidates(markdown)
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	resources := make([]SkillResource, 0, len(candidates))
+	for _, candidate := range candidates {
+		resolvedImport, err := ResolveImportTarget(skillMarkdownPath, candidate, allowedRoot)
+		if err != nil {
+			continue
+		}
+
+		resource, err := buildSkillResource(resolvedImport.TargetPath, resolvedImport.VirtualPath, ResourceOriginImported, false)
+		if err != nil {
+			continue
+		}
+		resources = append(resources, *resource)
+	}
+
+	return resources
+}
+
+func buildSkillResource(fullPath, resourcePath string, origin ResourceOrigin, writable bool) (*SkillResource, error) {
+	fileInfo, err := os.Stat(fullPath)
+	if err != nil {
+		return nil, err
+	}
+	if fileInfo.IsDir() {
+		return nil, fmt.Errorf("resource path points to a directory, not a file")
+	}
+
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		return nil, err
+	}
+
+	normalizedPath := filepath.ToSlash(resourcePath)
+	mimeType := DetectMimeType(filepath.Base(filepath.FromSlash(normalizedPath)), content)
+	readable := IsTextFile(mimeType)
+
+	return &SkillResource{
+		Type:     GetResourceType(normalizedPath),
+		Origin:   origin,
+		Path:     normalizedPath,
+		Name:     filepath.Base(filepath.FromSlash(normalizedPath)),
+		Size:     fileInfo.Size(),
+		MimeType: mimeType,
+		Readable: readable,
+		Writable: writable,
+		Modified: fileInfo.ModTime(),
+	}, nil
+}
+
+func dedupeSkillResourcesByCanonicalTarget(resources []SkillResource, skillPath, allowedRoot string) []SkillResource {
+	if len(resources) == 0 {
+		return resources
+	}
+
+	resourcesByCanonicalTarget := make(map[string]SkillResource, len(resources))
+	for _, resource := range resources {
+		canonicalTargetPath, err := canonicalResourceTargetPath(resource, skillPath, allowedRoot)
+		if err != nil {
+			canonicalTargetPath = string(resource.Origin) + ":" + filepath.ToSlash(resource.Path)
+		}
+
+		existingResource, exists := resourcesByCanonicalTarget[canonicalTargetPath]
+		if !exists {
+			resourcesByCanonicalTarget[canonicalTargetPath] = resource
+			continue
+		}
+
+		if shouldReplaceResource(existingResource, resource) {
+			resourcesByCanonicalTarget[canonicalTargetPath] = resource
+		}
+	}
+
+	dedupedResources := make([]SkillResource, 0, len(resourcesByCanonicalTarget))
+	for _, resource := range resourcesByCanonicalTarget {
+		dedupedResources = append(dedupedResources, resource)
+	}
+	return dedupedResources
+}
+
+func canonicalResourceTargetPath(resource SkillResource, skillPath, allowedRoot string) (string, error) {
+	targetPath, _, err := resolveSkillResourcePath(skillPath, allowedRoot, resource.Path)
+	if err != nil {
+		return "", err
+	}
+	return canonicalizeExistingPath(targetPath)
+}
+
+func resolveSkillResourcePath(skillPath, allowedRoot, resourcePath string) (string, ResourceOrigin, error) {
+	normalizedPath := filepath.ToSlash(strings.TrimSpace(resourcePath))
+	if IsImportedResourcePath(normalizedPath) {
+		targetPath, err := resolveImportedVirtualResourcePath(normalizedPath, allowedRoot)
+		if err != nil {
+			return "", ResourceOriginImported, err
+		}
+		return targetPath, ResourceOriginImported, nil
+	}
+
+	targetPath := filepath.Join(skillPath, filepath.FromSlash(normalizedPath))
+	return targetPath, ResourceOriginDirect, nil
+}
+
+func resolveImportedVirtualResourcePath(resourcePath, allowedRoot string) (string, error) {
+	importedPath := filepath.ToSlash(strings.TrimSpace(resourcePath))
+	if !strings.HasPrefix(importedPath, resourceDirImports) {
+		return "", fmt.Errorf("imported resource is missing imports/ prefix")
+	}
+
+	relativePath := strings.TrimPrefix(importedPath, resourceDirImports)
+	if relativePath == "" {
+		return "", fmt.Errorf("resource path points to a directory, not a file")
+	}
+
+	canonicalAllowedRoot, err := canonicalizeExistingPath(allowedRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve allowed root: %w", err)
+	}
+
+	targetPath := filepath.Join(canonicalAllowedRoot, filepath.FromSlash(relativePath))
+	canonicalTargetPath, err := canonicalizeExistingPath(targetPath)
+	if err != nil {
+		return "", fmt.Errorf("resource not found: %w", err)
+	}
+
+	if !isWithinRoot(canonicalTargetPath, canonicalAllowedRoot) {
+		return "", fmt.Errorf("resource path escapes allowed root")
+	}
+
+	return canonicalTargetPath, nil
+}
+
+func shouldReplaceResource(existingResource, candidateResource SkillResource) bool {
+	if existingResource.Origin != candidateResource.Origin {
+		// Preserve direct resources as the primary virtual path when both map to the same target.
+		return existingResource.Origin == ResourceOriginImported && candidateResource.Origin == ResourceOriginDirect
+	}
+
+	if existingResource.Path != candidateResource.Path {
+		return candidateResource.Path < existingResource.Path
+	}
+
+	return candidateResource.Name < existingResource.Name
+}
+
+func sortSkillResources(resources []SkillResource) {
+	sort.Slice(resources, func(i, j int) bool {
+		if resources[i].Path != resources[j].Path {
+			return resources[i].Path < resources[j].Path
+		}
+		if resources[i].Origin != resources[j].Origin {
+			return resources[i].Origin < resources[j].Origin
+		}
+		return resources[i].Name < resources[j].Name
+	})
+}
+
 // ReadSkillResource reads the content of a skill resource file
 func (m *FileSystemManager) ReadSkillResource(skillID, resourcePath string) (*ResourceContent, error) {
+	normalizedPath := filepath.ToSlash(strings.TrimSpace(resourcePath))
+	if IsImportedResourcePath(normalizedPath) && !m.enableImportDiscovery {
+		return nil, fmt.Errorf("import discovery is disabled")
+	}
+
 	// Validate path
-	if err := ValidateResourcePath(resourcePath); err != nil {
+	if err := ValidateReadableResourcePath(resourcePath); err != nil {
 		return nil, err
 	}
 
@@ -459,13 +673,18 @@ func (m *FileSystemManager) ReadSkillResource(skillID, resourcePath string) (*Re
 		return nil, err
 	}
 
-	fullPath := filepath.Join(skillPath, resourcePath)
+	allowedRoot := m.getSkillAllowedRoot(skillPath)
+	fullPath, _, err := resolveSkillResourcePath(skillPath, allowedRoot, resourcePath)
+	if err != nil {
+		return nil, err
+	}
+
 	content, err := os.ReadFile(fullPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read resource: %w", err)
 	}
 
-	mimeType := DetectMimeType(filepath.Base(resourcePath), content)
+	mimeType := DetectMimeType(filepath.Base(filepath.FromSlash(normalizedPath)), content)
 	readable := IsTextFile(mimeType)
 
 	var encoding string
@@ -491,8 +710,13 @@ func (m *FileSystemManager) ReadSkillResource(skillID, resourcePath string) (*Re
 
 // GetSkillResourceInfo gets metadata about a specific resource without reading content
 func (m *FileSystemManager) GetSkillResourceInfo(skillID, resourcePath string) (*SkillResource, error) {
+	normalizedPath := filepath.ToSlash(strings.TrimSpace(resourcePath))
+	if IsImportedResourcePath(normalizedPath) && !m.enableImportDiscovery {
+		return nil, fmt.Errorf("import discovery is disabled")
+	}
+
 	// Validate path
-	if err := ValidateResourcePath(resourcePath); err != nil {
+	if err := ValidateReadableResourcePath(resourcePath); err != nil {
 		return nil, err
 	}
 
@@ -501,7 +725,12 @@ func (m *FileSystemManager) GetSkillResourceInfo(skillID, resourcePath string) (
 		return nil, err
 	}
 
-	fullPath := filepath.Join(skillPath, resourcePath)
+	allowedRoot := m.getSkillAllowedRoot(skillPath)
+	fullPath, origin, err := resolveSkillResourcePath(skillPath, allowedRoot, resourcePath)
+	if err != nil {
+		return nil, err
+	}
+
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		return nil, fmt.Errorf("resource not found: %w", err)
@@ -520,16 +749,19 @@ func (m *FileSystemManager) GetSkillResourceInfo(skillID, resourcePath string) (
 
 	buffer := make([]byte, 512)
 	n, _ := file.Read(buffer)
-	mimeType := DetectMimeType(filepath.Base(resourcePath), buffer[:n])
+	mimeType := DetectMimeType(filepath.Base(filepath.FromSlash(normalizedPath)), buffer[:n])
 	readable := IsTextFile(mimeType)
+	writable := !m.isGitRepoPath(skillPath) && origin == ResourceOriginDirect
 
 	return &SkillResource{
-		Type:     GetResourceType(resourcePath),
-		Path:     filepath.ToSlash(resourcePath),
-		Name:     filepath.Base(resourcePath),
+		Type:     GetResourceType(normalizedPath),
+		Origin:   origin,
+		Path:     normalizedPath,
+		Name:     filepath.Base(filepath.FromSlash(normalizedPath)),
 		Size:     info.Size(),
 		MimeType: mimeType,
 		Readable: readable,
+		Writable: writable,
 		Modified: info.ModTime(),
 	}, nil
 }

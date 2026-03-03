@@ -89,12 +89,14 @@ func main() {
 	}
 	// Logging defaults to false (disabled) to avoid interfering with MCP stdio
 	defaultEnableLogging := getEnvBool("SKILLSERVER_ENABLE_LOGGING", false)
+	defaultEnableImportDiscovery := getEnvBool("SKILLSERVER_ENABLE_IMPORT_DISCOVERY", true)
 
 	// Parse command line flags (flags override environment variables)
 	skillsDir := flag.String("dir", defaultDir, "Directory to store skills (env: SKILLSERVER_DIR or SKILLS_DIR)")
 	port := flag.String("port", defaultPort, "Port for the web server (env: SKILLSERVER_PORT or PORT)")
 	gitReposFlag := flag.String("git-repos", defaultGitRepos, "Comma-separated list of Git repository URLs to sync (env: SKILLSERVER_GIT_REPOS or GIT_REPOS)")
 	enableLogging := flag.Bool("enable-logging", defaultEnableLogging, "Enable logging to stderr (env: SKILLSERVER_ENABLE_LOGGING). Default: false (disabled to avoid interfering with MCP stdio)")
+	enableImportDiscovery := flag.Bool("enable-import-discovery", defaultEnableImportDiscovery, "Enable imported resource discovery and imports/... virtual resources (env: SKILLSERVER_ENABLE_IMPORT_DISCOVERY)")
 	mcpFlagValues := registerMCPRuntimeFlags(flag.CommandLine)
 	flag.Parse()
 
@@ -174,6 +176,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize skill manager: %v", err)
 	}
+	skillManager.SetImportDiscoveryEnabled(*enableImportDiscovery)
 
 	// Get FileSystemManager reference for handlers
 	fsManager := skillManager

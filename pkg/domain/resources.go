@@ -15,17 +15,28 @@ const (
 	ResourceTypeScript    ResourceType = "script"
 	ResourceTypeReference ResourceType = "reference"
 	ResourceTypeAsset     ResourceType = "asset"
+	ResourceTypePrompt    ResourceType = "prompt"
+)
+
+// ResourceOrigin represents how a resource is discovered.
+type ResourceOrigin string
+
+const (
+	ResourceOriginDirect   ResourceOrigin = "direct"
+	ResourceOriginImported ResourceOrigin = "imported"
 )
 
 // SkillResource represents a resource file in a skill
 type SkillResource struct {
 	Type     ResourceType
-	Path     string    // Relative path from skill root (e.g., "scripts/script.py")
-	Name     string    // Filename only
-	Size     int64     // File size in bytes
-	MimeType string    // MIME type
-	Readable bool      // true if text file, false if binary
-	Modified time.Time // Last modification time
+	Origin   ResourceOrigin // direct or imported
+	Path     string         // Relative path from skill root (e.g., "scripts/script.py")
+	Name     string         // Filename only
+	Size     int64          // File size in bytes
+	MimeType string         // MIME type
+	Readable bool           // true if text file, false if binary
+	Writable bool           // true if resource can be modified
+	Modified time.Time      // Last modification time
 }
 
 // ResourceContent represents the content of a resource
@@ -36,22 +47,58 @@ type ResourceContent struct {
 	Size     int64
 }
 
+const (
+	resourceDirScripts    = "scripts/"
+	resourceDirReferences = "references/"
+	resourceDirAssets     = "assets/"
+	resourceDirAgents     = "agents/"
+	resourceDirPrompts    = "prompts/"
+	resourceDirImports    = "imports/"
+)
+
+var writableResourcePrefixes = []string{
+	resourceDirScripts,
+	resourceDirReferences,
+	resourceDirAssets,
+	resourceDirAgents,
+	resourceDirPrompts,
+}
+
+var readableResourcePrefixes = []string{
+	resourceDirScripts,
+	resourceDirReferences,
+	resourceDirAssets,
+	resourceDirAgents,
+	resourceDirPrompts,
+	resourceDirImports,
+}
+
 // ValidateResourcePath validates a resource path
 func ValidateResourcePath(path string) error {
-	// Normalize path separators
-	path = filepath.ToSlash(path)
+	return validateResourcePath(path, writableResourcePrefixes)
+}
 
-	// Must start with one of the resource directory names
-	validPrefixes := []string{"scripts/", "references/", "assets/"}
-	valid := false
-	for _, prefix := range validPrefixes {
-		if strings.HasPrefix(path, prefix) {
-			valid = true
-			break
-		}
+// ValidateReadableResourcePath validates a path that may include virtual imported resources.
+func ValidateReadableResourcePath(path string) error {
+	return validateResourcePath(path, readableResourcePrefixes)
+}
+
+// IsImportedResourcePath reports whether the path targets a virtual imported resource.
+func IsImportedResourcePath(path string) bool {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	return strings.HasPrefix(path, resourceDirImports)
+}
+
+func validateResourcePath(path string, allowedPrefixes []string) error {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+
+	if path == "" {
+		return fmt.Errorf("resource path cannot be empty")
 	}
-	if !valid {
-		return fmt.Errorf("resource path must start with scripts/, references/, or assets/")
+
+	// Check for absolute paths
+	if filepath.IsAbs(path) || strings.HasPrefix(path, "/") {
+		return fmt.Errorf("resource path must be relative")
 	}
 
 	// Check for path traversal
@@ -59,25 +106,39 @@ func ValidateResourcePath(path string) error {
 		return fmt.Errorf("resource path cannot contain '..'")
 	}
 
-	// Check for absolute paths
-	if filepath.IsAbs(path) {
-		return fmt.Errorf("resource path must be relative")
+	// Must start with one of the allowed directory prefixes
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return nil
+		}
 	}
 
-	return nil
+	return fmt.Errorf("resource path must start with %s", strings.Join(allowedPrefixes, ", "))
 }
 
 // GetResourceType determines the resource type from a path
 func GetResourceType(path string) ResourceType {
-	path = filepath.ToSlash(path)
-	if strings.HasPrefix(path, "scripts/") {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if strings.HasPrefix(path, resourceDirScripts) {
 		return ResourceTypeScript
 	}
-	if strings.HasPrefix(path, "references/") {
+	if strings.HasPrefix(path, resourceDirReferences) {
 		return ResourceTypeReference
 	}
-	if strings.HasPrefix(path, "assets/") {
+	if strings.HasPrefix(path, resourceDirAgents) || strings.HasPrefix(path, resourceDirPrompts) {
+		return ResourceTypePrompt
+	}
+	if strings.HasPrefix(path, resourceDirAssets) {
 		return ResourceTypeAsset
+	}
+	if strings.HasPrefix(path, resourceDirImports) {
+		importRelativePath := strings.TrimPrefix(path, resourceDirImports)
+		normalizedImportPath := "/" + strings.TrimPrefix(importRelativePath, "/")
+		if strings.Contains(normalizedImportPath, "/"+strings.TrimSuffix(resourceDirAgents, "/")+"/") ||
+			strings.Contains(normalizedImportPath, "/"+strings.TrimSuffix(resourceDirPrompts, "/")+"/") {
+			return ResourceTypePrompt
+		}
+		return ResourceTypeReference
 	}
 	return ResourceTypeAsset // Default fallback
 }
