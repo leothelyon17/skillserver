@@ -320,7 +320,23 @@ func (m *FileSystemManager) RebuildIndex() error {
 		return err
 	}
 
+	return m.RebuildIndexFromCatalogItems(items)
+}
+
+// RebuildIndexFromCatalogItems rebuilds the search index from a caller-provided catalog snapshot.
+func (m *FileSystemManager) RebuildIndexFromCatalogItems(items []CatalogItem) error {
 	return m.searcher.IndexCatalogItems(items)
+}
+
+// Close releases resources held by the manager.
+func (m *FileSystemManager) Close() error {
+	if m == nil || m.searcher == nil {
+		return nil
+	}
+
+	err := m.searcher.Close()
+	m.searcher = nil
+	return err
 }
 
 // GetSkillsDir returns the skills directory path
