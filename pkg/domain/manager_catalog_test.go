@@ -181,6 +181,47 @@ Git planner catalog skill
 		Expect(skillResults[0].ID).To(Equal(skillID))
 	})
 
+	It("should classify sibling plugin agents as prompt catalog items without explicit imports", func() {
+		repoName := "demo-repo"
+		skillPath := filepath.Join(tempDir, repoName, "plugins", "kubernetes-operations", "skills", "k8s-manifest-generator")
+		sharedAgentsPath := filepath.Join(tempDir, repoName, "plugins", "kubernetes-operations", "agents")
+
+		Expect(os.MkdirAll(skillPath, 0755)).To(Succeed())
+		Expect(os.MkdirAll(sharedAgentsPath, 0755)).To(Succeed())
+
+		skillMarkdown := `---
+name: k8s-manifest-generator
+description: Git kubernetes manifest skill
+---
+# Kubernetes Manifest Generator
+No explicit shared prompt imports.
+`
+		Expect(os.WriteFile(filepath.Join(skillPath, "SKILL.md"), []byte(skillMarkdown), 0644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(sharedAgentsPath, "kubernetes-architect.md"), []byte("# Kubernetes Architect\nShared specialist prompt."), 0644)).To(Succeed())
+
+		manager.UpdateGitRepos([]string{repoName})
+
+		catalogItems, err := manager.ListCatalogItems()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(catalogItems).To(HaveLen(2))
+
+		skillID := "demo-repo/k8s-manifest-generator"
+		skillCatalogID := domain.BuildSkillCatalogItemID(skillID)
+		promptPath := "imports/plugins/kubernetes-operations/agents/kubernetes-architect.md"
+		promptCatalogID := domain.BuildPromptCatalogItemID(skillID, promptPath)
+
+		byID := catalogItemsByID(catalogItems)
+		Expect(byID).To(HaveKey(skillCatalogID))
+		Expect(byID).To(HaveKey(promptCatalogID))
+
+		promptItem := byID[promptCatalogID]
+		Expect(promptItem.Classifier).To(Equal(domain.CatalogClassifierPrompt))
+		Expect(promptItem.ParentSkillID).To(Equal(skillID))
+		Expect(promptItem.ResourcePath).To(Equal(promptPath))
+		Expect(promptItem.Content).To(ContainSubstring("Shared specialist prompt"))
+		Expect(promptItem.ReadOnly).To(BeTrue())
+	})
+
 	It("should honor runtime prompt catalog enablement and directory allowlist", func() {
 		skillPath := filepath.Join(tempDir, "planner")
 		Expect(os.MkdirAll(filepath.Join(skillPath, "prompts"), 0755)).To(Succeed())

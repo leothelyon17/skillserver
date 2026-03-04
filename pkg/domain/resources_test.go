@@ -566,5 +566,35 @@ description: Plugin skill importing shared prompts
 				Expect(resource.Type).To(Equal(expectedType))
 			}
 		})
+
+		It("should discover shared plugin agents without explicit SKILL imports", func() {
+			repoName := "demo-repo"
+			skillPath := filepath.Join(tempDir, repoName, "plugins", "kubernetes-operations", "skills", "k8s-manifest-generator")
+			sharedAgentsDir := filepath.Join(tempDir, repoName, "plugins", "kubernetes-operations", "agents")
+
+			Expect(os.MkdirAll(skillPath, 0755)).To(Succeed())
+			Expect(os.MkdirAll(sharedAgentsDir, 0755)).To(Succeed())
+
+			skillMdContent := `---
+name: k8s-manifest-generator
+description: Plugin skill with sibling shared agents
+---
+# Kubernetes Manifest Generator
+No explicit imports in this skill.
+`
+			Expect(os.WriteFile(filepath.Join(skillPath, "SKILL.md"), []byte(skillMdContent), 0644)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(sharedAgentsDir, "kubernetes-architect.md"), []byte("# Kubernetes Architect"), 0644)).To(Succeed())
+
+			manager.UpdateGitRepos([]string{repoName})
+			resources, err := manager.ListSkillResources(repoName + "/k8s-manifest-generator")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resources).To(HaveLen(1))
+
+			resource := resources[0]
+			Expect(resource.Path).To(Equal("imports/plugins/kubernetes-operations/agents/kubernetes-architect.md"))
+			Expect(resource.Type).To(Equal(domain.ResourceTypePrompt))
+			Expect(resource.Origin).To(Equal(domain.ResourceOriginImported))
+			Expect(resource.Writable).To(BeFalse())
+		})
 	})
 })
