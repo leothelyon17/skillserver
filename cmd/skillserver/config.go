@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mudler/skillserver/pkg/domain"
 )
 
 const (
@@ -16,16 +18,24 @@ const (
 	envMCPStateless          = "SKILLSERVER_MCP_STATELESS"
 	envMCPEnableEventStore   = "SKILLSERVER_MCP_ENABLE_EVENT_STORE"
 	envMCPEventStoreMaxBytes = "SKILLSERVER_MCP_EVENT_STORE_MAX_BYTES"
+	envCatalogEnablePrompts  = "SKILLSERVER_CATALOG_ENABLE_PROMPTS"
+	envCatalogPromptDirs     = "SKILLSERVER_CATALOG_PROMPT_DIRS"
 )
 
 const (
-	defaultMCPTransportMode          = MCPTransportBoth
-	defaultMCPHTTPPath               = "/mcp"
-	defaultMCPSessionTimeout         = 30 * time.Minute
-	defaultMCPSessionTimeoutString   = "30m"
-	defaultMCPStateless              = false
-	defaultMCPEnableEventStore       = true
-	defaultMCPEventStoreMaxBytes int = 10 * 1024 * 1024
+	defaultMCPTransportMode            = MCPTransportBoth
+	defaultMCPHTTPPath                 = "/mcp"
+	defaultMCPSessionTimeout           = 30 * time.Minute
+	defaultMCPSessionTimeoutString     = "30m"
+	defaultMCPStateless                = false
+	defaultMCPEnableEventStore         = true
+	defaultMCPEventStoreMaxBytes   int = 10 * 1024 * 1024
+	defaultCatalogEnablePrompts        = true
+)
+
+var (
+	defaultCatalogPromptDirectoryAllowlist = domain.DefaultPromptDirectoryAllowlist()
+	defaultCatalogPromptDirectoryCSV       = strings.Join(defaultCatalogPromptDirectoryAllowlist, ",")
 )
 
 // MCPTransportMode controls which MCP transports are enabled at runtime.
@@ -57,6 +67,17 @@ type mcpRuntimeFlagValues struct {
 	stateless          bool
 	enableEventStore   bool
 	eventStoreMaxBytes int
+}
+
+// CatalogRuntimeConfig defines runtime configuration for prompt catalog behavior.
+type CatalogRuntimeConfig struct {
+	EnablePrompts            bool
+	PromptDirectoryAllowlist []string
+}
+
+type catalogRuntimeFlagValues struct {
+	enablePrompts bool
+	promptDirs    string
 }
 
 // registerMCPRuntimeFlags adds MCP runtime flags to a flag set.
@@ -98,6 +119,26 @@ func registerMCPRuntimeFlags(fs *flag.FlagSet) *mcpRuntimeFlagValues {
 		"mcp-event-store-max-bytes",
 		defaultMCPEventStoreMaxBytes,
 		"Max bytes for MCP in-memory event store (env: SKILLSERVER_MCP_EVENT_STORE_MAX_BYTES)",
+	)
+
+	return values
+}
+
+// registerCatalogRuntimeFlags adds catalog runtime flags to a flag set.
+func registerCatalogRuntimeFlags(fs *flag.FlagSet) *catalogRuntimeFlagValues {
+	values := &catalogRuntimeFlagValues{}
+
+	fs.BoolVar(
+		&values.enablePrompts,
+		"catalog-enable-prompts",
+		defaultCatalogEnablePrompts,
+		"Enable prompt catalog classification/indexing (env: SKILLSERVER_CATALOG_ENABLE_PROMPTS)",
+	)
+	fs.StringVar(
+		&values.promptDirs,
+		"catalog-prompt-dirs",
+		defaultCatalogPromptDirectoryCSV,
+		"Comma-separated prompt directory names used for prompt catalog detection (env: SKILLSERVER_CATALOG_PROMPT_DIRS)",
 	)
 
 	return values
@@ -200,6 +241,87 @@ func parseMCPRuntimeConfig(
 		EnableEventStore:   enableEventStore,
 		EventStoreMaxBytes: eventStoreMaxBytes,
 	}, nil
+}
+
+// parseCatalogRuntimeConfig resolves and validates prompt catalog runtime config with precedence:
+// flags > environment variables > defaults.
+func parseCatalogRuntimeConfig(
+	fs *flag.FlagSet,
+	flagValues *catalogRuntimeFlagValues,
+	lookupEnv func(string) (string, bool),
+) (CatalogRuntimeConfig, error) {
+	if fs == nil {
+		return CatalogRuntimeConfig{}, fmt.Errorf("flag set is required")
+	}
+	if flagValues == nil {
+		return CatalogRuntimeConfig{}, fmt.Errorf("flag values are required")
+	}
+
+	enablePrompts, err := resolveBoolConfigValue(
+		fs,
+		"catalog-enable-prompts",
+		flagValues.enablePrompts,
+		envCatalogEnablePrompts,
+		defaultCatalogEnablePrompts,
+		lookupEnv,
+	)
+	if err != nil {
+		return CatalogRuntimeConfig{}, err
+	}
+
+	promptDirsRaw, promptDirsSource := resolveStringConfigValue(
+		fs,
+		"catalog-prompt-dirs",
+		flagValues.promptDirs,
+		envCatalogPromptDirs,
+		defaultCatalogPromptDirectoryCSV,
+		lookupEnv,
+	)
+	promptDirs, err := parseCatalogPromptDirectoryAllowlist(promptDirsRaw)
+	if err != nil {
+		return CatalogRuntimeConfig{}, fmt.Errorf("%s: %w", promptDirsSource, err)
+	}
+
+	return CatalogRuntimeConfig{
+		EnablePrompts:            enablePrompts,
+		PromptDirectoryAllowlist: promptDirs,
+	}, nil
+}
+
+func parseCatalogPromptDirectoryAllowlist(raw string) ([]string, error) {
+	parts := strings.Split(raw, ",")
+	normalized := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+
+	for _, part := range parts {
+		original := strings.TrimSpace(part)
+		if original == "" {
+			continue
+		}
+
+		value := strings.ToLower(strings.Trim(original, "/"))
+		if value == "" {
+			return nil, fmt.Errorf("catalog prompt directories contain an empty directory value")
+		}
+		if value == "." || value == ".." {
+			return nil, fmt.Errorf("catalog prompt directory %q is not allowed", original)
+		}
+		if strings.ContainsAny(value, `/\`) {
+			return nil, fmt.Errorf("catalog prompt directory %q must be a single directory name", original)
+		}
+
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+
+	if len(normalized) == 0 {
+		return nil, fmt.Errorf("catalog prompt directories must include at least one directory name")
+	}
+
+	return normalized, nil
 }
 
 func parseMCPTransportMode(raw string) (MCPTransportMode, error) {

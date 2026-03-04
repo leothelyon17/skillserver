@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -161,6 +162,88 @@ func TestMCPConfig_InvalidEventStoreMaxBytes(t *testing.T) {
 	}
 }
 
+func TestCatalogConfig_Defaults(t *testing.T) {
+	cfg, err := parseCatalogConfigForTest(nil, nil)
+	if err != nil {
+		t.Fatalf("expected defaults to parse, got error: %v", err)
+	}
+
+	if cfg.EnablePrompts != defaultCatalogEnablePrompts {
+		t.Fatalf("expected default enable prompts %v, got %v", defaultCatalogEnablePrompts, cfg.EnablePrompts)
+	}
+	if !reflect.DeepEqual(cfg.PromptDirectoryAllowlist, defaultCatalogPromptDirectoryAllowlist) {
+		t.Fatalf("expected default prompt dirs %v, got %v", defaultCatalogPromptDirectoryAllowlist, cfg.PromptDirectoryAllowlist)
+	}
+}
+
+func TestCatalogConfig_EnvOverrides(t *testing.T) {
+	env := map[string]string{
+		envCatalogEnablePrompts: "false",
+		envCatalogPromptDirs:    " prompts , /agents/ , prompt , prompts ",
+	}
+
+	cfg, err := parseCatalogConfigForTest(nil, env)
+	if err != nil {
+		t.Fatalf("expected env overrides to parse, got error: %v", err)
+	}
+
+	if cfg.EnablePrompts {
+		t.Fatalf("expected env enable prompts false")
+	}
+	expectedDirs := []string{"prompts", "agents", "prompt"}
+	if !reflect.DeepEqual(cfg.PromptDirectoryAllowlist, expectedDirs) {
+		t.Fatalf("expected prompt dirs %v, got %v", expectedDirs, cfg.PromptDirectoryAllowlist)
+	}
+}
+
+func TestCatalogConfig_FlagPrecedence(t *testing.T) {
+	env := map[string]string{
+		envCatalogEnablePrompts: "true",
+		envCatalogPromptDirs:    "prompts,agents",
+	}
+	args := []string{
+		"--catalog-enable-prompts=false",
+		"--catalog-prompt-dirs=agent,prompt",
+	}
+
+	cfg, err := parseCatalogConfigForTest(args, env)
+	if err != nil {
+		t.Fatalf("expected flags to override env values, got error: %v", err)
+	}
+
+	if cfg.EnablePrompts {
+		t.Fatalf("expected enable prompts false from flag")
+	}
+	expectedDirs := []string{"agent", "prompt"}
+	if !reflect.DeepEqual(cfg.PromptDirectoryAllowlist, expectedDirs) {
+		t.Fatalf("expected prompt dirs %v, got %v", expectedDirs, cfg.PromptDirectoryAllowlist)
+	}
+}
+
+func TestCatalogConfig_InvalidPromptDirs(t *testing.T) {
+	_, err := parseCatalogConfigForTest(nil, map[string]string{
+		envCatalogPromptDirs: "prompts,nested/path",
+	})
+	if err == nil {
+		t.Fatalf("expected invalid prompt dirs error, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be a single directory name") {
+		t.Fatalf("expected actionable prompt dirs validation error, got: %v", err)
+	}
+}
+
+func TestCatalogConfig_EmptyPromptDirs(t *testing.T) {
+	_, err := parseCatalogConfigForTest(nil, map[string]string{
+		envCatalogPromptDirs: " , ",
+	})
+	if err == nil {
+		t.Fatalf("expected empty prompt dirs error, got nil")
+	}
+	if !strings.Contains(err.Error(), "must include at least one directory name") {
+		t.Fatalf("expected empty prompt dirs validation error, got: %v", err)
+	}
+}
+
 func parseMCPConfigForTest(args []string, env map[string]string) (MCPRuntimeConfig, error) {
 	fs := flag.NewFlagSet("mcp-config-test", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -171,6 +254,21 @@ func parseMCPConfigForTest(args []string, env map[string]string) (MCPRuntimeConf
 	}
 
 	return parseMCPRuntimeConfig(fs, flags, func(key string) (string, bool) {
+		value, ok := env[key]
+		return value, ok
+	})
+}
+
+func parseCatalogConfigForTest(args []string, env map[string]string) (CatalogRuntimeConfig, error) {
+	fs := flag.NewFlagSet("catalog-config-test", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	flags := registerCatalogRuntimeFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return CatalogRuntimeConfig{}, err
+	}
+
+	return parseCatalogRuntimeConfig(fs, flags, func(key string) (string, bool) {
 		value, ok := env[key]
 		return value, ok
 	})

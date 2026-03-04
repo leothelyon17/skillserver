@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -119,6 +120,124 @@ func searchSkills(ctx context.Context, req *mcp.CallToolRequest, input SearchSki
 	}
 
 	return nil, SearchSkillsOutput{Results: results}, nil
+}
+
+// ListCatalogInput is the input for list_catalog tool.
+type ListCatalogInput struct {
+	Classifier string `json:"classifier,omitempty" jsonschema:"Optional catalog classifier filter ('skill' or 'prompt')"`
+}
+
+// ListCatalogOutput is the output for list_catalog tool.
+type ListCatalogOutput struct {
+	Items []CatalogItemInfo `json:"items"`
+}
+
+// SearchCatalogInput is the input for search_catalog tool.
+type SearchCatalogInput struct {
+	Query      string `json:"query" jsonschema:"The search query"`
+	Classifier string `json:"classifier,omitempty" jsonschema:"Optional catalog classifier filter ('skill' or 'prompt')"`
+}
+
+// SearchCatalogOutput is the output for search_catalog tool.
+type SearchCatalogOutput struct {
+	Results []CatalogItemInfo `json:"results"`
+}
+
+// CatalogItemInfo represents a classifier-aware catalog item in MCP responses.
+type CatalogItemInfo struct {
+	ID            string                   `json:"id"`
+	Classifier    domain.CatalogClassifier `json:"classifier"`
+	Name          string                   `json:"name"`
+	Description   string                   `json:"description,omitempty"`
+	Content       string                   `json:"content,omitempty"`
+	ParentSkillID string                   `json:"parent_skill_id,omitempty"`
+	ResourcePath  string                   `json:"resource_path,omitempty"`
+	ReadOnly      bool                     `json:"read_only"`
+}
+
+// listCatalog lists unified catalog items with an optional classifier filter.
+func listCatalog(ctx context.Context, req *mcp.CallToolRequest, input ListCatalogInput, manager domain.SkillManager) (
+	*mcp.CallToolResult,
+	ListCatalogOutput,
+	error,
+) {
+	classifier, err := parseCatalogClassifierFilter(input.Classifier)
+	if err != nil {
+		return nil, ListCatalogOutput{}, err
+	}
+
+	items, err := manager.ListCatalogItems()
+	if err != nil {
+		return nil, ListCatalogOutput{}, fmt.Errorf("failed to list catalog items: %w", err)
+	}
+
+	if classifier != nil {
+		filtered := make([]domain.CatalogItem, 0, len(items))
+		for _, item := range items {
+			if item.Classifier == *classifier {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+
+	return nil, ListCatalogOutput{Items: buildCatalogItemInfos(items)}, nil
+}
+
+// searchCatalog searches unified catalog items with an optional classifier filter.
+func searchCatalog(ctx context.Context, req *mcp.CallToolRequest, input SearchCatalogInput, manager domain.SkillManager) (
+	*mcp.CallToolResult,
+	SearchCatalogOutput,
+	error,
+) {
+	query := strings.TrimSpace(input.Query)
+	if query == "" {
+		return nil, SearchCatalogOutput{}, fmt.Errorf("query is required")
+	}
+
+	classifier, err := parseCatalogClassifierFilter(input.Classifier)
+	if err != nil {
+		return nil, SearchCatalogOutput{}, err
+	}
+
+	items, err := manager.SearchCatalogItems(query, classifier)
+	if err != nil {
+		return nil, SearchCatalogOutput{}, fmt.Errorf("failed to search catalog items: %w", err)
+	}
+
+	return nil, SearchCatalogOutput{Results: buildCatalogItemInfos(items)}, nil
+}
+
+func parseCatalogClassifierFilter(raw string) (*domain.CatalogClassifier, error) {
+	normalized := strings.TrimSpace(raw)
+	if normalized == "" {
+		return nil, nil
+	}
+
+	classifier, err := domain.ParseCatalogClassifier(normalized)
+	if err != nil {
+		return nil, err
+	}
+
+	return &classifier, nil
+}
+
+func buildCatalogItemInfos(items []domain.CatalogItem) []CatalogItemInfo {
+	results := make([]CatalogItemInfo, len(items))
+	for i, item := range items {
+		results[i] = CatalogItemInfo{
+			ID:            item.ID,
+			Classifier:    item.Classifier,
+			Name:          item.Name,
+			Description:   item.Description,
+			Content:       item.Content,
+			ParentSkillID: item.ParentSkillID,
+			ResourcePath:  item.ResourcePath,
+			ReadOnly:      item.ReadOnly,
+		}
+	}
+
+	return results
 }
 
 // ListSkillResourcesInput is the input for list_skill_resources tool

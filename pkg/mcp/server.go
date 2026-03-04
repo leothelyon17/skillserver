@@ -59,6 +59,28 @@ func NewServer(skillManager domain.SkillManager) *Server {
 	})
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "list_catalog",
+		Description: "List unified catalog items (skills and prompts) with an optional classifier filter ('skill' or 'prompt')",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input ListCatalogInput) (
+		*mcp.CallToolResult,
+		ListCatalogOutput,
+		error,
+	) {
+		return listCatalog(ctx, req, input, skillManager)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "search_catalog",
+		Description: "Search unified catalog items by query string with an optional classifier filter ('skill' or 'prompt')",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input SearchCatalogInput) (
+		*mcp.CallToolResult,
+		SearchCatalogOutput,
+		error,
+	) {
+		return searchCatalog(ctx, req, input, skillManager)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list_skill_resources",
 		Description: "List all resources in a skill, including scripts, references, prompts, assets, and imported resources under imports/ paths",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input ListSkillResourcesInput) (

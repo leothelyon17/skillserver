@@ -12,7 +12,7 @@ import (
 )
 
 func TestMCPServer_StdioRegression(t *testing.T) {
-	t.Run("registers legacy stdio tool set", func(t *testing.T) {
+	t.Run("registers legacy and catalog stdio tool set", func(t *testing.T) {
 		server := NewServer(newFakeSkillManager())
 		session, cleanup := connectMCPClientSession(t, server)
 		defer cleanup()
@@ -26,6 +26,8 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 			"list_skills",
 			"read_skill",
 			"search_skills",
+			"list_catalog",
+			"search_catalog",
 			"list_skill_resources",
 			"read_skill_resource",
 			"get_skill_resource_info",
@@ -98,6 +100,159 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		content, _ := readStructured["content"].(string)
 		if content != manager.skill.Content {
 			t.Fatalf("expected read content %q, got %q", manager.skill.Content, content)
+		}
+	})
+
+	t.Run("invokes catalog tools end-to-end with classifier filtering", func(t *testing.T) {
+		manager := newFakeSkillManager()
+		server := NewServer(manager)
+		session, cleanup := connectMCPClientSession(t, server)
+		defer cleanup()
+
+		listResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "list_catalog",
+		})
+		if err != nil {
+			t.Fatalf("list_catalog call failed: %v", err)
+		}
+		if listResult.IsError {
+			t.Fatalf("list_catalog returned tool error")
+		}
+
+		listStructured, ok := listResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected list_catalog structured content map, got %T", listResult.StructuredContent)
+		}
+
+		rawItems, ok := listStructured["items"].([]any)
+		if !ok {
+			t.Fatalf("expected items array, got %T", listStructured["items"])
+		}
+		if len(rawItems) != len(manager.catalogItems) {
+			t.Fatalf("expected %d catalog items, got %d", len(manager.catalogItems), len(rawItems))
+		}
+
+		promptItem := findCatalogItemByClassifier(t, rawItems, string(domain.CatalogClassifierPrompt))
+		if parentSkillID, _ := promptItem["parent_skill_id"].(string); parentSkillID != "sample-skill" {
+			t.Fatalf("expected prompt parent_skill_id sample-skill, got %q", parentSkillID)
+		}
+		if resourcePath, _ := promptItem["resource_path"].(string); resourcePath != "imports/prompts/system.md" {
+			t.Fatalf("expected prompt resource_path imports/prompts/system.md, got %q", resourcePath)
+		}
+
+		filteredResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "list_catalog",
+			Arguments: map[string]any{
+				"classifier": "Prompt",
+			},
+		})
+		if err != nil {
+			t.Fatalf("list_catalog with classifier call failed: %v", err)
+		}
+		if filteredResult.IsError {
+			t.Fatalf("list_catalog with classifier returned tool error")
+		}
+
+		filteredStructured, ok := filteredResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected filtered list_catalog structured content map, got %T", filteredResult.StructuredContent)
+		}
+
+		filteredItems, ok := filteredStructured["items"].([]any)
+		if !ok {
+			t.Fatalf("expected filtered items array, got %T", filteredStructured["items"])
+		}
+		if len(filteredItems) != 1 {
+			t.Fatalf("expected 1 filtered catalog item, got %d", len(filteredItems))
+		}
+		filteredItem, ok := filteredItems[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected filtered item object, got %T", filteredItems[0])
+		}
+		filteredClassifier, _ := filteredItem["classifier"].(string)
+		if filteredClassifier != string(domain.CatalogClassifierPrompt) {
+			t.Fatalf("expected filtered classifier %q, got %q", domain.CatalogClassifierPrompt, filteredClassifier)
+		}
+
+		searchResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "search_catalog",
+			Arguments: map[string]any{
+				"query":      "System Prompt",
+				"classifier": "prompt",
+			},
+		})
+		if err != nil {
+			t.Fatalf("search_catalog call failed: %v", err)
+		}
+		if searchResult.IsError {
+			t.Fatalf("search_catalog returned tool error")
+		}
+
+		searchStructured, ok := searchResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected search_catalog structured content map, got %T", searchResult.StructuredContent)
+		}
+
+		rawResults, ok := searchStructured["results"].([]any)
+		if !ok {
+			t.Fatalf("expected search results array, got %T", searchStructured["results"])
+		}
+		if len(rawResults) != 1 {
+			t.Fatalf("expected 1 search result, got %d", len(rawResults))
+		}
+
+		searchPrompt, ok := rawResults[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected search result object, got %T", rawResults[0])
+		}
+		if classifier, _ := searchPrompt["classifier"].(string); classifier != string(domain.CatalogClassifierPrompt) {
+			t.Fatalf("expected search result classifier %q, got %q", domain.CatalogClassifierPrompt, classifier)
+		}
+	})
+
+	t.Run("returns tool errors for invalid catalog inputs", func(t *testing.T) {
+		server := NewServer(newFakeSkillManager())
+		session, cleanup := connectMCPClientSession(t, server)
+		defer cleanup()
+
+		invalidListResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "list_catalog",
+			Arguments: map[string]any{
+				"classifier": "skills",
+			},
+		})
+		if err != nil {
+			t.Fatalf("list_catalog invalid classifier call failed: %v", err)
+		}
+		if !invalidListResult.IsError {
+			t.Fatalf("expected list_catalog invalid classifier call to return tool error")
+		}
+
+		invalidSearchResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "search_catalog",
+			Arguments: map[string]any{
+				"query":      "sample",
+				"classifier": "skills",
+			},
+		})
+		if err != nil {
+			t.Fatalf("search_catalog invalid classifier call failed: %v", err)
+		}
+		if !invalidSearchResult.IsError {
+			t.Fatalf("expected search_catalog invalid classifier call to return tool error")
+		}
+
+		missingQueryResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "search_catalog",
+			Arguments: map[string]any{
+				"query": "   ",
+			},
+		})
+		if err != nil {
+			t.Fatalf("search_catalog missing query call failed: %v", err)
+		}
+		if !missingQueryResult.IsError {
+			t.Fatalf("expected search_catalog missing query call to return tool error")
 		}
 	})
 
@@ -233,6 +388,24 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 	})
 }
 
+func findCatalogItemByClassifier(t *testing.T, items []any, classifier string) map[string]any {
+	t.Helper()
+
+	for _, rawItem := range items {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		value, _ := item["classifier"].(string)
+		if value == classifier {
+			return item
+		}
+	}
+
+	t.Fatalf("expected catalog item with classifier %q", classifier)
+	return nil
+}
+
 func connectMCPClientSession(t *testing.T, server *Server) (*mcpsdk.ClientSession, func()) {
 	t.Helper()
 
@@ -260,6 +433,7 @@ func connectMCPClientSession(t *testing.T, server *Server) (*mcpsdk.ClientSessio
 
 type fakeSkillManager struct {
 	skill                 domain.Skill
+	catalogItems          []domain.CatalogItem
 	resources             []domain.SkillResource
 	resourceContentByPath map[string]domain.ResourceContent
 	resourceInfoByPath    map[string]domain.SkillResource
@@ -319,6 +493,26 @@ func newFakeSkillManager() *fakeSkillManager {
 				Description: "Sample skill used for MCP regression tests",
 			},
 		},
+		catalogItems: []domain.CatalogItem{
+			{
+				ID:          domain.BuildSkillCatalogItemID("sample-skill"),
+				Classifier:  domain.CatalogClassifierSkill,
+				Name:        "sample-skill",
+				Description: "Sample skill used for MCP regression tests",
+				Content:     "# Sample Skill\n\nSample skill content.",
+				ReadOnly:    false,
+			},
+			{
+				ID:            domain.BuildPromptCatalogItemID("sample-skill", "imports/prompts/system.md"),
+				Classifier:    domain.CatalogClassifierPrompt,
+				Name:          "system.md",
+				Description:   "Sample skill used for MCP regression tests",
+				Content:       "# System Prompt",
+				ParentSkillID: "sample-skill",
+				ResourcePath:  "imports/prompts/system.md",
+				ReadOnly:      true,
+			},
+		},
 		resources:             resources,
 		resourceContentByPath: resourceContentByPath,
 		resourceInfoByPath:    resourceInfoByPath,
@@ -348,6 +542,28 @@ func (m *fakeSkillManager) SearchSkills(query string) ([]domain.Skill, error) {
 
 func (m *fakeSkillManager) RebuildIndex() error {
 	return nil
+}
+
+func (m *fakeSkillManager) ListCatalogItems() ([]domain.CatalogItem, error) {
+	items := make([]domain.CatalogItem, len(m.catalogItems))
+	copy(items, m.catalogItems)
+	return items, nil
+}
+
+func (m *fakeSkillManager) SearchCatalogItems(query string, classifier *domain.CatalogClassifier) ([]domain.CatalogItem, error) {
+	items := make([]domain.CatalogItem, 0, len(m.catalogItems))
+	for _, item := range m.catalogItems {
+		if classifier != nil && item.Classifier != *classifier {
+			continue
+		}
+		if strings.Contains(item.Name, query) ||
+			strings.Contains(item.Description, query) ||
+			strings.Contains(item.Content, query) ||
+			strings.Contains(item.ResourcePath, query) {
+			items = append(items, item)
+		}
+	}
+	return items, nil
 }
 
 func (m *fakeSkillManager) ListSkillResources(skillID string) ([]domain.SkillResource, error) {

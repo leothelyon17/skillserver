@@ -66,6 +66,8 @@ func NewServer(
 
 	// API routes
 	api := e.Group("/api")
+	api.GET("/catalog", server.listCatalog)
+	api.GET("/catalog/search", server.searchCatalog)
 	api.GET("/skills", server.listSkills)
 	api.GET("/skills/:name", server.getSkill)
 	api.GET("/skills/by-id/:repo/:name", server.getSkill)
