@@ -27,6 +27,7 @@ var _ = Describe("Catalog Builder Integration", func() {
 	})
 
 	AfterEach(func() {
+		Expect(manager.Close()).To(Succeed())
 		Expect(os.RemoveAll(tempDir)).To(Succeed())
 	})
 
