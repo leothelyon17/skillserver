@@ -581,90 +581,24 @@ func (s *Server) loadCatalogItems(
 	classifier *domain.CatalogClassifier,
 ) ([]domain.CatalogItem, error) {
 	normalizedQuery := strings.TrimSpace(query)
-	if s.catalogMetadataService == nil {
-		if normalizedQuery == "" {
-			return s.skillManager.ListCatalogItems()
-		}
-		return s.skillManager.SearchCatalogItems(normalizedQuery, classifier)
-	}
-
-	items, err := s.skillManager.ListCatalogItems()
-	if err != nil {
-		return nil, err
-	}
-	if classifier != nil {
-		items = filterCatalogItemsByClassifier(items, *classifier)
-	}
-
-	items = s.applyCatalogMetadataOverlays(ctx, items)
-	if normalizedQuery == "" {
-		return items, nil
-	}
-
-	return filterCatalogItemsByQuery(items, normalizedQuery), nil
-}
-
-func filterCatalogItemsByClassifier(
-	items []domain.CatalogItem,
-	classifier domain.CatalogClassifier,
-) []domain.CatalogItem {
-	filtered := make([]domain.CatalogItem, 0, len(items))
-	for _, item := range items {
-		if item.Classifier == classifier {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered
-}
-
-func (s *Server) applyCatalogMetadataOverlays(
-	ctx context.Context,
-	items []domain.CatalogItem,
-) []domain.CatalogItem {
-	if s.catalogMetadataService == nil || len(items) == 0 {
-		return items
-	}
-
-	enriched := make([]domain.CatalogItem, len(items))
-	copy(enriched, items)
-
-	for index := range enriched {
-		itemID := strings.TrimSpace(enriched[index].ID)
-		if itemID == "" {
-			continue
-		}
-
-		view, err := s.catalogMetadataService.Get(ctx, itemID)
+	if s.catalogMetadataService != nil {
+		items, err := s.catalogMetadataService.List(ctx, domain.CatalogEffectiveListFilter{
+			Classifier: classifier,
+		})
 		if err != nil {
-			continue
+			return nil, err
 		}
-		if !catalogMetadataOverlayExists(view.Overlay) {
-			continue
+		if normalizedQuery == "" {
+			return items, nil
 		}
 
-		enriched[index].Name = view.Effective.Name
-		enriched[index].Description = view.Effective.Description
-		enriched[index].Labels = append([]string{}, view.Effective.Labels...)
-		enriched[index].CustomMetadata = cloneCatalogMetadataMap(view.Effective.CustomMetadata)
-		enriched[index].ContentWritable = view.Effective.ContentWritable
-		enriched[index].MetadataWritable = view.Effective.MetadataWritable
-		enriched[index].ReadOnly = view.Effective.ReadOnly
+		return filterCatalogItemsByQuery(items, normalizedQuery), nil
 	}
 
-	return enriched
-}
-
-func catalogMetadataOverlayExists(overlay domain.CatalogMetadataOverlayView) bool {
-	if overlay.UpdatedAt != nil || overlay.UpdatedBy != nil {
-		return true
+	if normalizedQuery == "" {
+		return s.skillManager.ListCatalogItems()
 	}
-	if overlay.DisplayNameOverride != nil || overlay.DescriptionOverride != nil {
-		return true
-	}
-	if len(overlay.Labels) > 0 {
-		return true
-	}
-	return len(overlay.CustomMetadata) > 0
+	return s.skillManager.SearchCatalogItems(normalizedQuery, classifier)
 }
 
 func cloneCatalogMetadataMap(input map[string]any) map[string]any {

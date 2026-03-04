@@ -48,14 +48,14 @@
             <input 
                 type="text" 
                 x-model="searchQuery" 
-                @input="searchSkills()"
+                @input="queueSearchSkills()"
                 placeholder="Search skills and prompts..."
                 class="search-input pl-10 pr-20 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
                 id="search-input"
             >
             <button 
                 x-show="searchQuery"
-                @click="searchQuery = ''; searchSkills()"
+                @click="searchQuery = ''; cancelSearchDebounce(); searchSkills()"
                 class="absolute right-10 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
             >
                 <i class="fas fa-times"></i>
@@ -855,6 +855,9 @@
                 newGitRepoUrl: '',
                 editingGitRepo: { id: '', url: '' },
                 isDark: true,
+                searchDebounceHandle: null,
+                searchAbortController: null,
+                searchRequestVersion: 0,
 
                 initTheme() {
                     // Check localStorage or default to dark
@@ -978,6 +981,30 @@
                     return this.showSkills || this.showPrompts;
                 },
 
+                queueSearchSkills() {
+                    this.cancelSearchDebounce();
+                    this.searchDebounceHandle = setTimeout(() => {
+                        this.searchDebounceHandle = null;
+                        this.searchSkills();
+                    }, 250);
+                },
+
+                cancelSearchDebounce() {
+                    if (!this.searchDebounceHandle) {
+                        return;
+                    }
+                    clearTimeout(this.searchDebounceHandle);
+                    this.searchDebounceHandle = null;
+                },
+
+                cancelInFlightSearch() {
+                    if (!this.searchAbortController) {
+                        return;
+                    }
+                    this.searchAbortController.abort();
+                    this.searchAbortController = null;
+                },
+
                 isItemVisibleForClassifierFilters(item) {
                     const classifier = this.normalizeClassifier(item && item.classifier);
                     if (classifier === 'prompt') {
@@ -1097,6 +1124,9 @@
                 },
 
                 async loadSkills() {
+                    this.cancelSearchDebounce();
+                    this.searchRequestVersion += 1;
+                    this.cancelInFlightSearch();
                     this.isLoading = true;
                     try {
                         const response = await fetch('/api/catalog');
@@ -1118,24 +1148,43 @@
                 },
 
                 async searchSkills() {
+                    this.cancelSearchDebounce();
+
                     if (!this.hasVisibleClassifierSelection()) {
+                        this.searchRequestVersion += 1;
+                        this.cancelInFlightSearch();
                         this.filteredSkills = [];
+                        this.isLoading = false;
                         return;
                     }
 
                     const query = this.searchQuery.trim();
                     if (!query) {
+                        this.searchRequestVersion += 1;
+                        this.cancelInFlightSearch();
                         this.filteredSkills = this.filterCatalogItems(this.skills);
+                        this.isLoading = false;
                         return;
                     }
 
+                    const requestVersion = this.searchRequestVersion + 1;
+                    this.searchRequestVersion = requestVersion;
+                    this.cancelInFlightSearch();
+                    const controller = new AbortController();
+                    this.searchAbortController = controller;
+
                     this.isLoading = true;
                     try {
-                        const response = await fetch(this.buildCatalogSearchURL(query));
+                        const response = await fetch(this.buildCatalogSearchURL(query), {
+                            signal: controller.signal
+                        });
                         if (!response.ok) {
                             throw new Error(`HTTP ${response.status}`);
                         }
                         const results = await response.json();
+                        if (requestVersion !== this.searchRequestVersion) {
+                            return;
+                        }
                         const normalizedResults = this.filterCatalogItems(results);
 
                         // Keep UX responsive when index rebuild lags behind list updates.
@@ -1145,11 +1194,22 @@
                             this.filteredSkills = normalizedResults;
                         }
                     } catch (error) {
+                        if (error && error.name === 'AbortError') {
+                            return;
+                        }
+                        if (requestVersion !== this.searchRequestVersion) {
+                            return;
+                        }
                         console.error('Search failed:', error);
                         this.filteredSkills = this.filterCatalogItems(this.skills, query);
                         this.showToast('Search failed', 'error');
                     } finally {
-                        this.isLoading = false;
+                        if (this.searchAbortController === controller) {
+                            this.searchAbortController = null;
+                        }
+                        if (requestVersion === this.searchRequestVersion) {
+                            this.isLoading = false;
+                        }
                     }
                 },
 
