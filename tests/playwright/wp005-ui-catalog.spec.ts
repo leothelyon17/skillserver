@@ -72,6 +72,36 @@ test.describe("WP-005 unified catalog rendering and actions", () => {
     await expect(catalogCard(page, "system.md")).toBeVisible();
   });
 
+  test("filters catalog by classifier checkboxes", async ({ page }) => {
+    await openHome(page);
+
+    const showSkills = page.getByLabel("Show Skills");
+    const showPrompts = page.getByLabel("Show Prompts");
+
+    await expect(showSkills).toBeChecked();
+    await expect(showPrompts).toBeChecked();
+
+    await showPrompts.uncheck();
+    await expect(catalogCard(page, "system.md")).toHaveCount(0);
+    await expect(catalogCard(page, "legacy-skill")).toBeVisible();
+    await expect(catalogCard(page, "additive-skill")).toBeVisible();
+    await expect(page.locator(".skill-card")).toHaveCount(2);
+
+    await showSkills.uncheck();
+    await expect(page.locator(".skill-card")).toHaveCount(0);
+
+    await showPrompts.check();
+    await expect(catalogCard(page, "system.md")).toBeVisible();
+    await expect(page.locator(".skill-card")).toHaveCount(1);
+
+    await page.fill("#search-input", "legacy");
+    await expect(page.locator(".skill-card")).toHaveCount(0);
+
+    await showSkills.check();
+    await expect(catalogCard(page, "legacy-skill")).toBeVisible();
+    await expect(page.locator(".skill-card")).toHaveCount(1);
+  });
+
   test("keeps skill edit and create/delete flows stable", async ({ page }) => {
     await openHome(page);
 
@@ -119,6 +149,11 @@ test.describe("WP-005 unified catalog rendering and actions", () => {
     const tempSkillCard = catalogCard(page, tempSkillName);
     await expect(tempSkillCard).toBeVisible();
     await expect(tempSkillCard.locator(".catalog-classifier-badge")).toHaveText("skill");
+
+    await page.fill("#search-input", "wp005-temp");
+    await expect(tempSkillCard).toBeVisible();
+    await expect(catalogCard(page, "legacy-skill")).toHaveCount(0);
+    await page.fill("#search-input", "");
 
     await tempSkillCard.getByRole("button", { name: "Delete" }).click();
     const deleteRequest = page.waitForResponse(
