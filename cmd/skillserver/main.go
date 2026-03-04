@@ -98,6 +98,7 @@ func main() {
 	enableLogging := flag.Bool("enable-logging", defaultEnableLogging, "Enable logging to stderr (env: SKILLSERVER_ENABLE_LOGGING). Default: false (disabled to avoid interfering with MCP stdio)")
 	enableImportDiscovery := flag.Bool("enable-import-discovery", defaultEnableImportDiscovery, "Enable imported resource discovery and imports/... virtual resources (env: SKILLSERVER_ENABLE_IMPORT_DISCOVERY)")
 	mcpFlagValues := registerMCPRuntimeFlags(flag.CommandLine)
+	catalogFlagValues := registerCatalogRuntimeFlags(flag.CommandLine)
 	flag.Parse()
 
 	// Parse and validate MCP runtime config (flags > env > defaults).
@@ -105,6 +106,13 @@ func main() {
 	mcpRuntimeConfig, err := parseMCPRuntimeConfig(flag.CommandLine, mcpFlagValues, os.LookupEnv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Invalid MCP runtime configuration: %v\n", err)
+		os.Exit(2)
+	}
+
+	// Parse and validate prompt catalog runtime config (flags > env > defaults).
+	catalogRuntimeConfig, err := parseCatalogRuntimeConfig(flag.CommandLine, catalogFlagValues, os.LookupEnv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid catalog runtime configuration: %v\n", err)
 		os.Exit(2)
 	}
 
@@ -177,6 +185,18 @@ func main() {
 		log.Fatalf("Failed to initialize skill manager: %v", err)
 	}
 	skillManager.SetImportDiscoveryEnabled(*enableImportDiscovery)
+	skillManager.SetPromptCatalogEnabled(catalogRuntimeConfig.EnablePrompts)
+	skillManager.SetPromptCatalogDirectoryAllowlist(catalogRuntimeConfig.PromptDirectoryAllowlist)
+	if err := skillManager.RebuildIndex(); err != nil {
+		log.Fatalf("Failed to apply runtime catalog configuration: %v", err)
+	}
+	if *enableLogging {
+		log.Printf(
+			"Resolved catalog runtime options: enable_prompts=%t prompt_dirs=%s",
+			catalogRuntimeConfig.EnablePrompts,
+			strings.Join(catalogRuntimeConfig.PromptDirectoryAllowlist, ","),
+		)
+	}
 
 	// Get FileSystemManager reference for handlers
 	fsManager := skillManager

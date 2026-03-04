@@ -49,6 +49,31 @@ type UpdateSkillRequest struct {
 	AllowedTools  string            `json:"allowed-tools,omitempty"`
 }
 
+// CatalogItemResponse represents a catalog entry in API responses.
+type CatalogItemResponse struct {
+	ID            string                   `json:"id"`
+	Classifier    domain.CatalogClassifier `json:"classifier"`
+	Name          string                   `json:"name"`
+	Description   string                   `json:"description,omitempty"`
+	Content       string                   `json:"content,omitempty"`
+	ParentSkillID string                   `json:"parent_skill_id,omitempty"`
+	ResourcePath  string                   `json:"resource_path,omitempty"`
+	ReadOnly      bool                     `json:"read_only"`
+}
+
+func catalogResponseFromItem(item domain.CatalogItem) CatalogItemResponse {
+	return CatalogItemResponse{
+		ID:            item.ID,
+		Classifier:    item.Classifier,
+		Name:          item.Name,
+		Description:   item.Description,
+		Content:       item.Content,
+		ParentSkillID: item.ParentSkillID,
+		ResourcePath:  item.ResourcePath,
+		ReadOnly:      item.ReadOnly,
+	}
+}
+
 func skillNameFromRoute(c *echo.Context) string {
 	repo := strings.TrimSpace(c.Param("repo"))
 	name := strings.TrimSpace(c.Param("name"))
@@ -414,6 +439,59 @@ func (s *Server) searchSkills(c *echo.Context) error {
 			responses[i].Metadata = skill.Metadata.Metadata
 			responses[i].AllowedTools = skill.Metadata.AllowedTools
 		}
+	}
+
+	return c.JSON(http.StatusOK, responses)
+}
+
+// listCatalog lists all catalog items (skills and prompts).
+func (s *Server) listCatalog(c *echo.Context) error {
+	items, err := s.skillManager.ListCatalogItems()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	responses := make([]CatalogItemResponse, len(items))
+	for i, item := range items {
+		responses[i] = catalogResponseFromItem(item)
+	}
+
+	return c.JSON(http.StatusOK, responses)
+}
+
+// searchCatalog searches catalog items by query with an optional classifier filter.
+func (s *Server) searchCatalog(c *echo.Context) error {
+	query := strings.TrimSpace(c.QueryParam("q"))
+	if query == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "query parameter 'q' is required",
+		})
+	}
+
+	var classifier *domain.CatalogClassifier
+	classifierRaw := strings.TrimSpace(c.QueryParam("classifier"))
+	if classifierRaw != "" {
+		parsedClassifier, err := domain.ParseCatalogClassifier(classifierRaw)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": err.Error(),
+			})
+		}
+		classifier = &parsedClassifier
+	}
+
+	items, err := s.skillManager.SearchCatalogItems(query, classifier)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	responses := make([]CatalogItemResponse, len(items))
+	for i, item := range items {
+		responses[i] = catalogResponseFromItem(item)
 	}
 
 	return c.JSON(http.StatusOK, responses)

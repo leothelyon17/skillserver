@@ -6,7 +6,7 @@ An MCP/REST server with WebUI serving as a centralized skills database for AI Ag
 
 ## Features
 
-- **MCP Server**: Provides tools for AI agents to list, search, read skills, and access skill resources
+- **MCP Server**: Provides tools for AI agents to list/search/read skills, query unified catalog items, and access skill resources
 - **Web Interface**: Local web UI for creating, editing, and organizing skills with resource management
 - **Git Synchronization**: Automatically syncs with Git repositories (skills from repos are read-only)
 - **Full-Text Search**: Powered by Bleve for fast skill searching
@@ -53,6 +53,8 @@ SkillServer supports both **environment variables** and **command-line flags** w
 | `SKILLSERVER_MCP_STATELESS` | (none) | `false` | Enable stateless MCP HTTP mode |
 | `SKILLSERVER_MCP_ENABLE_EVENT_STORE` | (none) | `true` | Enable in-memory MCP event store for replay support |
 | `SKILLSERVER_MCP_EVENT_STORE_MAX_BYTES` | (none) | `10485760` | Max bytes for MCP in-memory event store (10 MiB) |
+| `SKILLSERVER_CATALOG_ENABLE_PROMPTS` | (none) | `true` | Enable prompt catalog classification/indexing in unified catalog APIs/tools |
+| `SKILLSERVER_CATALOG_PROMPT_DIRS` | (none) | `agent,agents,prompt,prompts` | Comma-separated directory names used for prompt catalog detection |
 | `SKILLSERVER_ENABLE_IMPORT_DISCOVERY` | (none) | `true` | Enable imported resource discovery and `imports/...` virtual read paths |
 
 ### Command-Line Flags
@@ -69,6 +71,8 @@ SkillServer supports both **environment variables** and **command-line flags** w
 | `--mcp-stateless` | `false` | Enable stateless MCP HTTP mode |
 | `--mcp-enable-event-store` | `true` | Enable in-memory MCP event store |
 | `--mcp-event-store-max-bytes` | `10485760` | Max bytes for in-memory MCP event store |
+| `--catalog-enable-prompts` | `true` | Enable prompt catalog classification/indexing |
+| `--catalog-prompt-dirs` | `agent,agents,prompt,prompts` | Comma-separated directory names used for prompt catalog detection |
 | `--enable-import-discovery` | `true` | Enable imported resource discovery and `imports/...` virtual read paths |
 
 ## Usage
@@ -102,6 +106,15 @@ export SKILLSERVER_ENABLE_LOGGING=true
 # Or using environment variable
 export SKILLSERVER_ENABLE_IMPORT_DISCOVERY=false
 ./skillserver
+
+# Roll back unified catalog to skill-only behavior
+./skillserver --catalog-enable-prompts=false
+# Or using environment variable
+export SKILLSERVER_CATALOG_ENABLE_PROMPTS=false
+./skillserver
+
+# Override prompt classification directories (must be single directory names)
+./skillserver --catalog-prompt-dirs "agent,agents,prompts"
 ```
 
 ### Transport Mode Examples
@@ -436,6 +449,13 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 - `DELETE /api/skills/:name` - Delete skill (blocks read-only skills)
 - `GET /api/skills/search?q=query` - Search skills
 
+#### Catalog (ADR-003, additive)
+- `GET /api/catalog` - List unified catalog items (`skill` + `prompt`) with fields `id`, `classifier`, `name`, `description`, `content`, `parent_skill_id`, `resource_path`, `read_only`
+- `GET /api/catalog/search?q=query&classifier=skill|prompt` - Search unified catalog items with optional classifier filter
+- `classifier` is case-insensitive at input and normalized to `skill` or `prompt` in responses
+- Invalid classifier values return `400` (`invalid catalog classifier ...`)
+- Empty or missing `q` for `/api/catalog/search` returns `400` (`query parameter 'q' is required`)
+
 #### Resources
 - `GET /api/skills/:name/resources` - List resources with legacy buckets (`scripts`, `references`, `assets`) plus additive groups (`prompts`, `imported`, `groups`) when present; each resource includes `origin` and `writable`
 - `GET /api/skills/:name/resources/*` - Get/download a resource file
@@ -450,10 +470,33 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 - `read_skill` - Read the full content of a skill by its ID
 - `search_skills` - Search for skills by query string
 
+#### Catalog (ADR-003, additive)
+- `list_catalog` - List unified catalog items with optional `classifier` filter (`skill` or `prompt`)
+- `search_catalog` - Search unified catalog items by `query`, with optional `classifier` filter (`skill` or `prompt`)
+- Optional migration strategy:
+  - Existing clients can keep using `list_skills`/`search_skills`
+  - New mixed-item clients should adopt `list_catalog`/`search_catalog` for classifier-aware behavior
+
 #### Resources
 - `list_skill_resources` - List resources in a skill, including additive prompt/imported resources; each item includes `origin` and `writable`
 - `read_skill_resource` - Read the content of a resource file (UTF-8 for text, base64 for binary, max 1MB), including `imports/...` paths when import discovery is enabled
 - `get_skill_resource_info` - Get metadata (`type`, `origin`, `writable`, size, mime) without reading content
+
+## Unified Catalog Rollout and Rollback (ADR-003)
+
+Runtime controls:
+- Flag: `--catalog-enable-prompts=true|false`
+- Env: `SKILLSERVER_CATALOG_ENABLE_PROMPTS=true|false`
+- Flag: `--catalog-prompt-dirs=agent,agents,prompt,prompts`
+- Env: `SKILLSERVER_CATALOG_PROMPT_DIRS=agent,agents,prompt,prompts`
+
+Rollback options:
+- Prompt kill-switch rollback to skill-only catalog:
+  - `./skillserver --catalog-enable-prompts=false`
+- Prompt directory rollback to known-safe defaults:
+  - `./skillserver --catalog-prompt-dirs "agent,agents,prompt,prompts"`
+
+Detailed rollout/rollback runbook: [`docs/operations/unified-catalog-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/unified-catalog-rollout-rollback.md)
 
 ## Dynamic Resource Discovery and Rollout Control
 
@@ -494,6 +537,7 @@ The web UI provides a user-friendly interface for managing skills:
 ### Features
 - **Read-Only Indicators**: Skills from git repositories are clearly marked and protected
 - **Real-time Validation**: Skill name validation according to Agent Skills spec
+- **Unified Catalog Tiles**: Mixed `skill`/`prompt` tiles with classifier badges and prompt read-only guidance
 - **Resource Browser**: Dynamic grouped view for legacy and additive resource groups (`prompts`, `imported`)
 - **Tabbed Interface**: Switch between skill content and resources
 

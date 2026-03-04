@@ -14,6 +14,8 @@ type SkillManager interface {
 	ListSkills() ([]Skill, error)
 	ReadSkill(name string) (*Skill, error)
 	SearchSkills(query string) ([]Skill, error)
+	ListCatalogItems() ([]CatalogItem, error)
+	SearchCatalogItems(query string, classifier *CatalogClassifier) ([]CatalogItem, error)
 	RebuildIndex() error
 
 	// Resource management methods
@@ -24,10 +26,12 @@ type SkillManager interface {
 
 // FileSystemManager implements SkillManager using the file system
 type FileSystemManager struct {
-	skillsDir             string
-	searcher              *Searcher
-	gitRepos              []string // List of git repo directory names (for read-only detection)
-	enableImportDiscovery bool
+	skillsDir                string
+	searcher                 *Searcher
+	gitRepos                 []string // List of git repo directory names (for read-only detection)
+	enableImportDiscovery    bool
+	enablePromptCatalog      bool
+	promptDirectoryAllowlist []string
 }
 
 // NewFileSystemManager creates a new FileSystemManager
@@ -42,10 +46,12 @@ func NewFileSystemManager(skillsDir string, gitRepos []string) (*FileSystemManag
 	}
 
 	manager := &FileSystemManager{
-		skillsDir:             skillsDir,
-		searcher:              searcher,
-		gitRepos:              gitRepos,
-		enableImportDiscovery: true,
+		skillsDir:                skillsDir,
+		searcher:                 searcher,
+		gitRepos:                 gitRepos,
+		enableImportDiscovery:    true,
+		enablePromptCatalog:      true,
+		promptDirectoryAllowlist: DefaultPromptDirectoryAllowlist(),
 	}
 
 	// Initial index build
@@ -291,14 +297,29 @@ func (m *FileSystemManager) SearchSkills(query string) ([]Skill, error) {
 	return skills, nil
 }
 
+// ListCatalogItems returns deterministic catalog items for all skills and qualifying prompt resources.
+func (m *FileSystemManager) ListCatalogItems() ([]CatalogItem, error) {
+	skills, err := m.ListSkills()
+	if err != nil {
+		return nil, err
+	}
+
+	return m.buildCatalogItems(skills)
+}
+
+// SearchCatalogItems searches across mixed catalog items with an optional classifier filter.
+func (m *FileSystemManager) SearchCatalogItems(query string, classifier *CatalogClassifier) ([]CatalogItem, error) {
+	return m.searcher.SearchCatalog(query, classifier)
+}
+
 // RebuildIndex rebuilds the search index
 func (m *FileSystemManager) RebuildIndex() error {
-	skills, err := m.ListSkills()
+	items, err := m.ListCatalogItems()
 	if err != nil {
 		return err
 	}
 
-	return m.searcher.IndexSkills(skills)
+	return m.searcher.IndexCatalogItems(items)
 }
 
 // GetSkillsDir returns the skills directory path
@@ -314,6 +335,31 @@ func (m *FileSystemManager) UpdateGitRepos(gitRepoNames []string) {
 // SetImportDiscoveryEnabled toggles import discovery and virtual imports/... read support.
 func (m *FileSystemManager) SetImportDiscoveryEnabled(enabled bool) {
 	m.enableImportDiscovery = enabled
+}
+
+// SetPromptCatalogEnabled toggles prompt catalog item classification/indexing.
+func (m *FileSystemManager) SetPromptCatalogEnabled(enabled bool) {
+	m.enablePromptCatalog = enabled
+}
+
+// SetPromptCatalogDirectoryAllowlist sets allowed directory names for prompt catalog detection.
+// Empty or invalid input falls back to domain defaults.
+func (m *FileSystemManager) SetPromptCatalogDirectoryAllowlist(promptDirs []string) {
+	normalized := NormalizePromptDirectoryAllowlist(promptDirs)
+	if len(normalized) == 0 {
+		normalized = DefaultPromptDirectoryAllowlist()
+	}
+	m.promptDirectoryAllowlist = append([]string(nil), normalized...)
+}
+
+// PromptCatalogDirectoryAllowlist returns a defensive copy of the prompt directory allowlist.
+func (m *FileSystemManager) PromptCatalogDirectoryAllowlist() []string {
+	if len(m.promptDirectoryAllowlist) == 0 {
+		return DefaultPromptDirectoryAllowlist()
+	}
+	copied := make([]string, len(m.promptDirectoryAllowlist))
+	copy(copied, m.promptDirectoryAllowlist)
+	return copied
 }
 
 // getSkillPath returns the full path to a skill directory given its ID

@@ -49,7 +49,7 @@
                 type="text" 
                 x-model="searchQuery" 
                 @input="searchSkills()"
-                placeholder="Search skills..."
+                placeholder="Search skills and prompts..."
                 class="search-input pl-10 pr-20 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
                 id="search-input"
             >
@@ -67,29 +67,46 @@
 
         <!-- Skills List -->
         <div class="skills-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5" x-show="!showEditor">
-            <template x-for="skill in filteredSkills" :key="skill.name">
-                <div class="skill-card bg-white dark:bg-gray-800 hover:shadow-lg dark:hover:shadow-gray-700/50" @click="editSkill(skill)">
+            <template x-for="item in filteredSkills" :key="item.id || item.name">
+                <div class="skill-card bg-white dark:bg-gray-800 hover:shadow-lg dark:hover:shadow-gray-700/50" @click="openCatalogItem(item)">
                     <div class="skill-card-header">
-                        <h3 class="text-blue-600 dark:text-blue-400" x-text="skill.name"></h3>
-                        <span x-show="skill.readOnly" class="read-only-badge bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300">
+                        <h3 class="text-blue-600 dark:text-blue-400" x-text="item.name"></h3>
+                        <div class="flex items-center gap-2">
+                            <span
+                                class="text-[11px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wide catalog-classifier-badge"
+                                :class="classifierBadgeClass(item.classifier)"
+                                x-text="normalizeClassifier(item.classifier)"
+                            ></span>
+                            <span x-show="isItemReadOnly(item) || normalizeClassifier(item.classifier) === 'prompt'" class="read-only-badge bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300">
                             <i class="fas fa-lock mr-1"></i>Read-only
                         </span>
+                        </div>
                     </div>
-                    <p x-text="skill.description || 'No description'" class="skill-description text-gray-600 dark:text-gray-400"></p>
+                    <p x-text="item.description || 'No description'" class="skill-description text-gray-600 dark:text-gray-400"></p>
+                    <p
+                        x-show="normalizeClassifier(item.classifier) === 'prompt' && item.parent_skill_id"
+                        class="text-xs text-gray-500 dark:text-gray-400 -mt-2 mb-3"
+                    >
+                        <i class="fas fa-folder-tree mr-1"></i>
+                        <span x-text="item.parent_skill_id"></span>
+                    </p>
                     <div class="skill-actions">
-                        <button @click.stop="exportSkill(skill.name)" class="btn btn-small btn-secondary">
+                        <button x-show="isSkillCatalogItem(item)" @click.stop="exportSkill(item.name)" class="btn btn-small btn-secondary">
                             <i class="fas fa-download mr-1"></i>Export
                         </button>
-                        <button x-show="!skill.readOnly" @click.stop="deleteSkill(skill.name)" class="btn btn-small btn-danger">
+                        <button x-show="isSkillCatalogItem(item) && !isItemReadOnly(item)" @click.stop="deleteSkill(item.name)" class="btn btn-small btn-danger">
                             <i class="fas fa-trash mr-1"></i>Delete
+                        </button>
+                        <button x-show="normalizeClassifier(item.classifier) === 'prompt'" @click.stop="openPromptPreview(item)" class="btn btn-small btn-secondary">
+                            <i class="fas fa-eye mr-1"></i>View
                         </button>
                     </div>
                 </div>
             </template>
             <div x-show="filteredSkills.length === 0" class="empty-state">
                 <i class="fas fa-inbox text-6xl mb-4 text-gray-300 dark:text-gray-600"></i>
-                <p class="text-xl mb-2 text-gray-900 dark:text-gray-100">No skills found</p>
-                <p class="text-gray-500 dark:text-gray-400 mb-4">Create your first skill to get started!</p>
+                <p class="text-xl mb-2 text-gray-900 dark:text-gray-100">No catalog items found</p>
+                <p class="text-gray-500 dark:text-gray-400 mb-4">Try adjusting your search or create a new skill.</p>
                 <button @click="showEditor = true; editingSkill = null; skillContent = ''; skillName = ''; skillDescription = ''; skillLicense = ''; skillCompatibility = ''; nameValidationError = ''" class="btn btn-primary">
                     <i class="fas fa-plus mr-2"></i>Create Skill
                 </button>
@@ -369,6 +386,12 @@
                     </button>
                 </div>
                 <div class="flex-1 overflow-auto p-4">
+                    <div
+                        x-show="resourceEditorModal.classifier === 'prompt'"
+                        class="mb-3 text-sm rounded border border-blue-200 bg-blue-50 px-3 py-2 text-blue-700 dark:border-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
+                    >
+                        Prompt catalog entries are read-only. Open the parent skill to edit: <span class="font-semibold" x-text="resourceEditorModal.parentSkillID || 'n/a'"></span>.
+                    </div>
                     <textarea 
                         x-model="resourceEditorModal.content"
                         :readonly="!resourceEditorModal.writable"
@@ -670,7 +693,9 @@
                     path: '',
                     name: '',
                     writable: true,
-                    origin: 'direct'
+                    origin: 'direct',
+                    classifier: '',
+                    parentSkillID: ''
                 },
                 toasts: [],
                 isLoading: false,
@@ -797,15 +822,47 @@
                     return html;
                 },
 
+                normalizeClassifier(classifier) {
+                    const value = String(classifier || '').trim().toLowerCase();
+                    if (value === 'prompt') {
+                        return 'prompt';
+                    }
+                    return 'skill';
+                },
+
+                isSkillCatalogItem(item) {
+                    return this.normalizeClassifier(item && item.classifier) === 'skill';
+                },
+
+                isItemReadOnly(item) {
+                    if (!item || typeof item !== 'object') {
+                        return false;
+                    }
+                    if (Object.prototype.hasOwnProperty.call(item, 'read_only')) {
+                        return Boolean(item.read_only);
+                    }
+                    return Boolean(item.readOnly);
+                },
+
+                classifierBadgeClass(classifier) {
+                    if (this.normalizeClassifier(classifier) === 'prompt') {
+                        return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-200';
+                    }
+                    return 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200';
+                },
+
                 async loadSkills() {
                     this.isLoading = true;
                     try {
-                        const response = await fetch('/api/skills');
+                        const response = await fetch('/api/catalog');
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
                         this.skills = await response.json();
                         this.filteredSkills = this.skills;
                     } catch (error) {
-                        console.error('Failed to load skills:', error);
-                        this.showToast('Failed to load skills', 'error');
+                        console.error('Failed to load catalog:', error);
+                        this.showToast('Failed to load catalog', 'error');
                     } finally {
                         this.isLoading = false;
                     }
@@ -819,7 +876,10 @@
 
                     this.isLoading = true;
                     try {
-                        const response = await fetch(`/api/skills/search?q=${encodeURIComponent(this.searchQuery)}`);
+                        const response = await fetch(`/api/catalog/search?q=${encodeURIComponent(this.searchQuery)}`);
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
                         this.filteredSkills = await response.json();
                     } catch (error) {
                         console.error('Search failed:', error);
@@ -842,6 +902,62 @@
                     if (skill) {
                         this.loadResources();
                     }
+                },
+
+                async openCatalogItem(item) {
+                    if (!item) {
+                        return;
+                    }
+
+                    const classifier = this.normalizeClassifier(item.classifier);
+                    if (classifier === 'prompt') {
+                        this.openPromptPreview(item);
+                        return;
+                    }
+
+                    await this.openSkillForEditing(item);
+                },
+
+                async openSkillForEditing(item) {
+                    if (!item || !item.name) {
+                        this.showToast('Cannot open skill: missing skill identifier', 'error');
+                        return;
+                    }
+
+                    this.isLoading = true;
+                    try {
+                        const response = await fetch(this.buildSkillApiPath(item.name));
+                        if (!response.ok) {
+                            const errorBody = await response.json().catch(() => null);
+                            const errorMessage = errorBody && errorBody.error
+                                ? errorBody.error
+                                : `HTTP ${response.status}`;
+                            this.showToast(`Failed to open skill: ${errorMessage}`, 'error');
+                            return;
+                        }
+
+                        const skill = await response.json();
+                        this.editSkill(skill);
+                    } catch (error) {
+                        console.error('Failed to open skill:', error);
+                        this.showToast('Failed to open skill', 'error');
+                    } finally {
+                        this.isLoading = false;
+                    }
+                },
+
+                openPromptPreview(item) {
+                    this.resourceEditorModal = {
+                        show: true,
+                        content: item.content || '',
+                        originalContent: item.content || '',
+                        path: item.resource_path || item.id || '',
+                        name: item.name || 'Prompt',
+                        writable: false,
+                        origin: this.isItemReadOnly(item) ? 'imported' : 'direct',
+                        classifier: 'prompt',
+                        parentSkillID: item.parent_skill_id || ''
+                    };
                 },
 
                 validateName() {
@@ -1152,7 +1268,9 @@
                         path: '',
                         name: '',
                         writable: true,
-                        origin: 'direct'
+                        origin: 'direct',
+                        classifier: '',
+                        parentSkillID: ''
                     };
                 },
 
@@ -1207,7 +1325,9 @@
                                 path: resource.path,
                                 name: resource.name,
                                 writable: writable,
-                                origin: this.getResourceOrigin(resource)
+                                origin: this.getResourceOrigin(resource),
+                                classifier: '',
+                                parentSkillID: ''
                             };
                         }
                     } catch (error) {
