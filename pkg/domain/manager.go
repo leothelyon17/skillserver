@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/base64"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -453,6 +454,7 @@ func (m *FileSystemManager) ListSkillResources(skillID string) ([]SkillResource,
 
 	if m.enableImportDiscovery {
 		resources = append(resources, m.listImportedSkillResources(skillPath, allowedRoot)...)
+		resources = append(resources, m.listImplicitGitPromptResources(skillPath, allowedRoot)...)
 	}
 	resources = dedupeSkillResourcesByCanonicalTarget(resources, skillPath, allowedRoot)
 	sortSkillResources(resources)
@@ -562,6 +564,124 @@ func (m *FileSystemManager) listImportedSkillResources(skillPath, allowedRoot st
 		resources = append(resources, *resource)
 	}
 
+	return resources
+}
+
+// listImplicitGitPromptResources discovers prompt files in shared git-plugin folders even
+// when SKILL.md does not explicitly import them. This matches common plugin layouts where
+// skill directories live under .../skills/<skill-name> and prompt files live under sibling
+// .../agents or .../prompts directories.
+func (m *FileSystemManager) listImplicitGitPromptResources(skillPath, allowedRoot string) []SkillResource {
+	if !m.isGitRepoPath(skillPath) {
+		return nil
+	}
+
+	candidateRoots := m.sharedPromptCandidateRoots(skillPath, allowedRoot)
+	if len(candidateRoots) == 0 {
+		return nil
+	}
+
+	resources := make([]SkillResource, 0)
+	for _, candidateRoot := range candidateRoots {
+		promptResources := listPromptResourcesInTree(candidateRoot, allowedRoot)
+		if len(promptResources) == 0 {
+			continue
+		}
+		resources = append(resources, promptResources...)
+	}
+
+	return resources
+}
+
+func (m *FileSystemManager) sharedPromptCandidateRoots(skillPath, allowedRoot string) []string {
+	canonicalAllowedRoot, err := canonicalizeExistingPath(allowedRoot)
+	if err != nil {
+		return nil
+	}
+
+	relativeSkillPath, err := filepath.Rel(canonicalAllowedRoot, skillPath)
+	if err != nil {
+		return nil
+	}
+	normalizedRelativeSkillPath := filepath.ToSlash(filepath.Clean(relativeSkillPath))
+	if normalizedRelativeSkillPath == "." || strings.HasPrefix(normalizedRelativeSkillPath, "../") {
+		return nil
+	}
+
+	segments := strings.Split(normalizedRelativeSkillPath, "/")
+	candidateRoots := make([]string, 0)
+	seenRoots := make(map[string]struct{})
+	addCandidateRoot := func(candidateRoot string) {
+		if strings.TrimSpace(candidateRoot) == "" {
+			return
+		}
+		canonicalCandidateRoot, err := canonicalizeExistingPath(candidateRoot)
+		if err != nil {
+			return
+		}
+		if !isWithinRoot(canonicalCandidateRoot, canonicalAllowedRoot) {
+			return
+		}
+		if _, seen := seenRoots[canonicalCandidateRoot]; seen {
+			return
+		}
+		seenRoots[canonicalCandidateRoot] = struct{}{}
+		candidateRoots = append(candidateRoots, canonicalCandidateRoot)
+	}
+
+	// Shared plugin prompts: .../<plugin>/skills/<skill-name> => .../<plugin>/agents|prompts
+	for idx, segment := range segments {
+		if !strings.EqualFold(segment, "skills") || idx == 0 {
+			continue
+		}
+		pluginRoot := filepath.Join(canonicalAllowedRoot, filepath.FromSlash(strings.Join(segments[:idx], "/")))
+		addCandidateRoot(filepath.Join(pluginRoot, "agents"))
+		addCandidateRoot(filepath.Join(pluginRoot, "prompts"))
+	}
+
+	// Repo-level prompt directories.
+	addCandidateRoot(filepath.Join(canonicalAllowedRoot, "agents"))
+	addCandidateRoot(filepath.Join(canonicalAllowedRoot, "prompts"))
+
+	sort.Strings(candidateRoots)
+	return candidateRoots
+}
+
+func listPromptResourcesInTree(rootPath, allowedRoot string) []SkillResource {
+	rootInfo, err := os.Stat(rootPath)
+	if err != nil || !rootInfo.IsDir() {
+		return nil
+	}
+
+	resources := make([]SkillResource, 0)
+	err = filepath.WalkDir(rootPath, func(currentPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+
+		virtualPath, err := BuildImportedVirtualPath(allowedRoot, currentPath)
+		if err != nil {
+			return nil
+		}
+		if GetResourceType(virtualPath) != ResourceTypePrompt {
+			return nil
+		}
+
+		resource, err := buildSkillResource(currentPath, virtualPath, ResourceOriginImported, false)
+		if err != nil {
+			return nil
+		}
+		resources = append(resources, *resource)
+		return nil
+	})
+	if err != nil {
+		return nil
+	}
+
+	sortSkillResources(resources)
 	return resources
 }
 
