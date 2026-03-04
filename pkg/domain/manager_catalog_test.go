@@ -222,6 +222,73 @@ No explicit shared prompt imports.
 		Expect(promptItem.ReadOnly).To(BeTrue())
 	})
 
+	It("should dedupe shared implicit prompts across multiple skills by prompt metadata", func() {
+		repoName := "demo-repo"
+		sharedAgentsPath := filepath.Join(tempDir, repoName, "plugins", "kubernetes-operations", "agents")
+		skillPaths := []string{
+			filepath.Join(tempDir, repoName, "plugins", "kubernetes-operations", "skills", "k8s-manifest-generator"),
+			filepath.Join(tempDir, repoName, "plugins", "kubernetes-operations", "skills", "k8s-security-policies"),
+		}
+
+		Expect(os.MkdirAll(sharedAgentsPath, 0755)).To(Succeed())
+		for _, skillPath := range skillPaths {
+			Expect(os.MkdirAll(skillPath, 0755)).To(Succeed())
+		}
+
+		manifestSkillMarkdown := `---
+name: k8s-manifest-generator
+description: Kubernetes manifest generation skill
+---
+# Kubernetes Manifest Generator
+No explicit shared prompt imports.
+`
+		securitySkillMarkdown := `---
+name: k8s-security-policies
+description: Kubernetes security policy skill
+---
+# Kubernetes Security Policies
+No explicit shared prompt imports.
+`
+		Expect(os.WriteFile(filepath.Join(skillPaths[0], "SKILL.md"), []byte(manifestSkillMarkdown), 0644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(skillPaths[1], "SKILL.md"), []byte(securitySkillMarkdown), 0644)).To(Succeed())
+
+		sharedPromptMarkdown := `---
+name: kubernetes-architect.md
+description: Shared Kubernetes architecture guidance.
+---
+# Kubernetes Architect
+Act as a Kubernetes architecture specialist.
+`
+		Expect(os.WriteFile(filepath.Join(sharedAgentsPath, "kubernetes-architect.md"), []byte(sharedPromptMarkdown), 0644)).To(Succeed())
+
+		manager.UpdateGitRepos([]string{repoName})
+
+		catalogItems, err := manager.ListCatalogItems()
+		Expect(err).NotTo(HaveOccurred())
+
+		var skillItems []domain.CatalogItem
+		var promptItems []domain.CatalogItem
+		for _, item := range catalogItems {
+			switch item.Classifier {
+			case domain.CatalogClassifierSkill:
+				skillItems = append(skillItems, item)
+			case domain.CatalogClassifierPrompt:
+				promptItems = append(promptItems, item)
+			}
+		}
+
+		Expect(skillItems).To(HaveLen(2))
+		Expect(promptItems).To(HaveLen(1))
+
+		promptItem := promptItems[0]
+		Expect(promptItem.Name).To(Equal("kubernetes-architect.md"))
+		Expect(promptItem.Description).To(Equal("Shared Kubernetes architecture guidance."))
+		Expect(promptItem.ResourcePath).To(Equal("imports/plugins/kubernetes-operations/agents/kubernetes-architect.md"))
+		Expect(promptItem.ParentSkillID).To(Equal("demo-repo/k8s-manifest-generator"))
+		Expect(promptItem.Content).To(ContainSubstring("Kubernetes architecture specialist"))
+		Expect(promptItem.ReadOnly).To(BeTrue())
+	})
+
 	It("should honor runtime prompt catalog enablement and directory allowlist", func() {
 		skillPath := filepath.Join(tempDir, "planner")
 		Expect(os.MkdirAll(filepath.Join(skillPath, "prompts"), 0755)).To(Succeed())

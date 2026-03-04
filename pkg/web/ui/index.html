@@ -93,13 +93,6 @@
                         </div>
                     </div>
                     <p x-text="item.description || 'No description'" class="skill-description text-gray-600 dark:text-gray-400"></p>
-                    <p
-                        x-show="normalizeClassifier(item.classifier) === 'prompt' && item.parent_skill_id"
-                        class="text-xs text-gray-500 dark:text-gray-400 -mt-2 mb-3"
-                    >
-                        <i class="fas fa-folder-tree mr-1"></i>
-                        <span x-text="item.parent_skill_id"></span>
-                    </p>
                     <div class="skill-actions">
                         <button x-show="isSkillCatalogItem(item)" @click.stop="exportSkill(item.name)" class="btn btn-small btn-secondary">
                             <i class="fas fa-download mr-1"></i>Export

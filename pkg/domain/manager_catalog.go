@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 func (m *FileSystemManager) buildCatalogItems(skills []Skill) ([]CatalogItem, error) {
@@ -70,14 +72,6 @@ func (m *FileSystemManager) buildCatalogItems(skills []Skill) ([]CatalogItem, er
 				continue
 			}
 
-			promptKey := CanonicalPromptCatalogKey(skillID, resourcePath)
-			if promptKey == "" {
-				continue
-			}
-			if _, exists := seenPromptKeys[promptKey]; exists {
-				continue
-			}
-
 			promptContent, err := m.readPromptCatalogContent(skillID, resourcePath)
 			if err != nil {
 				return nil, fmt.Errorf("failed to read prompt resource %q for skill %q: %w", resourcePath, skillID, err)
@@ -87,12 +81,20 @@ func (m *FileSystemManager) buildCatalogItems(skills []Skill) ([]CatalogItem, er
 			if promptName == "" || promptName == "." {
 				promptName = resource.Name
 			}
+			promptName, promptDescription := derivePromptCatalogPresentation(promptName, promptContent)
+			promptKey := buildPromptCatalogDedupeKey(promptName, promptDescription, resourcePath)
+			if promptKey == "" {
+				continue
+			}
+			if _, exists := seenPromptKeys[promptKey]; exists {
+				continue
+			}
 
 			items = append(items, CatalogItem{
 				ID:            BuildPromptCatalogItemID(skillID, resourcePath),
 				Classifier:    CatalogClassifierPrompt,
 				Name:          promptName,
-				Description:   skillDescription,
+				Description:   promptDescription,
 				Content:       promptContent,
 				ParentSkillID: skillID,
 				ResourcePath:  resourcePath,
@@ -139,4 +141,101 @@ func sortCatalogItems(items []CatalogItem) {
 		}
 		return leftItem.Name < rightItem.Name
 	})
+}
+
+func derivePromptCatalogPresentation(fallbackName, promptContent string) (string, string) {
+	name := strings.TrimSpace(fallbackName)
+	description := ""
+	contentBody := strings.TrimSpace(promptContent)
+
+	if metadata, body, ok := parsePromptCatalogFrontmatter(promptContent); ok {
+		if metadataName, ok := metadata["name"].(string); ok && strings.TrimSpace(metadataName) != "" {
+			name = strings.TrimSpace(metadataName)
+		}
+		if metadataDescription, ok := metadata["description"].(string); ok && strings.TrimSpace(metadataDescription) != "" {
+			description = strings.TrimSpace(metadataDescription)
+		}
+		if strings.TrimSpace(body) != "" {
+			contentBody = strings.TrimSpace(body)
+		}
+	}
+
+	if description == "" {
+		description = extractFirstParagraph(contentBody)
+	}
+	if description == "" {
+		description = strings.TrimSpace(contentBody)
+	}
+
+	return name, description
+}
+
+func parsePromptCatalogFrontmatter(content string) (map[string]any, string, bool) {
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "---") {
+		return nil, trimmed, false
+	}
+
+	endIdx := strings.Index(trimmed[3:], "---")
+	if endIdx == -1 {
+		return nil, trimmed, false
+	}
+
+	frontmatter := trimmed[3 : endIdx+3]
+	body := strings.TrimSpace(trimmed[endIdx+6:])
+
+	metadata := map[string]any{}
+	if err := yaml.Unmarshal([]byte(frontmatter), &metadata); err != nil {
+		return nil, trimmed, false
+	}
+
+	return metadata, body, true
+}
+
+func extractFirstParagraph(content string) string {
+	if strings.TrimSpace(content) == "" {
+		return ""
+	}
+
+	lines := strings.Split(content, "\n")
+	paragraph := make([]string, 0, 4)
+	inCodeBlock := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inCodeBlock = !inCodeBlock
+			continue
+		}
+		if inCodeBlock {
+			continue
+		}
+		if trimmed == "" {
+			if len(paragraph) > 0 {
+				break
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		paragraph = append(paragraph, trimmed)
+	}
+
+	if len(paragraph) == 0 {
+		return ""
+	}
+	return strings.Join(paragraph, " ")
+}
+
+func buildPromptCatalogDedupeKey(promptName, promptDescription, resourcePath string) string {
+	nameKey := strings.ToLower(strings.TrimSpace(promptName))
+	descriptionKey := strings.ToLower(strings.Join(strings.Fields(promptDescription), " "))
+	switch {
+	case nameKey != "" && descriptionKey != "":
+		return nameKey + ":" + descriptionKey
+	case nameKey != "":
+		return nameKey
+	default:
+		return CanonicalPromptCatalogResourcePath(resourcePath)
+	}
 }
