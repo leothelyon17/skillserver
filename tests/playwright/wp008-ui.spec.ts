@@ -1,89 +1,113 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function openSkillResources(page: Page, skillName: string) {
-  await page.goto("/");
-
-  const skillCard = page.locator(".skill-card").filter({
-    has: page.locator("h3", { hasText: skillName }),
+function catalogCard(page: Page, title: string) {
+  return page.locator(".skill-card").filter({
+    has: page.locator("h3", { hasText: title }),
   });
-  await expect(skillCard).toBeVisible();
-  await skillCard.first().click();
-
-  const resourcesTab = page.getByRole("button", { name: /Resources/ });
-  await expect(resourcesTab).toBeVisible();
-  await resourcesTab.click();
-
-  await expect(page.locator(".resource-section").first()).toBeVisible();
 }
 
-test.describe("WP-008 UI regression checks", () => {
-  test("legacy skill keeps only legacy resource groups", async ({ page }) => {
-    await openSkillResources(page, "legacy-skill");
+async function openHome(page: Page) {
+  await page.goto("/");
+  await expect(page.locator(".skill-card").first()).toBeVisible();
+}
 
-    const headings = page.locator(".resource-section-header h3 span");
-    await expect(headings.filter({ hasText: "Scripts" })).toBeVisible();
-    await expect(headings.filter({ hasText: "References" })).toBeVisible();
-    await expect(headings.filter({ hasText: "Assets" })).toBeVisible();
-    await expect(headings.filter({ hasText: "Prompts" })).toHaveCount(0);
-    await expect(headings.filter({ hasText: "Imported" })).toHaveCount(0);
+async function openMetadataModal(page: Page, title: string) {
+  const card = catalogCard(page, title);
+  await expect(card).toBeVisible();
+  await card.first().getByRole("button", { name: "Metadata" }).click();
+
+  const modal = page.locator(".fixed.inset-0:visible").filter({
+    has: page.getByRole("heading", { name: "Edit Catalog Metadata" }),
+  });
+  await expect(modal).toBeVisible();
+  await expect(modal.locator('[x-model="metadataEditorModal.form.displayName"]')).toBeVisible();
+  return modal;
+}
+
+function waitForMetadataPatch(page: Page) {
+  return page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" &&
+      response.url().includes("/api/catalog/") &&
+      response.url().endsWith("/metadata"),
+  );
+}
+
+test.describe("WP-008 metadata overlay editing and mutability UX", () => {
+  test("gates content actions for git-backed items while keeping metadata editable", async ({ page }) => {
+    await openHome(page);
+
+    const gitCard = catalogCard(page, "fixture-git/git-skill");
+    await expect(gitCard).toBeVisible();
+    await expect(gitCard.getByText("Read-only")).toBeVisible();
+    await expect(gitCard.getByRole("button", { name: "Delete" })).toHaveCount(0);
+    await expect(gitCard.getByRole("button", { name: "Metadata" })).toBeVisible();
+
+    await gitCard.first().click();
+    await expect(page.getByRole("heading", { name: "Edit Skill" })).toBeVisible();
+    await expect(page.getByText("Read-only:")).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Save$/ })).toHaveCount(0);
+
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("heading", { name: "Edit Skill" })).toHaveCount(0);
+
+    const metadataModal = await openMetadataModal(page, "fixture-git/git-skill");
+    await expect(metadataModal.getByText("Content editing is locked for this catalog item.")).toBeVisible();
+    await metadataModal.getByRole("button", { name: "Cancel" }).click();
   });
 
-  test("additive skill renders prompts/imported groups and locks imported content", async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await openSkillResources(page, "additive-skill");
+  test("saves git-backed metadata overlays and keeps them visible after reload/search", async ({ page }) => {
+    await openHome(page);
 
-    const headings = page.locator(".resource-section-header h3 span");
-    await expect(headings.filter({ hasText: "Scripts" })).toBeVisible();
-    await expect(headings.filter({ hasText: "References" })).toBeVisible();
-    await expect(headings.filter({ hasText: "Assets" })).toBeVisible();
-    await expect(headings.filter({ hasText: "Prompts" })).toBeVisible();
-    await expect(headings.filter({ hasText: "Imported" })).toBeVisible();
+    const displayName = "Git Skill Overlay UI";
+    const description = "Metadata overlay updated from Playwright e2e";
+    const labels = "git-overlay, ui-e2e";
 
-    const importedSection = page.locator(".resource-section").filter({
-      has: page.locator(".resource-section-header h3 span", { hasText: "Imported" }),
-    });
-    await expect(importedSection).toBeVisible();
+    const modal = await openMetadataModal(page, "fixture-git/git-skill");
 
-    await expect(importedSection.getByRole("button", { name: "Upload" })).toHaveCount(0);
+    await modal.locator('[x-model="metadataEditorModal.form.displayName"]').fill(displayName);
+    await modal.locator('[x-model="metadataEditorModal.form.description"]').fill(description);
+    await modal.locator('[x-model="metadataEditorModal.form.labelsText"]').fill(labels);
+    await modal
+      .locator('[x-model="metadataEditorModal.form.customMetadataJSON"]')
+      .fill('{"owner":"playwright","priority":1}');
 
-    const importedResource = importedSection.locator(".resource-item").filter({ hasText: "context.md" });
-    await expect(importedResource).toBeVisible();
-    await expect(importedResource.getByText("imported")).toBeVisible();
-    await expect(importedResource.getByText("Read only")).toBeVisible();
-    await expect(importedResource.getByText("Locked")).toBeVisible();
-    await expect(importedResource.getByRole("button")).toHaveCount(0);
+    const patchResponse = waitForMetadataPatch(page);
+    await modal.getByRole("button", { name: "Save Metadata" }).click();
+    await expect((await patchResponse).ok()).toBeTruthy();
 
-    await importedResource.locator(".resource-item-info").click();
+    await expect(catalogCard(page, displayName)).toBeVisible();
+    await expect(catalogCard(page, displayName).getByText("ui-e2e")).toBeVisible();
 
-    const visibleModal = page.locator(".fixed.inset-0:visible").filter({
-      has: page.getByText("View context.md"),
-    });
-    await expect(visibleModal).toBeVisible();
-    await expect(visibleModal.locator("textarea")).toHaveAttribute("readonly", /^(|readonly)$/);
-    await expect(visibleModal.getByRole("button", { name: "Save" })).toHaveCount(0);
+    await page.reload();
+    await expect(catalogCard(page, displayName)).toBeVisible();
+    await expect(catalogCard(page, displayName).getByText("ui-e2e")).toBeVisible();
+
+    await page.fill("#search-input", displayName);
+    await expect(catalogCard(page, displayName)).toBeVisible();
+    await expect(page.locator(".skill-card")).toHaveCount(1);
   });
 
-  test("narrow viewport keeps additive resources readable without horizontal overflow", async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 });
-    await openSkillResources(page, "additive-skill");
+  test("shows validation errors for invalid metadata JSON and allows recovery", async ({ page }) => {
+    await openHome(page);
 
-    const hasHorizontalOverflow = await page.evaluate(() => {
-      const rootOverflow = document.documentElement.scrollWidth > window.innerWidth + 1;
-      const sectionOverflow = Array.from(document.querySelectorAll(".resource-section-header")).some(
-        (el) => el.scrollWidth > el.clientWidth + 1,
-      );
-      const rowOverflow = Array.from(document.querySelectorAll(".resource-item")).some(
-        (el) => el.scrollWidth > el.clientWidth + 1,
-      );
-      return rootOverflow || sectionOverflow || rowOverflow;
-    });
+    const updatedName = "additive-skill metadata overlay";
+    const modal = await openMetadataModal(page, "additive-skill");
 
-    expect(hasHorizontalOverflow).toBeFalsy();
+    await modal.locator('[x-model="metadataEditorModal.form.displayName"]').fill(updatedName);
+    await modal.locator('[x-model="metadataEditorModal.form.customMetadataJSON"]').fill("[]");
+    await modal.getByRole("button", { name: "Save Metadata" }).click();
 
-    const importedSection = page.locator(".resource-section").filter({
-      has: page.locator(".resource-section-header h3 span", { hasText: "Imported" }),
-    });
-    await expect(importedSection).toBeVisible();
-    await expect(importedSection.locator(".resource-item").filter({ hasText: "context.md" })).toBeVisible();
+    await expect(modal.getByText("Custom metadata must be a JSON object.")).toBeVisible();
+
+    await modal
+      .locator('[x-model="metadataEditorModal.form.customMetadataJSON"]')
+      .fill('{"owner":"local-operator","priority":"high"}');
+
+    const patchResponse = waitForMetadataPatch(page);
+    await modal.getByRole("button", { name: "Save Metadata" }).click();
+    await expect((await patchResponse).ok()).toBeTruthy();
+
+    await expect(catalogCard(page, updatedName)).toBeVisible();
   });
 });

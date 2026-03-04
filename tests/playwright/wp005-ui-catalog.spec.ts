@@ -85,7 +85,8 @@ test.describe("WP-005 unified catalog rendering and actions", () => {
     await expect(catalogCard(page, "system.md")).toHaveCount(0);
     await expect(catalogCard(page, "legacy-skill")).toBeVisible();
     await expect(catalogCard(page, "additive-skill")).toBeVisible();
-    await expect(page.locator(".skill-card")).toHaveCount(2);
+    await expect(catalogCard(page, "fixture-git/git-skill")).toBeVisible();
+    await expect(page.locator(".skill-card")).toHaveCount(3);
 
     await showSkills.uncheck();
     await expect(page.locator(".skill-card")).toHaveCount(0);

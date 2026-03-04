@@ -93,11 +93,19 @@
                         </div>
                     </div>
                     <p x-text="item.description || 'No description'" class="skill-description text-gray-600 dark:text-gray-400"></p>
+                    <div class="skill-tags" x-show="Array.isArray(item.labels) && item.labels.length > 0">
+                        <template x-for="label in item.labels.slice(0, 4)" :key="`${item.id || item.name}-${label}`">
+                            <span class="tag" x-text="label"></span>
+                        </template>
+                    </div>
                     <div class="skill-actions">
+                        <button x-show="isItemMetadataWritable(item)" @click.stop="openMetadataEditor(item)" class="btn btn-small btn-secondary">
+                            <i class="fas fa-tags mr-1"></i>Metadata
+                        </button>
                         <button x-show="isSkillCatalogItem(item)" @click.stop="exportSkill(item.name)" class="btn btn-small btn-secondary">
                             <i class="fas fa-download mr-1"></i>Export
                         </button>
-                        <button x-show="isSkillCatalogItem(item) && !isItemReadOnly(item)" @click.stop="deleteSkill(item.name)" class="btn btn-small btn-danger">
+                        <button x-show="isSkillCatalogItem(item) && canEditItemContent(item)" @click.stop="deleteSkill(item.name)" class="btn btn-small btn-danger">
                             <i class="fas fa-trash mr-1"></i>Delete
                         </button>
                         <button x-show="normalizeClassifier(item.classifier) === 'prompt'" @click.stop="openPromptPreview(item)" class="btn btn-small btn-secondary">
@@ -421,6 +429,121 @@
             </div>
         </div>
 
+        <!-- Catalog Metadata Modal -->
+        <div
+            x-show="metadataEditorModal.show"
+            @keydown.escape.window="metadataEditorModal.show = false"
+            class="fixed inset-0 bg-black bg-opacity-50 z-[60] flex items-center justify-center p-4"
+            style="display: none;"
+        >
+            <div
+                @click.stop
+                class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col"
+            >
+                <div class="flex justify-between items-center p-4 border-b border-gray-200 dark:border-gray-700">
+                    <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                        <i class="fas fa-tags mr-2"></i>Edit Catalog Metadata
+                    </h3>
+                    <button
+                        @click="metadataEditorModal.show = false"
+                        class="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
+                    >
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="flex-1 overflow-auto p-4 space-y-4">
+                    <div x-show="metadataEditorModal.loading" class="text-sm text-gray-600 dark:text-gray-300">
+                        <i class="fas fa-spinner fa-spin mr-2"></i>Loading metadata...
+                    </div>
+
+                    <div x-show="!metadataEditorModal.loading">
+                        <div class="mb-3 text-sm rounded border border-gray-200 bg-gray-50 px-3 py-2 text-gray-700 dark:border-gray-700 dark:bg-gray-900/50 dark:text-gray-300">
+                            Item: <span class="font-semibold" x-text="metadataEditorModal.itemName || metadataEditorModal.itemID"></span>
+                            <span class="mx-2">•</span>
+                            ID: <span class="font-mono text-xs" x-text="metadataEditorModal.itemID"></span>
+                        </div>
+
+                        <div
+                            x-show="!metadataEditorModal.contentWritable"
+                            class="mb-3 text-sm rounded border border-yellow-200 bg-yellow-50 px-3 py-2 text-yellow-800 dark:border-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-300"
+                        >
+                            <i class="fas fa-lock mr-1"></i>Content editing is locked for this catalog item.
+                        </div>
+
+                        <div
+                            x-show="!metadataEditorModal.metadataWritable"
+                            class="mb-3 text-sm rounded border border-red-200 bg-red-50 px-3 py-2 text-red-800 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+                        >
+                            <i class="fas fa-ban mr-1"></i>Metadata editing is disabled for this catalog item.
+                        </div>
+
+                        <div class="space-y-3">
+                            <div>
+                                <label class="form-label">Display Name</label>
+                                <input
+                                    type="text"
+                                    x-model="metadataEditorModal.form.displayName"
+                                    :disabled="!metadataEditorModal.metadataWritable || metadataEditorModal.saving"
+                                    class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                    placeholder="Catalog display name"
+                                >
+                            </div>
+                            <div>
+                                <label class="form-label">Description</label>
+                                <textarea
+                                    x-model="metadataEditorModal.form.description"
+                                    :disabled="!metadataEditorModal.metadataWritable || metadataEditorModal.saving"
+                                    class="form-textarea bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                    placeholder="Catalog description"
+                                ></textarea>
+                            </div>
+                            <div>
+                                <label class="form-label">Labels (comma-separated)</label>
+                                <input
+                                    type="text"
+                                    x-model="metadataEditorModal.form.labelsText"
+                                    :disabled="!metadataEditorModal.metadataWritable || metadataEditorModal.saving"
+                                    class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                    placeholder="example: catalog, git, operator-owned"
+                                >
+                            </div>
+                            <div>
+                                <label class="form-label">Custom Metadata (JSON object)</label>
+                                <textarea
+                                    x-model="metadataEditorModal.form.customMetadataJSON"
+                                    :disabled="!metadataEditorModal.metadataWritable || metadataEditorModal.saving"
+                                    class="w-full min-h-[180px] p-3 border border-gray-300 dark:border-gray-600 rounded font-mono text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+                                ></textarea>
+                            </div>
+                        </div>
+
+                        <p
+                            x-show="metadataEditorModal.errorMessage"
+                            class="mt-3 text-sm text-red-600 dark:text-red-400"
+                            x-text="metadataEditorModal.errorMessage"
+                        ></p>
+                    </div>
+                </div>
+                <div class="flex justify-end gap-3 p-4 border-t border-gray-200 dark:border-gray-700">
+                    <button
+                        @click="metadataEditorModal.show = false"
+                        class="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        @click="saveCatalogMetadata()"
+                        class="px-4 py-2 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 transition"
+                        :disabled="metadataEditorModal.loading || metadataEditorModal.saving || !metadataEditorModal.metadataWritable"
+                    >
+                        <i x-show="!metadataEditorModal.saving" class="fas fa-save mr-2"></i>
+                        <i x-show="metadataEditorModal.saving" class="fas fa-spinner fa-spin mr-2"></i>
+                        Save Metadata
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Import Skill Modal -->
         <div 
             x-show="showImportModal"
@@ -702,6 +825,22 @@
                     classifier: '',
                     parentSkillID: ''
                 },
+                metadataEditorModal: {
+                    show: false,
+                    loading: false,
+                    saving: false,
+                    itemID: '',
+                    itemName: '',
+                    contentWritable: true,
+                    metadataWritable: true,
+                    form: {
+                        displayName: '',
+                        description: '',
+                        labelsText: '',
+                        customMetadataJSON: '{}'
+                    },
+                    errorMessage: ''
+                },
                 toasts: [],
                 isLoading: false,
                 confirmModal: {
@@ -876,7 +1015,9 @@
                             item && item.description,
                             item && item.content,
                             item && item.parent_skill_id,
-                            item && item.resource_path
+                            item && item.resource_path,
+                            Array.isArray(item && item.labels) ? item.labels.join(' ') : '',
+                            item && item.custom_metadata ? JSON.stringify(item.custom_metadata) : ''
                         ]
                             .filter((value) => typeof value === 'string' && value.length > 0)
                             .join(' ')
@@ -898,14 +1039,54 @@
                     return this.normalizeClassifier(item && item.classifier) === 'skill';
                 },
 
+                hasBooleanFlag(item, key) {
+                    return !!(
+                        item &&
+                        typeof item === 'object' &&
+                        Object.prototype.hasOwnProperty.call(item, key) &&
+                        typeof item[key] === 'boolean'
+                    );
+                },
+
+                itemContentWritable(item) {
+                    if (this.hasBooleanFlag(item, 'content_writable')) {
+                        return item.content_writable;
+                    }
+                    if (this.hasBooleanFlag(item, 'contentWritable')) {
+                        return item.contentWritable;
+                    }
+                    if (this.hasBooleanFlag(item, 'read_only')) {
+                        return !item.read_only;
+                    }
+                    if (this.hasBooleanFlag(item, 'readOnly')) {
+                        return !item.readOnly;
+                    }
+                    return true;
+                },
+
+                itemMetadataWritable(item) {
+                    if (this.hasBooleanFlag(item, 'metadata_writable')) {
+                        return item.metadata_writable;
+                    }
+                    if (this.hasBooleanFlag(item, 'metadataWritable')) {
+                        return item.metadataWritable;
+                    }
+                    return true;
+                },
+
+                canEditItemContent(item) {
+                    return this.itemContentWritable(item);
+                },
+
+                isItemMetadataWritable(item) {
+                    return this.itemMetadataWritable(item);
+                },
+
                 isItemReadOnly(item) {
                     if (!item || typeof item !== 'object') {
                         return false;
                     }
-                    if (Object.prototype.hasOwnProperty.call(item, 'read_only')) {
-                        return Boolean(item.read_only);
-                    }
-                    return Boolean(item.readOnly);
+                    return !this.canEditItemContent(item);
                 },
 
                 classifierBadgeClass(classifier) {
@@ -1026,6 +1207,220 @@
                         this.showToast('Failed to open skill', 'error');
                     } finally {
                         this.isLoading = false;
+                    }
+                },
+
+                catalogMetadataEndpoint(itemID) {
+                    return `/api/catalog/${encodeURIComponent(itemID)}/metadata`;
+                },
+
+                normalizeMetadataLabels(labelsText) {
+                    const labels = String(labelsText || '')
+                        .split(/[\n,]/)
+                        .map((label) => label.trim())
+                        .filter((label) => label.length > 0);
+                    return Array.from(new Set(labels));
+                },
+
+                parseCustomMetadataJSON(jsonText) {
+                    const trimmed = String(jsonText || '').trim();
+                    if (!trimmed) {
+                        return {};
+                    }
+
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(trimmed);
+                    } catch (error) {
+                        throw new Error('Custom metadata must be valid JSON.');
+                    }
+
+                    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                        throw new Error('Custom metadata must be a JSON object.');
+                    }
+
+                    return parsed;
+                },
+
+                async openMetadataEditor(item) {
+                    if (!item || !item.id) {
+                        this.showToast('Cannot edit metadata: catalog item id is missing', 'error');
+                        return;
+                    }
+                    if (!this.isItemMetadataWritable(item)) {
+                        this.showToast('Metadata editing is disabled for this item', 'warning');
+                        return;
+                    }
+
+                    const itemID = String(item.id);
+                    this.metadataEditorModal = {
+                        show: true,
+                        loading: true,
+                        saving: false,
+                        itemID: itemID,
+                        itemName: item.name || itemID,
+                        contentWritable: this.itemContentWritable(item),
+                        metadataWritable: this.itemMetadataWritable(item),
+                        form: {
+                            displayName: '',
+                            description: '',
+                            labelsText: '',
+                            customMetadataJSON: '{}'
+                        },
+                        errorMessage: ''
+                    };
+
+                    try {
+                        const response = await fetch(this.catalogMetadataEndpoint(itemID));
+                        if (!response.ok) {
+                            const errorPayload = await response.json().catch(() => null);
+                            const errorMessage = errorPayload && errorPayload.error
+                                ? errorPayload.error
+                                : `HTTP ${response.status}`;
+                            throw new Error(errorMessage);
+                        }
+
+                        const payload = await response.json();
+                        const overlay = payload && payload.overlay ? payload.overlay : {};
+                        const effective = payload && payload.effective ? payload.effective : {};
+
+                        const hasOverlayDisplayName = typeof overlay.display_name === 'string';
+                        const hasOverlayDescription = typeof overlay.description === 'string';
+                        const hasOverlayLabels = Array.isArray(overlay.labels) && overlay.labels.length > 0;
+                        const hasOverlayCustomMetadata = overlay.custom_metadata
+                            && typeof overlay.custom_metadata === 'object'
+                            && !Array.isArray(overlay.custom_metadata)
+                            && Object.keys(overlay.custom_metadata).length > 0;
+
+                        const resolvedLabels = hasOverlayLabels
+                            ? overlay.labels
+                            : (Array.isArray(effective.labels) ? effective.labels : []);
+                        const resolvedCustomMetadata = hasOverlayCustomMetadata
+                            ? overlay.custom_metadata
+                            : (effective.custom_metadata && typeof effective.custom_metadata === 'object' && !Array.isArray(effective.custom_metadata)
+                                ? effective.custom_metadata
+                                : {});
+
+                        this.metadataEditorModal.loading = false;
+                        this.metadataEditorModal.contentWritable = typeof effective.content_writable === 'boolean'
+                            ? effective.content_writable
+                            : this.itemContentWritable(item);
+                        this.metadataEditorModal.metadataWritable = typeof effective.metadata_writable === 'boolean'
+                            ? effective.metadata_writable
+                            : this.itemMetadataWritable(item);
+                        this.metadataEditorModal.form = {
+                            displayName: hasOverlayDisplayName
+                                ? overlay.display_name
+                                : (typeof effective.name === 'string' ? effective.name : (item.name || '')),
+                            description: hasOverlayDescription
+                                ? overlay.description
+                                : (typeof effective.description === 'string'
+                                    ? effective.description
+                                    : (item.description || '')),
+                            labelsText: resolvedLabels.join(', '),
+                            customMetadataJSON: JSON.stringify(resolvedCustomMetadata || {}, null, 2)
+                        };
+                    } catch (error) {
+                        console.error('Failed to load catalog metadata:', error);
+                        this.metadataEditorModal.show = false;
+                        this.showToast(`Failed to load metadata: ${error.message || 'Unknown error'}`, 'error');
+                    }
+                },
+
+                applyEffectiveMetadataToCatalogItem(itemID, effective) {
+                    if (!effective || typeof effective !== 'object') {
+                        return;
+                    }
+
+                    const updateItem = (item) => {
+                        if (!item || item.id !== itemID) {
+                            return item;
+                        }
+
+                        const updated = { ...item };
+                        if (typeof effective.name === 'string' && effective.name.trim() !== '') {
+                            updated.name = effective.name;
+                        }
+                        if (typeof effective.description === 'string') {
+                            updated.description = effective.description;
+                        }
+                        if (Array.isArray(effective.labels)) {
+                            updated.labels = [...effective.labels];
+                        }
+                        if (effective.custom_metadata && typeof effective.custom_metadata === 'object' && !Array.isArray(effective.custom_metadata)) {
+                            updated.custom_metadata = { ...effective.custom_metadata };
+                        }
+                        if (typeof effective.content_writable === 'boolean') {
+                            updated.content_writable = effective.content_writable;
+                            updated.read_only = !effective.content_writable;
+                        }
+                        if (typeof effective.metadata_writable === 'boolean') {
+                            updated.metadata_writable = effective.metadata_writable;
+                        }
+
+                        return updated;
+                    };
+
+                    this.skills = this.skills.map(updateItem);
+                    this.filteredSkills = this.filteredSkills.map(updateItem);
+                },
+
+                async saveCatalogMetadata() {
+                    const itemID = this.metadataEditorModal.itemID;
+                    if (!itemID) {
+                        this.showToast('Cannot save metadata: missing catalog item id', 'error');
+                        return;
+                    }
+                    if (!this.metadataEditorModal.metadataWritable) {
+                        this.showToast('Metadata editing is disabled for this item', 'warning');
+                        return;
+                    }
+
+                    let customMetadata = {};
+                    try {
+                        customMetadata = this.parseCustomMetadataJSON(this.metadataEditorModal.form.customMetadataJSON);
+                    } catch (error) {
+                        this.metadataEditorModal.errorMessage = error.message;
+                        return;
+                    }
+
+                    this.metadataEditorModal.errorMessage = '';
+                    this.metadataEditorModal.saving = true;
+
+                    try {
+                        const response = await fetch(this.catalogMetadataEndpoint(itemID), {
+                            method: 'PATCH',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                display_name: this.metadataEditorModal.form.displayName || '',
+                                description: this.metadataEditorModal.form.description || '',
+                                labels: this.normalizeMetadataLabels(this.metadataEditorModal.form.labelsText),
+                                custom_metadata: customMetadata,
+                                updated_by: 'web-ui'
+                            }),
+                        });
+
+                        if (!response.ok) {
+                            const errorPayload = await response.json().catch(() => null);
+                            const errorMessage = errorPayload && errorPayload.error
+                                ? errorPayload.error
+                                : `HTTP ${response.status}`;
+                            this.metadataEditorModal.errorMessage = errorMessage;
+                            return;
+                        }
+
+                        const payload = await response.json();
+                        this.applyEffectiveMetadataToCatalogItem(itemID, payload.effective);
+                        this.metadataEditorModal.show = false;
+                        await this.loadSkills();
+                        this.showToast('Metadata saved successfully', 'success');
+                    } catch (error) {
+                        console.error('Failed to save catalog metadata:', error);
+                        this.metadataEditorModal.errorMessage = 'Failed to save metadata';
+                    } finally {
+                        this.metadataEditorModal.saving = false;
                     }
                 },
 
@@ -1354,6 +1749,22 @@
                         origin: 'direct',
                         classifier: '',
                         parentSkillID: ''
+                    };
+                    this.metadataEditorModal = {
+                        show: false,
+                        loading: false,
+                        saving: false,
+                        itemID: '',
+                        itemName: '',
+                        contentWritable: true,
+                        metadataWritable: true,
+                        form: {
+                            displayName: '',
+                            description: '',
+                            labelsText: '',
+                            customMetadataJSON: '{}'
+                        },
+                        errorMessage: ''
                     };
                 },
 

@@ -23,14 +23,37 @@ var defaultPromptDirectoryAllowlist = []string{"agent", "agents", "prompt", "pro
 
 // CatalogItem represents a first-class searchable catalog object.
 type CatalogItem struct {
-	ID            string            `json:"id"`
-	Classifier    CatalogClassifier `json:"classifier"`
-	Name          string            `json:"name"`
-	Description   string            `json:"description,omitempty"`
-	Content       string            `json:"content,omitempty"`
-	ParentSkillID string            `json:"parent_skill_id,omitempty"`
-	ResourcePath  string            `json:"resource_path,omitempty"`
-	ReadOnly      bool              `json:"read_only"`
+	ID               string            `json:"id"`
+	Classifier       CatalogClassifier `json:"classifier"`
+	Name             string            `json:"name"`
+	Description      string            `json:"description,omitempty"`
+	Content          string            `json:"content,omitempty"`
+	ParentSkillID    string            `json:"parent_skill_id,omitempty"`
+	ResourcePath     string            `json:"resource_path,omitempty"`
+	ContentWritable  bool              `json:"content_writable"`
+	MetadataWritable bool              `json:"metadata_writable"`
+	CustomMetadata   map[string]any    `json:"custom_metadata,omitempty"`
+	Labels           []string          `json:"labels,omitempty"`
+	ReadOnly         bool              `json:"read_only"`
+}
+
+func normalizeCatalogItemMutability(item CatalogItem) (contentWritable bool, metadataWritable bool, readOnly bool) {
+	contentWritable = item.ContentWritable
+	if item.ReadOnly {
+		contentWritable = false
+	} else if !contentWritable {
+		// Preserve legacy behavior for callers that only set read_only.
+		contentWritable = true
+	}
+
+	metadataWritable = item.MetadataWritable
+	if !metadataWritable {
+		// Preserve legacy behavior for callers that predate metadata_writable.
+		metadataWritable = true
+	}
+
+	readOnly = !contentWritable
+	return
 }
 
 // IsValid reports whether the classifier is supported.

@@ -99,6 +99,7 @@ func main() {
 	enableImportDiscovery := flag.Bool("enable-import-discovery", defaultEnableImportDiscovery, "Enable imported resource discovery and imports/... virtual resources (env: SKILLSERVER_ENABLE_IMPORT_DISCOVERY)")
 	mcpFlagValues := registerMCPRuntimeFlags(flag.CommandLine)
 	catalogFlagValues := registerCatalogRuntimeFlags(flag.CommandLine)
+	persistenceFlagValues := registerPersistenceRuntimeFlags(flag.CommandLine)
 	flag.Parse()
 
 	// Parse and validate MCP runtime config (flags > env > defaults).
@@ -113,6 +114,17 @@ func main() {
 	catalogRuntimeConfig, err := parseCatalogRuntimeConfig(flag.CommandLine, catalogFlagValues, os.LookupEnv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Invalid catalog runtime configuration: %v\n", err)
+		os.Exit(2)
+	}
+
+	// Parse and validate persistence runtime config (flags > env > defaults).
+	persistenceRuntimeConfig, err := parsePersistenceRuntimeConfig(flag.CommandLine, persistenceFlagValues, os.LookupEnv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid persistence runtime configuration: %v\n", err)
+		os.Exit(2)
+	}
+	if err := validatePersistenceStartupConfig(persistenceRuntimeConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid persistence runtime configuration: %v\n", err)
 		os.Exit(2)
 	}
 
@@ -184,34 +196,68 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize skill manager: %v", err)
 	}
+	fsManager := skillManager
 	skillManager.SetImportDiscoveryEnabled(*enableImportDiscovery)
 	skillManager.SetPromptCatalogEnabled(catalogRuntimeConfig.EnablePrompts)
 	skillManager.SetPromptCatalogDirectoryAllowlist(catalogRuntimeConfig.PromptDirectoryAllowlist)
 	if err := skillManager.RebuildIndex(); err != nil {
 		log.Fatalf("Failed to apply runtime catalog configuration: %v", err)
 	}
+
+	persistenceRuntime, err := bootstrapCatalogPersistenceRuntime(
+		context.Background(),
+		persistenceRuntimeConfig,
+		fsManager,
+		logger,
+	)
+	if err != nil {
+		log.Fatalf("Failed to initialize persistence runtime: %v", err)
+	}
+	if persistenceRuntime != nil {
+		defer func() {
+			if closeErr := persistenceRuntime.Close(); closeErr != nil && *enableLogging {
+				log.Printf("Warning: Failed to close persistence runtime: %v", closeErr)
+			}
+		}()
+	}
+
+	catalogOnUpdate := func() error {
+		if persistenceRuntime == nil {
+			return skillManager.RebuildIndex()
+		}
+		return persistenceRuntime.coordinator.FullSyncAndRebuild(context.Background())
+	}
+
 	if *enableLogging {
 		log.Printf(
 			"Resolved catalog runtime options: enable_prompts=%t prompt_dirs=%s",
 			catalogRuntimeConfig.EnablePrompts,
 			strings.Join(catalogRuntimeConfig.PromptDirectoryAllowlist, ","),
 		)
+		if persistenceRuntimeConfig.Enabled {
+			log.Printf(
+				"Resolved persistence runtime options: enabled=%t dir=%s db_path=%s",
+				persistenceRuntimeConfig.Enabled,
+				persistenceRuntimeConfig.Dir,
+				persistenceRuntimeConfig.DBPath,
+			)
+		} else {
+			log.Printf("Resolved persistence runtime options: enabled=false")
+		}
 	}
-
-	// Get FileSystemManager reference for handlers
-	fsManager := skillManager
 
 	// Initialize Git syncer if repos are provided
 	var gitSyncer *git.GitSyncer
-	gitSyncer = git.NewGitSyncer(finalDir, gitRepos, func() error {
-		return skillManager.RebuildIndex()
-	})
+	gitSyncer = git.NewGitSyncer(finalDir, gitRepos, catalogOnUpdate)
 	// Configure git syncer output based on logging flag
 	if *enableLogging {
 		gitSyncer.SetProgressWriter(os.Stderr) // Use stderr for git progress
 		gitSyncer.SetLogger(os.Stderr)         // Use stderr for log messages
 	}
 	if err := gitSyncer.Start(); err != nil {
+		if persistenceRuntime != nil {
+			log.Fatalf("Failed to start Git syncer with persistence synchronization: %v", err)
+		}
 		log.Printf("Warning: Failed to start Git syncer: %v", err)
 	} else if *enableLogging {
 		log.Println("Git syncer started")
@@ -242,6 +288,26 @@ func main() {
 		mcpHandler,
 		mcpPath,
 	)
+	if persistenceRuntime != nil {
+		metadataService, metadataErr := domain.NewCatalogMetadataService(
+			persistenceRuntime.sourceRepo,
+			persistenceRuntime.overlayRepo,
+			persistenceRuntime.coordinator.effectiveService,
+			domain.CatalogMetadataServiceOptions{},
+		)
+		if metadataErr != nil {
+			log.Fatalf("Failed to initialize catalog metadata service: %v", metadataErr)
+		}
+		webServer.SetCatalogMetadataService(metadataService)
+
+		webServer.SetManualGitRepoSyncHook(func(repo git.GitRepoConfig) error {
+			repoName := strings.TrimSpace(repo.Name)
+			if repoName == "" {
+				repoName = git.ExtractRepoName(repo.URL)
+			}
+			return persistenceRuntime.coordinator.RepoSyncAndRebuild(context.Background(), repoName)
+		})
+	}
 
 	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)

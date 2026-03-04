@@ -246,7 +246,9 @@ func (g *GitSyncer) pullRepo(repoDir string) error {
 	return nil
 }
 
-// SyncRepo manually syncs a specific repository by URL
+// SyncRepo manually syncs a specific repository by URL.
+// This method only performs VCS synchronization. Callers are responsible for
+// any follow-up catalog/index refresh behavior.
 func (g *GitSyncer) SyncRepo(repoURL string) error {
 	// Check if repo is in the list
 	repos := g.GetRepos()
@@ -263,13 +265,6 @@ func (g *GitSyncer) SyncRepo(repoURL string) error {
 
 	if err := g.syncRepo(repoURL); err != nil {
 		return err
-	}
-
-	// Trigger re-indexing
-	if g.onUpdate != nil {
-		if err := g.onUpdate(); err != nil {
-			return fmt.Errorf("failed to trigger re-indexing: %w", err)
-		}
 	}
 
 	return nil

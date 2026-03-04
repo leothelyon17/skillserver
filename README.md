@@ -55,6 +55,9 @@ SkillServer supports both **environment variables** and **command-line flags** w
 | `SKILLSERVER_MCP_EVENT_STORE_MAX_BYTES` | (none) | `10485760` | Max bytes for MCP in-memory event store (10 MiB) |
 | `SKILLSERVER_CATALOG_ENABLE_PROMPTS` | (none) | `true` | Enable prompt catalog classification/indexing in unified catalog APIs/tools |
 | `SKILLSERVER_CATALOG_PROMPT_DIRS` | (none) | `agent,agents,prompt,prompts` | Comma-separated directory names used for prompt catalog detection |
+| `SKILLSERVER_PERSISTENCE_DATA` | (none) | `false` | Enable SQLite-backed persistence for catalog source snapshots + metadata overlays |
+| `SKILLSERVER_PERSISTENCE_DIR` | (none) | (empty) | Writable persistence directory (required when `SKILLSERVER_PERSISTENCE_DATA=true`) |
+| `SKILLSERVER_PERSISTENCE_DB_PATH` | (none) | `<SKILLSERVER_PERSISTENCE_DIR>/skillserver.db` | Optional SQLite DB file path (absolute path or relative to persistence dir) |
 | `SKILLSERVER_ENABLE_IMPORT_DISCOVERY` | (none) | `true` | Enable imported resource discovery and `imports/...` virtual read paths |
 
 ### Command-Line Flags
@@ -73,6 +76,9 @@ SkillServer supports both **environment variables** and **command-line flags** w
 | `--mcp-event-store-max-bytes` | `10485760` | Max bytes for in-memory MCP event store |
 | `--catalog-enable-prompts` | `true` | Enable prompt catalog classification/indexing |
 | `--catalog-prompt-dirs` | `agent,agents,prompt,prompts` | Comma-separated directory names used for prompt catalog detection |
+| `--persistence-data` | `false` | Enable SQLite-backed persistence mode |
+| `--persistence-dir` | (empty) | Writable persistence directory (required when persistence mode is enabled) |
+| `--persistence-db-path` | (empty) | Optional SQLite DB file path override (absolute path or relative to persistence dir) |
 | `--enable-import-discovery` | `true` | Enable imported resource discovery and `imports/...` virtual read paths |
 
 ## Usage
@@ -115,6 +121,22 @@ export SKILLSERVER_CATALOG_ENABLE_PROMPTS=false
 
 # Override prompt classification directories (must be single directory names)
 ./skillserver --catalog-prompt-dirs "agent,agents,prompts"
+
+# Enable persistence mode (stores SQLite under mounted/local persistence dir)
+mkdir -p ./data/skillserver
+./skillserver --persistence-data --persistence-dir ./data/skillserver
+
+# Optional custom DB path (relative paths resolve from --persistence-dir)
+./skillserver \
+  --persistence-data \
+  --persistence-dir ./data/skillserver \
+  --persistence-db-path state/catalog.sqlite
+
+# Roll back to filesystem-only mode (non-destructive)
+./skillserver --persistence-data=false
+# Or using environment variable
+export SKILLSERVER_PERSISTENCE_DATA=false
+./skillserver
 ```
 
 ### Transport Mode Examples
@@ -183,6 +205,55 @@ docker run -p 8080:8080 \
   --port 8080 \
   --mcp-transport http \
   --mcp-http-path /mcp
+```
+
+With persistence mode enabled (SQLite persisted to mounted volume):
+
+```bash
+docker volume create skillserver-persistence
+
+docker run -p 8080:8080 \
+  -v $(pwd)/skills:/app/skills \
+  -v skillserver-persistence:/var/lib/skillserver/persistence \
+  -e SKILLSERVER_DIR=/app/skills \
+  -e SKILLSERVER_PORT=8080 \
+  -e SKILLSERVER_MCP_TRANSPORT=http \
+  -e SKILLSERVER_PERSISTENCE_DATA=true \
+  -e SKILLSERVER_PERSISTENCE_DIR=/var/lib/skillserver/persistence \
+  ghcr.io/mudler/skillserver:latest
+```
+
+### Kubernetes Persistence Mode (PVC)
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skillserver
+spec:
+  template:
+    spec:
+      containers:
+        - name: skillserver
+          image: ghcr.io/mudler/skillserver:latest
+          args: ["--dir", "/app/skills", "--port", "8080", "--mcp-transport", "http"]
+          env:
+            - name: SKILLSERVER_PERSISTENCE_DATA
+              value: "true"
+            - name: SKILLSERVER_PERSISTENCE_DIR
+              value: /var/lib/skillserver/persistence
+          volumeMounts:
+            - name: skills
+              mountPath: /app/skills
+            - name: skillserver-persistence
+              mountPath: /var/lib/skillserver/persistence
+      volumes:
+        - name: skills
+          persistentVolumeClaim:
+            claimName: skillserver-skills-pvc
+        - name: skillserver-persistence
+          persistentVolumeClaim:
+            claimName: skillserver-persistence-pvc
 ```
 
 ### Remote MCP (Streamable HTTP) Usage
@@ -450,11 +521,13 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 - `GET /api/skills/search?q=query` - Search skills
 
 #### Catalog (ADR-003, additive)
-- `GET /api/catalog` - List unified catalog items (`skill` + `prompt`) with fields `id`, `classifier`, `name`, `description`, `content`, `parent_skill_id`, `resource_path`, `read_only`
+- `GET /api/catalog` - List unified catalog items (`skill` + `prompt`) with fields `id`, `classifier`, `name`, `description`, `content`, `parent_skill_id`, `resource_path`, `custom_metadata`, `labels`, `content_writable`, `metadata_writable`, `read_only`
 - `GET /api/catalog/search?q=query&classifier=skill|prompt` - Search unified catalog items with optional classifier filter
 - `classifier` is case-insensitive at input and normalized to `skill` or `prompt` in responses
 - Invalid classifier values return `400` (`invalid catalog classifier ...`)
 - Empty or missing `q` for `/api/catalog/search` returns `400` (`query parameter 'q' is required`)
+- `GET /api/catalog/:id/metadata` - Return source + overlay + effective metadata projections for one catalog item
+- `PATCH /api/catalog/:id/metadata` - Update metadata overlays for one catalog item (`display_name`, `description`, `labels`, `custom_metadata`, optional `updated_by`)
 
 #### Resources
 - `GET /api/skills/:name/resources` - List resources with legacy buckets (`scripts`, `references`, `assets`) plus additive groups (`prompts`, `imported`, `groups`) when present; each resource includes `origin` and `writable`
@@ -497,6 +570,35 @@ Rollback options:
   - `./skillserver --catalog-prompt-dirs "agent,agents,prompt,prompts"`
 
 Detailed rollout/rollback runbook: [`docs/operations/unified-catalog-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/unified-catalog-rollout-rollback.md)
+
+## Persistent Catalog Rollout and Rollback (ADR-004)
+
+Runtime controls:
+- Flag: `--persistence-data=true|false`
+- Env: `SKILLSERVER_PERSISTENCE_DATA=true|false`
+- Flag: `--persistence-dir=/path/to/mounted/writable/dir`
+- Env: `SKILLSERVER_PERSISTENCE_DIR=/path/to/mounted/writable/dir`
+- Flag: `--persistence-db-path=skillserver.db` (or absolute path)
+- Env: `SKILLSERVER_PERSISTENCE_DB_PATH=skillserver.db` (or absolute path)
+
+Behavior notes:
+- Persistence mode is opt-in and defaults to disabled.
+- When persistence is enabled, startup fails fast if mount/path guardrails are invalid.
+- Metadata overlay endpoints (`GET/PATCH /api/catalog/:id/metadata`) require persistence mode and return `503` when unavailable.
+- Rollback to filesystem-only mode is non-destructive and does not require deleting the SQLite file.
+
+Quick rollback:
+
+```bash
+# Flag-based rollback
+./skillserver --persistence-data=false
+
+# Env-based rollback
+export SKILLSERVER_PERSISTENCE_DATA=false
+./skillserver
+```
+
+Detailed rollout/rollback runbook: [`docs/operations/persistence-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/persistence-rollout-rollback.md)
 
 ## Dynamic Resource Discovery and Rollout Control
 

@@ -49,12 +49,14 @@ func (m *FileSystemManager) buildCatalogItems(skills []Skill) ([]CatalogItem, er
 		}
 
 		items = append(items, CatalogItem{
-			ID:          BuildSkillCatalogItemID(skillID),
-			Classifier:  CatalogClassifierSkill,
-			Name:        skillName,
-			Description: skillDescription,
-			Content:     skill.Content,
-			ReadOnly:    skill.ReadOnly,
+			ID:               BuildSkillCatalogItemID(skillID),
+			Classifier:       CatalogClassifierSkill,
+			Name:             skillName,
+			Description:      skillDescription,
+			Content:          skill.Content,
+			ContentWritable:  !skill.ReadOnly,
+			MetadataWritable: true,
+			ReadOnly:         skill.ReadOnly,
 		})
 
 		if !m.enablePromptCatalog {
@@ -91,14 +93,16 @@ func (m *FileSystemManager) buildCatalogItems(skills []Skill) ([]CatalogItem, er
 			}
 
 			items = append(items, CatalogItem{
-				ID:            BuildPromptCatalogItemID(skillID, resourcePath),
-				Classifier:    CatalogClassifierPrompt,
-				Name:          promptName,
-				Description:   promptDescription,
-				Content:       promptContent,
-				ParentSkillID: skillID,
-				ResourcePath:  resourcePath,
-				ReadOnly:      skill.ReadOnly || !resource.Writable,
+				ID:               BuildPromptCatalogItemID(skillID, resourcePath),
+				Classifier:       CatalogClassifierPrompt,
+				Name:             promptName,
+				Description:      promptDescription,
+				Content:          promptContent,
+				ParentSkillID:    skillID,
+				ResourcePath:     resourcePath,
+				ContentWritable:  !(skill.ReadOnly || !resource.Writable),
+				MetadataWritable: true,
+				ReadOnly:         skill.ReadOnly || !resource.Writable,
 			})
 			seenPromptKeys[promptKey] = struct{}{}
 		}

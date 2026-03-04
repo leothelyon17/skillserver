@@ -23,13 +23,24 @@ const defaultMCPRoutePath = "/mcp"
 
 // Server wraps the Echo server
 type Server struct {
-	echo          *echo.Echo
-	httpServer    *http.Server
-	skillManager  domain.SkillManager
-	fsManager     *domain.FileSystemManager
-	gitRepos      []string
-	gitSyncer     *git.GitSyncer
-	configManager *git.ConfigManager
+	echo                   *echo.Echo
+	httpServer             *http.Server
+	skillManager           domain.SkillManager
+	fsManager              *domain.FileSystemManager
+	catalogMetadataService *domain.CatalogMetadataService
+	gitRepos               []string
+	gitSyncer              gitSyncer
+	configManager          *git.ConfigManager
+	manualRepoSyncHook     func(repo git.GitRepoConfig) error
+}
+
+type gitSyncer interface {
+	GetRepos() []string
+	AddRepo(repoURL string) error
+	RemoveRepo(repoURL string) error
+	UpdateRepos(repos []string) error
+	SyncRepo(repoURL string) error
+	GetSkillsDir() string
 }
 
 // NewServer creates a new web server.
@@ -37,7 +48,7 @@ func NewServer(
 	skillManager domain.SkillManager,
 	fsManager *domain.FileSystemManager,
 	gitRepos []string,
-	gitSyncer *git.GitSyncer,
+	gitSyncer gitSyncer,
 	configManager *git.ConfigManager,
 	enableLogging bool,
 	mcpHandler http.Handler,
@@ -68,6 +79,8 @@ func NewServer(
 	api := e.Group("/api")
 	api.GET("/catalog", server.listCatalog)
 	api.GET("/catalog/search", server.searchCatalog)
+	api.GET("/catalog/:id/metadata", server.getCatalogMetadata)
+	api.PATCH("/catalog/:id/metadata", server.patchCatalogMetadata)
 	api.GET("/skills", server.listSkills)
 	api.GET("/skills/:name", server.getSkill)
 	api.GET("/skills/by-id/:repo/:name", server.getSkill)
@@ -126,6 +139,16 @@ func NewServer(
 	e.GET("/*", echo.WrapHandler(http.FileServer(http.FS(uiFS))))
 
 	return server
+}
+
+// SetCatalogMetadataService configures metadata overlay handlers.
+func (s *Server) SetCatalogMetadataService(service *domain.CatalogMetadataService) {
+	s.catalogMetadataService = service
+}
+
+// SetManualGitRepoSyncHook configures post-sync behavior for POST /api/git-repos/:id/sync.
+func (s *Server) SetManualGitRepoSyncHook(hook func(repo git.GitRepoConfig) error) {
+	s.manualRepoSyncHook = hook
 }
 
 // Start starts the web server

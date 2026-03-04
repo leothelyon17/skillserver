@@ -47,6 +47,22 @@ func TestListCatalog_ReturnsMixedCatalogItemsWithPromptMetadata(t *testing.T) {
 	if readOnly, ok := prompt["read_only"].(bool); !ok || readOnly {
 		t.Fatalf("expected read_only=false for direct prompt resource, got %v", prompt["read_only"])
 	}
+	if contentWritable, ok := prompt["content_writable"].(bool); !ok || !contentWritable {
+		t.Fatalf("expected content_writable=true for direct prompt resource, got %v", prompt["content_writable"])
+	}
+	if metadataWritable, ok := prompt["metadata_writable"].(bool); !ok || !metadataWritable {
+		t.Fatalf("expected metadata_writable=true for direct prompt resource, got %v", prompt["metadata_writable"])
+	}
+
+	if contentWritable, ok := skill["content_writable"].(bool); !ok || !contentWritable {
+		t.Fatalf("expected content_writable=true for local skill, got %v", skill["content_writable"])
+	}
+	if metadataWritable, ok := skill["metadata_writable"].(bool); !ok || !metadataWritable {
+		t.Fatalf("expected metadata_writable=true for local skill, got %v", skill["metadata_writable"])
+	}
+	if readOnly, ok := skill["read_only"].(bool); !ok || readOnly {
+		t.Fatalf("expected read_only=false for local skill, got %v", skill["read_only"])
+	}
 }
 
 func TestSearchCatalog_SupportsOptionalClassifierFiltering(t *testing.T) {
@@ -73,6 +89,15 @@ func TestSearchCatalog_SupportsOptionalClassifierFiltering(t *testing.T) {
 	if classifier, _ := items[0]["classifier"].(string); classifier != "prompt" {
 		t.Fatalf("expected classifier prompt, got %q", classifier)
 	}
+	if contentWritable, ok := items[0]["content_writable"].(bool); !ok || !contentWritable {
+		t.Fatalf("expected prompt content_writable=true in search response, got %v", items[0]["content_writable"])
+	}
+	if metadataWritable, ok := items[0]["metadata_writable"].(bool); !ok || !metadataWritable {
+		t.Fatalf("expected prompt metadata_writable=true in search response, got %v", items[0]["metadata_writable"])
+	}
+	if readOnly, ok := items[0]["read_only"].(bool); !ok || readOnly {
+		t.Fatalf("expected prompt read_only=false in search response, got %v", items[0]["read_only"])
+	}
 
 	req = httptest.NewRequest(
 		http.MethodGet,
@@ -92,6 +117,15 @@ func TestSearchCatalog_SupportsOptionalClassifierFiltering(t *testing.T) {
 	}
 	if classifier, _ := items[0]["classifier"].(string); classifier != "skill" {
 		t.Fatalf("expected classifier skill, got %q", classifier)
+	}
+	if contentWritable, ok := items[0]["content_writable"].(bool); !ok || !contentWritable {
+		t.Fatalf("expected skill content_writable=true in search response, got %v", items[0]["content_writable"])
+	}
+	if metadataWritable, ok := items[0]["metadata_writable"].(bool); !ok || !metadataWritable {
+		t.Fatalf("expected skill metadata_writable=true in search response, got %v", items[0]["metadata_writable"])
+	}
+	if readOnly, ok := items[0]["read_only"].(bool); !ok || readOnly {
+		t.Fatalf("expected skill read_only=false in search response, got %v", items[0]["read_only"])
 	}
 }
 

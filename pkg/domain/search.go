@@ -45,11 +45,13 @@ func (s *Searcher) IndexSkills(skills []Skill) error {
 	documents := make([]catalogIndexDocument, 0, len(skills))
 	for _, skill := range skills {
 		doc := catalogIndexDocument{
-			ID:         skill.Name,
-			Classifier: CatalogClassifierSkill,
-			Name:       skill.Name,
-			Content:    skill.Content,
-			ReadOnly:   skill.ReadOnly,
+			ID:               skill.Name,
+			Classifier:       CatalogClassifierSkill,
+			Name:             skill.Name,
+			Content:          skill.Content,
+			ContentWritable:  !skill.ReadOnly,
+			MetadataWritable: true,
+			ReadOnly:         skill.ReadOnly,
 		}
 		if skill.Metadata != nil {
 			doc.Description = skill.Metadata.Description
@@ -89,15 +91,18 @@ func (s *Searcher) IndexCatalogItems(items []CatalogItem) error {
 			return fmt.Errorf("failed to index catalog item with empty ID")
 		}
 
+		contentWritable, metadataWritable, readOnly := normalizeCatalogItemMutability(item)
 		documents = append(documents, catalogIndexDocument{
-			ID:            id,
-			Classifier:    item.Classifier,
-			Name:          item.Name,
-			Description:   item.Description,
-			Content:       item.Content,
-			ParentSkillID: item.ParentSkillID,
-			ResourcePath:  item.ResourcePath,
-			ReadOnly:      item.ReadOnly,
+			ID:               id,
+			Classifier:       item.Classifier,
+			Name:             item.Name,
+			Description:      item.Description,
+			Content:          item.Content,
+			ParentSkillID:    item.ParentSkillID,
+			ResourcePath:     item.ResourcePath,
+			ContentWritable:  contentWritable,
+			MetadataWritable: metadataWritable,
+			ReadOnly:         readOnly,
 		})
 	}
 
@@ -135,6 +140,8 @@ func (s *Searcher) SearchCatalog(query string, classifier *CatalogClassifier) ([
 		"content",
 		"parent_skill_id",
 		"resource_path",
+		"content_writable",
+		"metadata_writable",
 		"read_only",
 	}
 
@@ -171,9 +178,16 @@ func (s *Searcher) SearchCatalog(query string, classifier *CatalogClassifier) ([
 		if rawResourcePath, ok := fieldAsString(hit.Fields["resource_path"]); ok {
 			item.ResourcePath = rawResourcePath
 		}
+		if rawContentWritable, ok := fieldAsBool(hit.Fields["content_writable"]); ok {
+			item.ContentWritable = rawContentWritable
+		}
+		if rawMetadataWritable, ok := fieldAsBool(hit.Fields["metadata_writable"]); ok {
+			item.MetadataWritable = rawMetadataWritable
+		}
 		if rawReadOnly, ok := fieldAsBool(hit.Fields["read_only"]); ok {
 			item.ReadOnly = rawReadOnly
 		}
+		item.ContentWritable, item.MetadataWritable, item.ReadOnly = normalizeCatalogItemMutability(item)
 
 		catalogItems = append(catalogItems, item)
 	}
@@ -214,16 +228,18 @@ func (s *Searcher) Close() error {
 }
 
 type catalogIndexDocument struct {
-	ID            string
-	Classifier    CatalogClassifier
-	Name          string
-	Description   string
-	Content       string
-	ParentSkillID string
-	ResourcePath  string
-	ReadOnly      bool
-	License       string
-	Compatibility string
+	ID               string
+	Classifier       CatalogClassifier
+	Name             string
+	Description      string
+	Content          string
+	ParentSkillID    string
+	ResourcePath     string
+	ContentWritable  bool
+	MetadataWritable bool
+	ReadOnly         bool
+	License          string
+	Compatibility    string
 }
 
 func (s *Searcher) rebuildIndex(documents []catalogIndexDocument) error {
@@ -261,10 +277,12 @@ func (s *Searcher) rebuildIndex(documents []catalogIndexDocument) error {
 
 func (d catalogIndexDocument) toMap() map[string]any {
 	doc := map[string]any{
-		"classifier": string(d.Classifier),
-		"name":       d.Name,
-		"content":    d.Content,
-		"read_only":  d.ReadOnly,
+		"classifier":        string(d.Classifier),
+		"name":              d.Name,
+		"content":           d.Content,
+		"content_writable":  d.ContentWritable,
+		"metadata_writable": d.MetadataWritable,
+		"read_only":         d.ReadOnly,
 	}
 
 	if d.Description != "" {

@@ -1,6 +1,10 @@
 package web
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,26 +55,100 @@ type UpdateSkillRequest struct {
 
 // CatalogItemResponse represents a catalog entry in API responses.
 type CatalogItemResponse struct {
-	ID            string                   `json:"id"`
-	Classifier    domain.CatalogClassifier `json:"classifier"`
-	Name          string                   `json:"name"`
-	Description   string                   `json:"description,omitempty"`
-	Content       string                   `json:"content,omitempty"`
-	ParentSkillID string                   `json:"parent_skill_id,omitempty"`
-	ResourcePath  string                   `json:"resource_path,omitempty"`
-	ReadOnly      bool                     `json:"read_only"`
+	ID               string                   `json:"id"`
+	Classifier       domain.CatalogClassifier `json:"classifier"`
+	Name             string                   `json:"name"`
+	Description      string                   `json:"description,omitempty"`
+	Content          string                   `json:"content,omitempty"`
+	ParentSkillID    string                   `json:"parent_skill_id,omitempty"`
+	ResourcePath     string                   `json:"resource_path,omitempty"`
+	CustomMetadata   map[string]any           `json:"custom_metadata,omitempty"`
+	Labels           []string                 `json:"labels,omitempty"`
+	ContentWritable  bool                     `json:"content_writable"`
+	MetadataWritable bool                     `json:"metadata_writable"`
+	ReadOnly         bool                     `json:"read_only"`
 }
+
+// PatchCatalogMetadataRequest represents one metadata overlay mutation request.
+type PatchCatalogMetadataRequest struct {
+	DisplayName    *string         `json:"display_name"`
+	Description    *string         `json:"description"`
+	Labels         *[]string       `json:"labels"`
+	CustomMetadata *map[string]any `json:"custom_metadata"`
+	UpdatedBy      *string         `json:"updated_by,omitempty"`
+}
+
+// CatalogMetadataResponse represents source, overlay, and effective metadata views.
+type CatalogMetadataResponse struct {
+	ItemID    string                           `json:"item_id"`
+	Source    CatalogMetadataSourceResponse    `json:"source"`
+	Overlay   CatalogMetadataOverlayResponse   `json:"overlay"`
+	Effective CatalogMetadataEffectiveResponse `json:"effective"`
+}
+
+// CatalogMetadataSourceResponse represents immutable source snapshot metadata.
+type CatalogMetadataSourceResponse struct {
+	ItemID           string                   `json:"item_id"`
+	Classifier       domain.CatalogClassifier `json:"classifier"`
+	SourceType       string                   `json:"source_type"`
+	SourceRepo       *string                  `json:"source_repo,omitempty"`
+	ParentSkillID    *string                  `json:"parent_skill_id,omitempty"`
+	ResourcePath     *string                  `json:"resource_path,omitempty"`
+	Name             string                   `json:"name"`
+	Description      string                   `json:"description,omitempty"`
+	ContentWritable  bool                     `json:"content_writable"`
+	MetadataWritable bool                     `json:"metadata_writable"`
+	ReadOnly         bool                     `json:"read_only"`
+}
+
+// CatalogMetadataOverlayResponse represents user-owned overlay metadata.
+type CatalogMetadataOverlayResponse struct {
+	DisplayName    *string        `json:"display_name,omitempty"`
+	Description    *string        `json:"description,omitempty"`
+	CustomMetadata map[string]any `json:"custom_metadata"`
+	Labels         []string       `json:"labels"`
+	UpdatedAt      *string        `json:"updated_at,omitempty"`
+	UpdatedBy      *string        `json:"updated_by,omitempty"`
+}
+
+// CatalogMetadataEffectiveResponse represents merged source + overlay metadata.
+type CatalogMetadataEffectiveResponse struct {
+	Name             string         `json:"name"`
+	Description      string         `json:"description,omitempty"`
+	CustomMetadata   map[string]any `json:"custom_metadata"`
+	Labels           []string       `json:"labels"`
+	ContentWritable  bool           `json:"content_writable"`
+	MetadataWritable bool           `json:"metadata_writable"`
+	ReadOnly         bool           `json:"read_only"`
+}
+
+const (
+	catalogMetadataPatchMaxBodyBytes       = 32 * 1024
+	catalogMetadataDisplayNameMaxChars     = 256
+	catalogMetadataDescriptionMaxChars     = 4096
+	catalogMetadataMaxLabels               = 64
+	catalogMetadataLabelMaxChars           = 64
+	catalogMetadataCustomMetadataMaxKeys   = 128
+	catalogMetadataCustomMetadataMaxDepth  = 6
+	catalogMetadataCustomMetadataMaxArray  = 256
+	catalogMetadataCustomMetadataMaxString = 4096
+	catalogMetadataCustomMetadataMaxKeyLen = 128
+)
 
 func catalogResponseFromItem(item domain.CatalogItem) CatalogItemResponse {
 	return CatalogItemResponse{
-		ID:            item.ID,
-		Classifier:    item.Classifier,
-		Name:          item.Name,
-		Description:   item.Description,
-		Content:       item.Content,
-		ParentSkillID: item.ParentSkillID,
-		ResourcePath:  item.ResourcePath,
-		ReadOnly:      item.ReadOnly,
+		ID:               item.ID,
+		Classifier:       item.Classifier,
+		Name:             item.Name,
+		Description:      item.Description,
+		Content:          item.Content,
+		ParentSkillID:    item.ParentSkillID,
+		ResourcePath:     item.ResourcePath,
+		CustomMetadata:   cloneCatalogMetadataMap(item.CustomMetadata),
+		Labels:           append([]string{}, item.Labels...),
+		ContentWritable:  item.ContentWritable,
+		MetadataWritable: item.MetadataWritable,
+		ReadOnly:         item.ReadOnly,
 	}
 }
 
@@ -446,7 +524,7 @@ func (s *Server) searchSkills(c *echo.Context) error {
 
 // listCatalog lists all catalog items (skills and prompts).
 func (s *Server) listCatalog(c *echo.Context) error {
-	items, err := s.skillManager.ListCatalogItems()
+	items, err := s.loadCatalogItems(c.Request().Context(), "", nil)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
@@ -482,7 +560,7 @@ func (s *Server) searchCatalog(c *echo.Context) error {
 		classifier = &parsedClassifier
 	}
 
-	items, err := s.skillManager.SearchCatalogItems(query, classifier)
+	items, err := s.loadCatalogItems(c.Request().Context(), query, classifier)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
@@ -495,6 +573,500 @@ func (s *Server) searchCatalog(c *echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, responses)
+}
+
+func (s *Server) loadCatalogItems(
+	ctx context.Context,
+	query string,
+	classifier *domain.CatalogClassifier,
+) ([]domain.CatalogItem, error) {
+	normalizedQuery := strings.TrimSpace(query)
+	if s.catalogMetadataService == nil {
+		if normalizedQuery == "" {
+			return s.skillManager.ListCatalogItems()
+		}
+		return s.skillManager.SearchCatalogItems(normalizedQuery, classifier)
+	}
+
+	items, err := s.skillManager.ListCatalogItems()
+	if err != nil {
+		return nil, err
+	}
+	if classifier != nil {
+		items = filterCatalogItemsByClassifier(items, *classifier)
+	}
+
+	items = s.applyCatalogMetadataOverlays(ctx, items)
+	if normalizedQuery == "" {
+		return items, nil
+	}
+
+	return filterCatalogItemsByQuery(items, normalizedQuery), nil
+}
+
+func filterCatalogItemsByClassifier(
+	items []domain.CatalogItem,
+	classifier domain.CatalogClassifier,
+) []domain.CatalogItem {
+	filtered := make([]domain.CatalogItem, 0, len(items))
+	for _, item := range items {
+		if item.Classifier == classifier {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func (s *Server) applyCatalogMetadataOverlays(
+	ctx context.Context,
+	items []domain.CatalogItem,
+) []domain.CatalogItem {
+	if s.catalogMetadataService == nil || len(items) == 0 {
+		return items
+	}
+
+	enriched := make([]domain.CatalogItem, len(items))
+	copy(enriched, items)
+
+	for index := range enriched {
+		itemID := strings.TrimSpace(enriched[index].ID)
+		if itemID == "" {
+			continue
+		}
+
+		view, err := s.catalogMetadataService.Get(ctx, itemID)
+		if err != nil {
+			continue
+		}
+		if !catalogMetadataOverlayExists(view.Overlay) {
+			continue
+		}
+
+		enriched[index].Name = view.Effective.Name
+		enriched[index].Description = view.Effective.Description
+		enriched[index].Labels = append([]string{}, view.Effective.Labels...)
+		enriched[index].CustomMetadata = cloneCatalogMetadataMap(view.Effective.CustomMetadata)
+		enriched[index].ContentWritable = view.Effective.ContentWritable
+		enriched[index].MetadataWritable = view.Effective.MetadataWritable
+		enriched[index].ReadOnly = view.Effective.ReadOnly
+	}
+
+	return enriched
+}
+
+func catalogMetadataOverlayExists(overlay domain.CatalogMetadataOverlayView) bool {
+	if overlay.UpdatedAt != nil || overlay.UpdatedBy != nil {
+		return true
+	}
+	if overlay.DisplayNameOverride != nil || overlay.DescriptionOverride != nil {
+		return true
+	}
+	if len(overlay.Labels) > 0 {
+		return true
+	}
+	return len(overlay.CustomMetadata) > 0
+}
+
+func cloneCatalogMetadataMap(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return map[string]any{}
+	}
+
+	copied := make(map[string]any, len(input))
+	for key, value := range input {
+		copied[key] = value
+	}
+	return copied
+}
+
+func filterCatalogItemsByQuery(items []domain.CatalogItem, query string) []domain.CatalogItem {
+	normalizedQuery := strings.ToLower(strings.TrimSpace(query))
+	if normalizedQuery == "" {
+		return items
+	}
+
+	matches := make([]domain.CatalogItem, 0, len(items))
+	for _, item := range items {
+		if catalogItemMatchesQuery(item, normalizedQuery) {
+			matches = append(matches, item)
+		}
+	}
+
+	return matches
+}
+
+func catalogItemMatchesQuery(item domain.CatalogItem, normalizedQuery string) bool {
+	if normalizedQuery == "" {
+		return true
+	}
+
+	parts := []string{
+		item.Name,
+		item.Description,
+		item.Content,
+		item.ParentSkillID,
+		item.ResourcePath,
+	}
+	parts = append(parts, item.Labels...)
+
+	if len(item.CustomMetadata) > 0 {
+		customMetadataJSON, err := json.Marshal(item.CustomMetadata)
+		if err == nil {
+			parts = append(parts, string(customMetadataJSON))
+		}
+	}
+
+	haystack := strings.ToLower(strings.Join(parts, " "))
+	return strings.Contains(haystack, normalizedQuery)
+}
+
+// getCatalogMetadata returns source + overlay + effective metadata for one catalog item.
+func (s *Server) getCatalogMetadata(c *echo.Context) error {
+	if s.catalogMetadataService == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog metadata API is unavailable",
+		})
+	}
+
+	itemID, err := decodeCatalogItemIDFromPath(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	view, err := s.catalogMetadataService.Get(c.Request().Context(), itemID)
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrCatalogMetadataItemNotFound):
+			return c.JSON(http.StatusNotFound, map[string]string{
+				"error": "catalog item not found",
+			})
+		default:
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
+		}
+	}
+
+	return c.JSON(http.StatusOK, catalogMetadataResponseFromView(view))
+}
+
+// patchCatalogMetadata updates metadata overlays for one catalog item.
+func (s *Server) patchCatalogMetadata(c *echo.Context) error {
+	if s.catalogMetadataService == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog metadata API is unavailable",
+		})
+	}
+
+	itemID, err := decodeCatalogItemIDFromPath(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	request, err := decodeCatalogMetadataPatchRequest(c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	input, err := normalizeCatalogMetadataPatchInput(itemID, request)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	view, err := s.catalogMetadataService.Patch(c.Request().Context(), input)
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrCatalogMetadataItemNotFound):
+			return c.JSON(http.StatusNotFound, map[string]string{
+				"error": "catalog item not found",
+			})
+		default:
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
+		}
+	}
+
+	return c.JSON(http.StatusOK, catalogMetadataResponseFromView(view))
+}
+
+func decodeCatalogItemIDFromPath(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fmt.Errorf("catalog item id is required")
+	}
+
+	decoded, err := url.PathUnescape(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("catalog item id path is invalid")
+	}
+
+	itemID := strings.TrimSpace(decoded)
+	if itemID == "" {
+		return "", fmt.Errorf("catalog item id is required")
+	}
+
+	return itemID, nil
+}
+
+func decodeCatalogMetadataPatchRequest(c *echo.Context) (PatchCatalogMetadataRequest, error) {
+	limitedReader := io.LimitReader(c.Request().Body, catalogMetadataPatchMaxBodyBytes+1)
+	payload, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return PatchCatalogMetadataRequest{}, fmt.Errorf("invalid request payload")
+	}
+	if len(payload) == 0 {
+		return PatchCatalogMetadataRequest{}, fmt.Errorf("request body is required")
+	}
+	if len(payload) > catalogMetadataPatchMaxBodyBytes {
+		return PatchCatalogMetadataRequest{}, fmt.Errorf("request payload exceeds %d bytes", catalogMetadataPatchMaxBodyBytes)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+
+	var request PatchCatalogMetadataRequest
+	if err := decoder.Decode(&request); err != nil {
+		return PatchCatalogMetadataRequest{}, fmt.Errorf("invalid request payload")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return PatchCatalogMetadataRequest{}, fmt.Errorf("invalid request payload")
+	}
+
+	return request, nil
+}
+
+func normalizeCatalogMetadataPatchInput(
+	itemID string,
+	request PatchCatalogMetadataRequest,
+) (domain.CatalogMetadataPatchInput, error) {
+	normalized := domain.CatalogMetadataPatchInput{
+		ItemID: itemID,
+	}
+
+	if request.DisplayName != nil {
+		displayName := strings.TrimSpace(*request.DisplayName)
+		if len(displayName) > catalogMetadataDisplayNameMaxChars {
+			return domain.CatalogMetadataPatchInput{}, fmt.Errorf(
+				"display_name must be <= %d characters",
+				catalogMetadataDisplayNameMaxChars,
+			)
+		}
+		normalized.DisplayNameOverride = &displayName
+	}
+	if request.Description != nil {
+		description := strings.TrimSpace(*request.Description)
+		if len(description) > catalogMetadataDescriptionMaxChars {
+			return domain.CatalogMetadataPatchInput{}, fmt.Errorf(
+				"description must be <= %d characters",
+				catalogMetadataDescriptionMaxChars,
+			)
+		}
+		normalized.DescriptionOverride = &description
+	}
+	if request.UpdatedBy != nil {
+		updatedBy := strings.TrimSpace(*request.UpdatedBy)
+		if updatedBy != "" {
+			normalized.UpdatedBy = &updatedBy
+		}
+	}
+	if request.Labels != nil {
+		labels, err := normalizeCatalogMetadataLabels(*request.Labels)
+		if err != nil {
+			return domain.CatalogMetadataPatchInput{}, err
+		}
+		normalized.Labels = &labels
+	}
+	if request.CustomMetadata != nil {
+		customMetadata, err := normalizeCatalogMetadataMap(*request.CustomMetadata)
+		if err != nil {
+			return domain.CatalogMetadataPatchInput{}, err
+		}
+		normalized.CustomMetadata = &customMetadata
+	}
+
+	if normalized.DisplayNameOverride == nil &&
+		normalized.DescriptionOverride == nil &&
+		normalized.Labels == nil &&
+		normalized.CustomMetadata == nil {
+		return domain.CatalogMetadataPatchInput{}, fmt.Errorf(
+			"at least one of display_name, description, labels, or custom_metadata is required",
+		)
+	}
+
+	return normalized, nil
+}
+
+func normalizeCatalogMetadataLabels(rawLabels []string) ([]string, error) {
+	if len(rawLabels) > catalogMetadataMaxLabels {
+		return nil, fmt.Errorf("labels must include <= %d entries", catalogMetadataMaxLabels)
+	}
+
+	labels := make([]string, 0, len(rawLabels))
+	seen := make(map[string]struct{}, len(rawLabels))
+	for _, rawLabel := range rawLabels {
+		label := strings.TrimSpace(rawLabel)
+		if label == "" {
+			return nil, fmt.Errorf("labels cannot contain empty values")
+		}
+		if len(label) > catalogMetadataLabelMaxChars {
+			return nil, fmt.Errorf("labels entries must be <= %d characters", catalogMetadataLabelMaxChars)
+		}
+
+		key := strings.ToLower(label)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		labels = append(labels, label)
+	}
+
+	return labels, nil
+}
+
+func normalizeCatalogMetadataMap(raw map[string]any) (map[string]any, error) {
+	if len(raw) > catalogMetadataCustomMetadataMaxKeys {
+		return nil, fmt.Errorf("custom_metadata must include <= %d top-level keys", catalogMetadataCustomMetadataMaxKeys)
+	}
+
+	normalized := make(map[string]any, len(raw))
+	for key, value := range raw {
+		normalizedKey := strings.TrimSpace(key)
+		if normalizedKey == "" {
+			return nil, fmt.Errorf("custom_metadata keys cannot be empty")
+		}
+		if len(normalizedKey) > catalogMetadataCustomMetadataMaxKeyLen {
+			return nil, fmt.Errorf(
+				"custom_metadata keys must be <= %d characters",
+				catalogMetadataCustomMetadataMaxKeyLen,
+			)
+		}
+		if err := validateCatalogMetadataValue(value, 1); err != nil {
+			return nil, err
+		}
+		normalized[normalizedKey] = value
+	}
+
+	return normalized, nil
+}
+
+func validateCatalogMetadataValue(value any, depth int) error {
+	if depth > catalogMetadataCustomMetadataMaxDepth {
+		return fmt.Errorf("custom_metadata nesting exceeds max depth %d", catalogMetadataCustomMetadataMaxDepth)
+	}
+
+	switch typed := value.(type) {
+	case nil, bool, float64:
+		return nil
+	case string:
+		if len(typed) > catalogMetadataCustomMetadataMaxString {
+			return fmt.Errorf(
+				"custom_metadata string values must be <= %d characters",
+				catalogMetadataCustomMetadataMaxString,
+			)
+		}
+		return nil
+	case map[string]any:
+		if len(typed) > catalogMetadataCustomMetadataMaxKeys {
+			return fmt.Errorf(
+				"custom_metadata objects must include <= %d keys",
+				catalogMetadataCustomMetadataMaxKeys,
+			)
+		}
+		for key, nested := range typed {
+			normalizedKey := strings.TrimSpace(key)
+			if normalizedKey == "" {
+				return fmt.Errorf("custom_metadata keys cannot be empty")
+			}
+			if len(normalizedKey) > catalogMetadataCustomMetadataMaxKeyLen {
+				return fmt.Errorf(
+					"custom_metadata keys must be <= %d characters",
+					catalogMetadataCustomMetadataMaxKeyLen,
+				)
+			}
+			if err := validateCatalogMetadataValue(nested, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []any:
+		if len(typed) > catalogMetadataCustomMetadataMaxArray {
+			return fmt.Errorf(
+				"custom_metadata arrays must include <= %d entries",
+				catalogMetadataCustomMetadataMaxArray,
+			)
+		}
+		for _, entry := range typed {
+			if err := validateCatalogMetadataValue(entry, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("custom_metadata includes unsupported value types")
+	}
+}
+
+func catalogMetadataResponseFromView(view domain.CatalogMetadataView) CatalogMetadataResponse {
+	response := CatalogMetadataResponse{
+		ItemID: view.ItemID,
+		Source: CatalogMetadataSourceResponse{
+			ItemID:           view.Source.ItemID,
+			Classifier:       view.Source.Classifier,
+			SourceType:       string(view.Source.SourceType),
+			SourceRepo:       view.Source.SourceRepo,
+			ParentSkillID:    view.Source.ParentSkillID,
+			ResourcePath:     view.Source.ResourcePath,
+			Name:             view.Source.Name,
+			Description:      view.Source.Description,
+			ContentWritable:  view.Source.ContentWritable,
+			MetadataWritable: view.Source.MetadataWritable,
+			ReadOnly:         view.Source.ReadOnly,
+		},
+		Overlay: CatalogMetadataOverlayResponse{
+			DisplayName:    view.Overlay.DisplayNameOverride,
+			Description:    view.Overlay.DescriptionOverride,
+			CustomMetadata: view.Overlay.CustomMetadata,
+			Labels:         view.Overlay.Labels,
+			UpdatedBy:      view.Overlay.UpdatedBy,
+		},
+		Effective: CatalogMetadataEffectiveResponse{
+			Name:             view.Effective.Name,
+			Description:      view.Effective.Description,
+			CustomMetadata:   view.Effective.CustomMetadata,
+			Labels:           view.Effective.Labels,
+			ContentWritable:  view.Effective.ContentWritable,
+			MetadataWritable: view.Effective.MetadataWritable,
+			ReadOnly:         view.Effective.ReadOnly,
+		},
+	}
+
+	if view.Overlay.UpdatedAt != nil {
+		formatted := view.Overlay.UpdatedAt.UTC().Format(time.RFC3339)
+		response.Overlay.UpdatedAt = &formatted
+	}
+	if response.Overlay.CustomMetadata == nil {
+		response.Overlay.CustomMetadata = map[string]any{}
+	}
+	if response.Overlay.Labels == nil {
+		response.Overlay.Labels = []string{}
+	}
+	if response.Effective.CustomMetadata == nil {
+		response.Effective.CustomMetadata = map[string]any{}
+	}
+	if response.Effective.Labels == nil {
+		response.Effective.Labels = []string{}
+	}
+
+	return response
 }
 
 // Resource management handlers
@@ -1484,9 +2056,9 @@ func (s *Server) syncGitRepo(c *echo.Context) error {
 
 	// Find repo by ID
 	var foundRepo *git.GitRepoConfig
-	for _, repo := range configRepos {
-		if repo.ID == id {
-			foundRepo = &repo
+	for i := range configRepos {
+		if configRepos[i].ID == id {
+			foundRepo = &configRepos[i]
 			break
 		}
 	}
@@ -1508,6 +2080,17 @@ func (s *Server) syncGitRepo(c *echo.Context) error {
 	if err := s.gitSyncer.SyncRepo(foundRepo.URL); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
+		})
+	}
+	if s.manualRepoSyncHook != nil {
+		if err := s.manualRepoSyncHook(*foundRepo); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
+		}
+	} else if err := s.skillManager.RebuildIndex(); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to rebuild index",
 		})
 	}
 

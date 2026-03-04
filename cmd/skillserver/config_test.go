@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"io"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -244,6 +245,153 @@ func TestCatalogConfig_EmptyPromptDirs(t *testing.T) {
 	}
 }
 
+func TestPersistenceConfig_Defaults(t *testing.T) {
+	cfg, err := parsePersistenceConfigForTest(nil, nil)
+	if err != nil {
+		t.Fatalf("expected defaults to parse, got error: %v", err)
+	}
+
+	if cfg.Enabled {
+		t.Fatalf("expected persistence disabled by default")
+	}
+	if cfg.Dir != "" {
+		t.Fatalf("expected default persistence dir to be empty, got %q", cfg.Dir)
+	}
+	if cfg.DBPath != "" {
+		t.Fatalf("expected default persistence DB path to be empty, got %q", cfg.DBPath)
+	}
+}
+
+func TestPersistenceConfig_EnvOverrides(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg, err := parsePersistenceConfigForTest(nil, map[string]string{
+		envPersistenceData: "true",
+		envPersistenceDir:  dir,
+	})
+	if err != nil {
+		t.Fatalf("expected env overrides to parse, got error: %v", err)
+	}
+
+	expectedDir, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("failed to resolve expected abs dir: %v", err)
+	}
+	expectedDBPath := filepath.Join(expectedDir, defaultPersistenceDatabaseFileName)
+
+	if !cfg.Enabled {
+		t.Fatalf("expected persistence enabled from env")
+	}
+	if cfg.Dir != expectedDir {
+		t.Fatalf("expected persistence dir %q, got %q", expectedDir, cfg.Dir)
+	}
+	if cfg.DBPath != expectedDBPath {
+		t.Fatalf("expected persistence DB path %q, got %q", expectedDBPath, cfg.DBPath)
+	}
+}
+
+func TestPersistenceConfig_EnvRelativeDBPathResolvesFromDir(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg, err := parsePersistenceConfigForTest(nil, map[string]string{
+		envPersistenceData:   "true",
+		envPersistenceDir:    dir,
+		envPersistenceDBPath: "state/skillserver.sqlite",
+	})
+	if err != nil {
+		t.Fatalf("expected relative DB path to parse, got error: %v", err)
+	}
+
+	expectedDir, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("failed to resolve expected abs dir: %v", err)
+	}
+	expectedDBPath := filepath.Join(expectedDir, "state", "skillserver.sqlite")
+
+	if cfg.DBPath != expectedDBPath {
+		t.Fatalf("expected persistence DB path %q, got %q", expectedDBPath, cfg.DBPath)
+	}
+}
+
+func TestPersistenceConfig_FlagPrecedence(t *testing.T) {
+	envDir := t.TempDir()
+	flagDir := t.TempDir()
+
+	args := []string{
+		"--persistence-data=true",
+		"--persistence-dir=" + flagDir,
+		"--persistence-db-path=runtime.sqlite",
+	}
+	env := map[string]string{
+		envPersistenceData:   "false",
+		envPersistenceDir:    envDir,
+		envPersistenceDBPath: "/tmp/env.sqlite",
+	}
+
+	cfg, err := parsePersistenceConfigForTest(args, env)
+	if err != nil {
+		t.Fatalf("expected flags to override env values, got error: %v", err)
+	}
+
+	expectedDir, err := filepath.Abs(flagDir)
+	if err != nil {
+		t.Fatalf("failed to resolve expected abs dir: %v", err)
+	}
+	expectedDBPath := filepath.Join(expectedDir, "runtime.sqlite")
+
+	if !cfg.Enabled {
+		t.Fatalf("expected persistence enabled from flag")
+	}
+	if cfg.Dir != expectedDir {
+		t.Fatalf("expected persistence dir %q, got %q", expectedDir, cfg.Dir)
+	}
+	if cfg.DBPath != expectedDBPath {
+		t.Fatalf("expected persistence DB path %q, got %q", expectedDBPath, cfg.DBPath)
+	}
+}
+
+func TestPersistenceConfig_InvalidBoolean(t *testing.T) {
+	_, err := parsePersistenceConfigForTest(nil, map[string]string{
+		envPersistenceData: "definitely",
+	})
+	if err == nil {
+		t.Fatalf("expected invalid boolean error, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be a boolean") {
+		t.Fatalf("expected boolean validation error, got: %v", err)
+	}
+}
+
+func TestPersistenceConfig_EnabledWithoutDirectory(t *testing.T) {
+	_, err := parsePersistenceConfigForTest(nil, map[string]string{
+		envPersistenceData: "true",
+	})
+	if err == nil {
+		t.Fatalf("expected missing persistence directory error, got nil")
+	}
+	if !strings.Contains(err.Error(), "persistence directory is required") {
+		t.Fatalf("expected missing directory error, got: %v", err)
+	}
+}
+
+func TestPersistenceConfig_DisabledIgnoresPathValues(t *testing.T) {
+	cfg, err := parsePersistenceConfigForTest(nil, map[string]string{
+		envPersistenceData:   "false",
+		envPersistenceDir:    "/does/not/matter",
+		envPersistenceDBPath: "/also/ignored.sqlite",
+	})
+	if err != nil {
+		t.Fatalf("expected disabled config to parse, got error: %v", err)
+	}
+
+	if cfg.Enabled {
+		t.Fatalf("expected persistence disabled")
+	}
+	if cfg.Dir != "" || cfg.DBPath != "" {
+		t.Fatalf("expected disabled config to avoid resolving dir/db path, got dir=%q db=%q", cfg.Dir, cfg.DBPath)
+	}
+}
+
 func parseMCPConfigForTest(args []string, env map[string]string) (MCPRuntimeConfig, error) {
 	fs := flag.NewFlagSet("mcp-config-test", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -269,6 +417,21 @@ func parseCatalogConfigForTest(args []string, env map[string]string) (CatalogRun
 	}
 
 	return parseCatalogRuntimeConfig(fs, flags, func(key string) (string, bool) {
+		value, ok := env[key]
+		return value, ok
+	})
+}
+
+func parsePersistenceConfigForTest(args []string, env map[string]string) (PersistenceRuntimeConfig, error) {
+	fs := flag.NewFlagSet("persistence-config-test", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	flags := registerPersistenceRuntimeFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return PersistenceRuntimeConfig{}, err
+	}
+
+	return parsePersistenceRuntimeConfig(fs, flags, func(key string) (string, bool) {
 		value, ok := env[key]
 		return value, ok
 	})
