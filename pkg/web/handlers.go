@@ -1197,6 +1197,13 @@ func (s *Server) addGitRepo(c *echo.Context) error {
 			}
 			s.fsManager.UpdateGitRepos(gitRepoNames)
 		}
+
+		// Ensure the catalog index reflects the newly enabled repo set.
+		if err := s.skillManager.RebuildIndex(); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": "failed to rebuild index",
+			})
+		}
 	}
 
 	response := GitRepoResponse{

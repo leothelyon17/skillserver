@@ -64,6 +64,16 @@
                 <span x-text="filteredSkills.length"></span> result<span x-show="filteredSkills.length !== 1">s</span>
             </div>
         </div>
+        <div class="flex flex-wrap items-center gap-4 mt-2 mb-4 text-sm text-gray-700 dark:text-gray-300">
+            <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" x-model="showSkills" @change="searchSkills()" class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800">
+                <span>Show Skills</span>
+            </label>
+            <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" x-model="showPrompts" @change="searchSkills()" class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800">
+                <span>Show Prompts</span>
+            </label>
+        </div>
 
         <!-- Skills List -->
         <div class="skills-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5" x-show="!showEditor">
@@ -668,6 +678,8 @@
                 skills: [],
                 filteredSkills: [],
                 searchQuery: '',
+                showSkills: true,
+                showPrompts: true,
                 showEditor: false,
                 editingSkill: null,
                 skillName: '',
@@ -830,6 +842,65 @@
                     return 'skill';
                 },
 
+                hasVisibleClassifierSelection() {
+                    return this.showSkills || this.showPrompts;
+                },
+
+                isItemVisibleForClassifierFilters(item) {
+                    const classifier = this.normalizeClassifier(item && item.classifier);
+                    if (classifier === 'prompt') {
+                        return this.showPrompts;
+                    }
+                    return this.showSkills;
+                },
+
+                classifierFilterParam() {
+                    if (this.showSkills && !this.showPrompts) {
+                        return 'skill';
+                    }
+                    if (!this.showSkills && this.showPrompts) {
+                        return 'prompt';
+                    }
+                    return '';
+                },
+
+                filterCatalogItems(items, query = '') {
+                    if (!Array.isArray(items) || items.length === 0) {
+                        return [];
+                    }
+
+                    const normalizedQuery = String(query || '').trim().toLowerCase();
+                    return items.filter((item) => {
+                        if (!this.isItemVisibleForClassifierFilters(item)) {
+                            return false;
+                        }
+                        if (!normalizedQuery) {
+                            return true;
+                        }
+
+                        const haystack = [
+                            item && item.name,
+                            item && item.description,
+                            item && item.content,
+                            item && item.parent_skill_id,
+                            item && item.resource_path
+                        ]
+                            .filter((value) => typeof value === 'string' && value.length > 0)
+                            .join(' ')
+                            .toLowerCase();
+                        return haystack.includes(normalizedQuery);
+                    });
+                },
+
+                buildCatalogSearchURL(query) {
+                    let target = `/api/catalog/search?q=${encodeURIComponent(query)}`;
+                    const classifier = this.classifierFilterParam();
+                    if (classifier) {
+                        target += `&classifier=${encodeURIComponent(classifier)}`;
+                    }
+                    return target;
+                },
+
                 isSkillCatalogItem(item) {
                     return this.normalizeClassifier(item && item.classifier) === 'skill';
                 },
@@ -859,7 +930,11 @@
                             throw new Error(`HTTP ${response.status}`);
                         }
                         this.skills = await response.json();
-                        this.filteredSkills = this.skills;
+                        if (this.searchQuery.trim()) {
+                            await this.searchSkills();
+                        } else {
+                            this.filteredSkills = this.filterCatalogItems(this.skills);
+                        }
                     } catch (error) {
                         console.error('Failed to load catalog:', error);
                         this.showToast('Failed to load catalog', 'error');
@@ -869,20 +944,35 @@
                 },
 
                 async searchSkills() {
-                    if (!this.searchQuery.trim()) {
-                        this.filteredSkills = this.skills;
+                    if (!this.hasVisibleClassifierSelection()) {
+                        this.filteredSkills = [];
+                        return;
+                    }
+
+                    const query = this.searchQuery.trim();
+                    if (!query) {
+                        this.filteredSkills = this.filterCatalogItems(this.skills);
                         return;
                     }
 
                     this.isLoading = true;
                     try {
-                        const response = await fetch(`/api/catalog/search?q=${encodeURIComponent(this.searchQuery)}`);
+                        const response = await fetch(this.buildCatalogSearchURL(query));
                         if (!response.ok) {
                             throw new Error(`HTTP ${response.status}`);
                         }
-                        this.filteredSkills = await response.json();
+                        const results = await response.json();
+                        const normalizedResults = this.filterCatalogItems(results);
+
+                        // Keep UX responsive when index rebuild lags behind list updates.
+                        if (normalizedResults.length === 0) {
+                            this.filteredSkills = this.filterCatalogItems(this.skills, query);
+                        } else {
+                            this.filteredSkills = normalizedResults;
+                        }
                     } catch (error) {
                         console.error('Search failed:', error);
+                        this.filteredSkills = this.filterCatalogItems(this.skills, query);
                         this.showToast('Search failed', 'error');
                     } finally {
                         this.isLoading = false;
