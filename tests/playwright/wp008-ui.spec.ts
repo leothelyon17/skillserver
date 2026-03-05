@@ -56,6 +56,39 @@ test.describe("WP-008 metadata overlay editing and mutability UX", () => {
     await metadataModal.getByRole("button", { name: "Cancel" }).click();
   });
 
+  test("keeps metadata modal open when metadata API is unavailable", async ({ page }) => {
+    await page.route("**/api/catalog/*/metadata", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "catalog metadata API is unavailable",
+        }),
+      });
+    });
+
+    await openHome(page);
+
+    const card = catalogCard(page, "additive-skill");
+    await expect(card).toBeVisible();
+    await card.first().getByRole("button", { name: "Metadata" }).click();
+
+    const modal = page.locator(".fixed.inset-0:visible").filter({
+      has: page.getByRole("heading", { name: "Edit Catalog Metadata" }),
+    });
+
+    await expect(modal).toBeVisible();
+    await expect(
+      modal.getByText("Failed to load metadata: catalog metadata API is unavailable"),
+    ).toBeVisible();
+    await expect(modal.getByRole("button", { name: "Save Metadata" })).toBeDisabled();
+  });
+
   test("saves git-backed metadata overlays and keeps them visible after reload/search", async ({ page }) => {
     await openHome(page);
 
