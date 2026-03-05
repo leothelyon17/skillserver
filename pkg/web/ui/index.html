@@ -2957,8 +2957,12 @@
                             : this.taxonomyCatalog.errorMessage;
                     } catch (error) {
                         console.error('Failed to load catalog metadata:', error);
-                        this.metadataEditorModal.show = false;
-                        this.showToast(`Failed to load metadata: ${error.message || 'Unknown error'}`, 'error');
+                        const errorMessage = `Failed to load metadata: ${error.message || 'Unknown error'}`;
+                        this.metadataEditorModal.loading = false;
+                        this.metadataEditorModal.saving = false;
+                        this.metadataEditorModal.metadataWritable = false;
+                        this.metadataEditorModal.errorMessage = errorMessage;
+                        this.showToast(errorMessage, 'error');
                     }
                 },
 
