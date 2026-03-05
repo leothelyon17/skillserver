@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,18 +56,23 @@ type UpdateSkillRequest struct {
 
 // CatalogItemResponse represents a catalog entry in API responses.
 type CatalogItemResponse struct {
-	ID               string                   `json:"id"`
-	Classifier       domain.CatalogClassifier `json:"classifier"`
-	Name             string                   `json:"name"`
-	Description      string                   `json:"description,omitempty"`
-	Content          string                   `json:"content,omitempty"`
-	ParentSkillID    string                   `json:"parent_skill_id,omitempty"`
-	ResourcePath     string                   `json:"resource_path,omitempty"`
-	CustomMetadata   map[string]any           `json:"custom_metadata,omitempty"`
-	Labels           []string                 `json:"labels,omitempty"`
-	ContentWritable  bool                     `json:"content_writable"`
-	MetadataWritable bool                     `json:"metadata_writable"`
-	ReadOnly         bool                     `json:"read_only"`
+	ID                 string                            `json:"id"`
+	Classifier         domain.CatalogClassifier          `json:"classifier"`
+	Name               string                            `json:"name"`
+	Description        string                            `json:"description,omitempty"`
+	Content            string                            `json:"content,omitempty"`
+	ParentSkillID      string                            `json:"parent_skill_id,omitempty"`
+	ResourcePath       string                            `json:"resource_path,omitempty"`
+	PrimaryDomain      *domain.CatalogTaxonomyReference  `json:"primary_domain,omitempty"`
+	PrimarySubdomain   *domain.CatalogTaxonomyReference  `json:"primary_subdomain,omitempty"`
+	SecondaryDomain    *domain.CatalogTaxonomyReference  `json:"secondary_domain,omitempty"`
+	SecondarySubdomain *domain.CatalogTaxonomyReference  `json:"secondary_subdomain,omitempty"`
+	Tags               []domain.CatalogTaxonomyReference `json:"tags,omitempty"`
+	CustomMetadata     map[string]any                    `json:"custom_metadata,omitempty"`
+	Labels             []string                          `json:"labels,omitempty"`
+	ContentWritable    bool                              `json:"content_writable"`
+	MetadataWritable   bool                              `json:"metadata_writable"`
+	ReadOnly           bool                              `json:"read_only"`
 }
 
 // PatchCatalogMetadataRequest represents one metadata overlay mutation request.
@@ -76,6 +82,71 @@ type PatchCatalogMetadataRequest struct {
 	Labels         *[]string       `json:"labels"`
 	CustomMetadata *map[string]any `json:"custom_metadata"`
 	UpdatedBy      *string         `json:"updated_by,omitempty"`
+}
+
+// CatalogTaxonomyDomainCreateRequest describes domain create payloads.
+type CatalogTaxonomyDomainCreateRequest struct {
+	DomainID    string `json:"domain_id"`
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Active      *bool  `json:"active,omitempty"`
+}
+
+// CatalogTaxonomyDomainUpdateRequest describes domain patch payloads.
+type CatalogTaxonomyDomainUpdateRequest struct {
+	Key         *string `json:"key,omitempty"`
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Active      *bool   `json:"active,omitempty"`
+}
+
+// CatalogTaxonomySubdomainCreateRequest describes subdomain create payloads.
+type CatalogTaxonomySubdomainCreateRequest struct {
+	SubdomainID string `json:"subdomain_id"`
+	DomainID    string `json:"domain_id"`
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Active      *bool  `json:"active,omitempty"`
+}
+
+// CatalogTaxonomySubdomainUpdateRequest describes subdomain patch payloads.
+type CatalogTaxonomySubdomainUpdateRequest struct {
+	DomainID    *string `json:"domain_id,omitempty"`
+	Key         *string `json:"key,omitempty"`
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Active      *bool   `json:"active,omitempty"`
+}
+
+// CatalogTaxonomyTagCreateRequest describes tag create payloads.
+type CatalogTaxonomyTagCreateRequest struct {
+	TagID       string `json:"tag_id"`
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Color       string `json:"color,omitempty"`
+	Active      *bool  `json:"active,omitempty"`
+}
+
+// CatalogTaxonomyTagUpdateRequest describes tag patch payloads.
+type CatalogTaxonomyTagUpdateRequest struct {
+	Key         *string `json:"key,omitempty"`
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Color       *string `json:"color,omitempty"`
+	Active      *bool   `json:"active,omitempty"`
+}
+
+// PatchCatalogItemTaxonomyRequest describes item taxonomy assignment patch payloads.
+type PatchCatalogItemTaxonomyRequest struct {
+	PrimaryDomainID      *string   `json:"primary_domain_id,omitempty"`
+	PrimarySubdomainID   *string   `json:"primary_subdomain_id,omitempty"`
+	SecondaryDomainID    *string   `json:"secondary_domain_id,omitempty"`
+	SecondarySubdomainID *string   `json:"secondary_subdomain_id,omitempty"`
+	TagIDs               *[]string `json:"tag_ids,omitempty"`
+	UpdatedBy            *string   `json:"updated_by,omitempty"`
 }
 
 // CatalogMetadataResponse represents source, overlay, and effective metadata views.
@@ -113,16 +184,22 @@ type CatalogMetadataOverlayResponse struct {
 
 // CatalogMetadataEffectiveResponse represents merged source + overlay metadata.
 type CatalogMetadataEffectiveResponse struct {
-	Name             string         `json:"name"`
-	Description      string         `json:"description,omitempty"`
-	CustomMetadata   map[string]any `json:"custom_metadata"`
-	Labels           []string       `json:"labels"`
-	ContentWritable  bool           `json:"content_writable"`
-	MetadataWritable bool           `json:"metadata_writable"`
-	ReadOnly         bool           `json:"read_only"`
+	Name               string                            `json:"name"`
+	Description        string                            `json:"description,omitempty"`
+	PrimaryDomain      *domain.CatalogTaxonomyReference  `json:"primary_domain,omitempty"`
+	PrimarySubdomain   *domain.CatalogTaxonomyReference  `json:"primary_subdomain,omitempty"`
+	SecondaryDomain    *domain.CatalogTaxonomyReference  `json:"secondary_domain,omitempty"`
+	SecondarySubdomain *domain.CatalogTaxonomyReference  `json:"secondary_subdomain,omitempty"`
+	Tags               []domain.CatalogTaxonomyReference `json:"tags"`
+	CustomMetadata     map[string]any                    `json:"custom_metadata"`
+	Labels             []string                          `json:"labels"`
+	ContentWritable    bool                              `json:"content_writable"`
+	MetadataWritable   bool                              `json:"metadata_writable"`
+	ReadOnly           bool                              `json:"read_only"`
 }
 
 const (
+	catalogTaxonomyRequestMaxBodyBytes     = 32 * 1024
 	catalogMetadataPatchMaxBodyBytes       = 32 * 1024
 	catalogMetadataDisplayNameMaxChars     = 256
 	catalogMetadataDescriptionMaxChars     = 4096
@@ -135,20 +212,27 @@ const (
 	catalogMetadataCustomMetadataMaxKeyLen = 128
 )
 
+var errCatalogTaxonomyFiltersUnavailable = errors.New("catalog taxonomy filters are unavailable")
+
 func catalogResponseFromItem(item domain.CatalogItem) CatalogItemResponse {
 	return CatalogItemResponse{
-		ID:               item.ID,
-		Classifier:       item.Classifier,
-		Name:             item.Name,
-		Description:      item.Description,
-		Content:          item.Content,
-		ParentSkillID:    item.ParentSkillID,
-		ResourcePath:     item.ResourcePath,
-		CustomMetadata:   cloneCatalogMetadataMap(item.CustomMetadata),
-		Labels:           append([]string{}, item.Labels...),
-		ContentWritable:  item.ContentWritable,
-		MetadataWritable: item.MetadataWritable,
-		ReadOnly:         item.ReadOnly,
+		ID:                 item.ID,
+		Classifier:         item.Classifier,
+		Name:               item.Name,
+		Description:        item.Description,
+		Content:            item.Content,
+		ParentSkillID:      item.ParentSkillID,
+		ResourcePath:       item.ResourcePath,
+		PrimaryDomain:      cloneCatalogTaxonomyReference(item.PrimaryDomain),
+		PrimarySubdomain:   cloneCatalogTaxonomyReference(item.PrimarySubdomain),
+		SecondaryDomain:    cloneCatalogTaxonomyReference(item.SecondaryDomain),
+		SecondarySubdomain: cloneCatalogTaxonomyReference(item.SecondarySubdomain),
+		Tags:               cloneCatalogTaxonomyReferences(item.Tags),
+		CustomMetadata:     cloneCatalogMetadataMap(item.CustomMetadata),
+		Labels:             append([]string{}, item.Labels...),
+		ContentWritable:    item.ContentWritable,
+		MetadataWritable:   item.MetadataWritable,
+		ReadOnly:           item.ReadOnly,
 	}
 }
 
@@ -524,8 +608,20 @@ func (s *Server) searchSkills(c *echo.Context) error {
 
 // listCatalog lists all catalog items (skills and prompts).
 func (s *Server) listCatalog(c *echo.Context) error {
-	items, err := s.loadCatalogItems(c.Request().Context(), "", nil)
+	taxonomyFilter, err := decodeCatalogListTaxonomyFilter(c)
 	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	items, err := s.loadCatalogItems(c.Request().Context(), "", nil, taxonomyFilter)
+	if err != nil {
+		if errors.Is(err, errCatalogTaxonomyFiltersUnavailable) {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{
+				"error": err.Error(),
+			})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
 		})
@@ -560,8 +656,20 @@ func (s *Server) searchCatalog(c *echo.Context) error {
 		classifier = &parsedClassifier
 	}
 
-	items, err := s.loadCatalogItems(c.Request().Context(), query, classifier)
+	taxonomyFilter, err := decodeCatalogListTaxonomyFilter(c)
 	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	items, err := s.loadCatalogItems(c.Request().Context(), query, classifier, taxonomyFilter)
+	if err != nil {
+		if errors.Is(err, errCatalogTaxonomyFiltersUnavailable) {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{
+				"error": err.Error(),
+			})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
 		})
@@ -579,12 +687,12 @@ func (s *Server) loadCatalogItems(
 	ctx context.Context,
 	query string,
 	classifier *domain.CatalogClassifier,
+	taxonomyFilter domain.CatalogEffectiveListFilter,
 ) ([]domain.CatalogItem, error) {
 	normalizedQuery := strings.TrimSpace(query)
 	if s.catalogMetadataService != nil {
-		items, err := s.catalogMetadataService.List(ctx, domain.CatalogEffectiveListFilter{
-			Classifier: classifier,
-		})
+		taxonomyFilter.Classifier = classifier
+		items, err := s.catalogMetadataService.List(ctx, taxonomyFilter)
 		if err != nil {
 			return nil, err
 		}
@@ -593,6 +701,10 @@ func (s *Server) loadCatalogItems(
 		}
 
 		return filterCatalogItemsByQuery(items, normalizedQuery), nil
+	}
+
+	if hasCatalogTaxonomyListFilterConstraints(taxonomyFilter) {
+		return nil, errCatalogTaxonomyFiltersUnavailable
 	}
 
 	if normalizedQuery == "" {
@@ -610,6 +722,27 @@ func cloneCatalogMetadataMap(input map[string]any) map[string]any {
 	for key, value := range input {
 		copied[key] = value
 	}
+	return copied
+}
+
+func cloneCatalogTaxonomyReference(
+	reference *domain.CatalogTaxonomyReference,
+) *domain.CatalogTaxonomyReference {
+	if reference == nil {
+		return nil
+	}
+	copied := *reference
+	return &copied
+}
+
+func cloneCatalogTaxonomyReferences(
+	references []domain.CatalogTaxonomyReference,
+) []domain.CatalogTaxonomyReference {
+	if len(references) == 0 {
+		return []domain.CatalogTaxonomyReference{}
+	}
+	copied := make([]domain.CatalogTaxonomyReference, len(references))
+	copy(copied, references)
 	return copied
 }
 
@@ -642,6 +775,21 @@ func catalogItemMatchesQuery(item domain.CatalogItem, normalizedQuery string) bo
 		item.ResourcePath,
 	}
 	parts = append(parts, item.Labels...)
+	if item.PrimaryDomain != nil {
+		parts = append(parts, item.PrimaryDomain.ID, item.PrimaryDomain.Key, item.PrimaryDomain.Name)
+	}
+	if item.PrimarySubdomain != nil {
+		parts = append(parts, item.PrimarySubdomain.ID, item.PrimarySubdomain.Key, item.PrimarySubdomain.Name)
+	}
+	if item.SecondaryDomain != nil {
+		parts = append(parts, item.SecondaryDomain.ID, item.SecondaryDomain.Key, item.SecondaryDomain.Name)
+	}
+	if item.SecondarySubdomain != nil {
+		parts = append(parts, item.SecondarySubdomain.ID, item.SecondarySubdomain.Key, item.SecondarySubdomain.Name)
+	}
+	for _, tag := range item.Tags {
+		parts = append(parts, tag.ID, tag.Key, tag.Name)
+	}
 
 	if len(item.CustomMetadata) > 0 {
 		customMetadataJSON, err := json.Marshal(item.CustomMetadata)
@@ -732,6 +880,436 @@ func (s *Server) patchCatalogMetadata(c *echo.Context) error {
 	return c.JSON(http.StatusOK, catalogMetadataResponseFromView(view))
 }
 
+// getCatalogItemTaxonomy returns one catalog item's taxonomy assignment state.
+func (s *Server) getCatalogItemTaxonomy(c *echo.Context) error {
+	if s.taxonomyAssignment == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy assignment API is unavailable",
+		})
+	}
+
+	itemID, err := decodeCatalogItemIDFromPath(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	assignment, err := s.taxonomyAssignment.Get(c.Request().Context(), itemID)
+	if err != nil {
+		return encodeCatalogTaxonomyAssignmentServiceError(c, err)
+	}
+
+	return c.JSON(http.StatusOK, assignment)
+}
+
+// patchCatalogItemTaxonomy patches one catalog item's taxonomy assignment state.
+func (s *Server) patchCatalogItemTaxonomy(c *echo.Context) error {
+	if s.taxonomyAssignment == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy assignment API is unavailable",
+		})
+	}
+
+	itemID, err := decodeCatalogItemIDFromPath(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	request, err := decodeCatalogTaxonomyRequest[PatchCatalogItemTaxonomyRequest](c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	input := domain.CatalogItemTaxonomyAssignmentPatchInput{
+		ItemID:               itemID,
+		PrimaryDomainID:      request.PrimaryDomainID,
+		PrimarySubdomainID:   request.PrimarySubdomainID,
+		SecondaryDomainID:    request.SecondaryDomainID,
+		SecondarySubdomainID: request.SecondarySubdomainID,
+		TagIDs:               request.TagIDs,
+		UpdatedBy:            request.UpdatedBy,
+	}
+
+	assignment, err := s.taxonomyAssignment.Patch(c.Request().Context(), input)
+	if err != nil {
+		return encodeCatalogTaxonomyAssignmentServiceError(c, err)
+	}
+
+	return c.JSON(http.StatusOK, assignment)
+}
+
+// listCatalogTaxonomyDomains returns taxonomy domain objects.
+func (s *Server) listCatalogTaxonomyDomains(c *echo.Context) error {
+	if s.taxonomyRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy registry API is unavailable",
+		})
+	}
+
+	filter, err := decodeCatalogTaxonomyDomainListFilter(c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	domains, err := s.taxonomyRegistry.ListDomains(c.Request().Context(), filter)
+	if err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, nil)
+	}
+
+	return c.JSON(http.StatusOK, domains)
+}
+
+// createCatalogTaxonomyDomain creates one taxonomy domain object.
+func (s *Server) createCatalogTaxonomyDomain(c *echo.Context) error {
+	if s.taxonomyRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy registry API is unavailable",
+		})
+	}
+
+	request, err := decodeCatalogTaxonomyRequest[CatalogTaxonomyDomainCreateRequest](c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	created, err := s.taxonomyRegistry.CreateDomain(
+		c.Request().Context(),
+		domain.CatalogTaxonomyDomainCreateInput{
+			DomainID:    request.DomainID,
+			Key:         request.Key,
+			Name:        request.Name,
+			Description: request.Description,
+			Active:      request.Active,
+		},
+	)
+	if err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, nil)
+	}
+
+	return c.JSON(http.StatusCreated, created)
+}
+
+// updateCatalogTaxonomyDomain patches one taxonomy domain object by ID.
+func (s *Server) updateCatalogTaxonomyDomain(c *echo.Context) error {
+	if s.taxonomyRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy registry API is unavailable",
+		})
+	}
+
+	domainID, err := decodeCatalogTaxonomyObjectIDFromPath(c.Param("id"), "domain_id")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	request, err := decodeCatalogTaxonomyRequest[CatalogTaxonomyDomainUpdateRequest](c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	if !hasCatalogTaxonomyDomainUpdateValues(request) {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "at least one of key, name, description, or active is required",
+		})
+	}
+
+	updated, err := s.taxonomyRegistry.UpdateDomain(
+		c.Request().Context(),
+		domain.CatalogTaxonomyDomainUpdateInput{
+			DomainID:    domainID,
+			Key:         request.Key,
+			Name:        request.Name,
+			Description: request.Description,
+			Active:      request.Active,
+		},
+	)
+	if err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, domain.ErrCatalogTaxonomyDomainNotFound)
+	}
+
+	return c.JSON(http.StatusOK, updated)
+}
+
+// deleteCatalogTaxonomyDomain deletes one taxonomy domain object by ID.
+func (s *Server) deleteCatalogTaxonomyDomain(c *echo.Context) error {
+	if s.taxonomyRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy registry API is unavailable",
+		})
+	}
+
+	domainID, err := decodeCatalogTaxonomyObjectIDFromPath(c.Param("id"), "domain_id")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	if err := s.taxonomyRegistry.DeleteDomain(c.Request().Context(), domainID); err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, domain.ErrCatalogTaxonomyDomainNotFound)
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+// listCatalogTaxonomySubdomains returns taxonomy subdomain objects.
+func (s *Server) listCatalogTaxonomySubdomains(c *echo.Context) error {
+	if s.taxonomyRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy registry API is unavailable",
+		})
+	}
+
+	filter, err := decodeCatalogTaxonomySubdomainListFilter(c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	subdomains, err := s.taxonomyRegistry.ListSubdomains(c.Request().Context(), filter)
+	if err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, nil)
+	}
+
+	return c.JSON(http.StatusOK, subdomains)
+}
+
+// createCatalogTaxonomySubdomain creates one taxonomy subdomain object.
+func (s *Server) createCatalogTaxonomySubdomain(c *echo.Context) error {
+	if s.taxonomyRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy registry API is unavailable",
+		})
+	}
+
+	request, err := decodeCatalogTaxonomyRequest[CatalogTaxonomySubdomainCreateRequest](c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	created, err := s.taxonomyRegistry.CreateSubdomain(
+		c.Request().Context(),
+		domain.CatalogTaxonomySubdomainCreateInput{
+			SubdomainID: request.SubdomainID,
+			DomainID:    request.DomainID,
+			Key:         request.Key,
+			Name:        request.Name,
+			Description: request.Description,
+			Active:      request.Active,
+		},
+	)
+	if err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, nil)
+	}
+
+	return c.JSON(http.StatusCreated, created)
+}
+
+// updateCatalogTaxonomySubdomain patches one taxonomy subdomain object by ID.
+func (s *Server) updateCatalogTaxonomySubdomain(c *echo.Context) error {
+	if s.taxonomyRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy registry API is unavailable",
+		})
+	}
+
+	subdomainID, err := decodeCatalogTaxonomyObjectIDFromPath(c.Param("id"), "subdomain_id")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	request, err := decodeCatalogTaxonomyRequest[CatalogTaxonomySubdomainUpdateRequest](c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	if !hasCatalogTaxonomySubdomainUpdateValues(request) {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "at least one of domain_id, key, name, description, or active is required",
+		})
+	}
+
+	updated, err := s.taxonomyRegistry.UpdateSubdomain(
+		c.Request().Context(),
+		domain.CatalogTaxonomySubdomainUpdateInput{
+			SubdomainID: subdomainID,
+			DomainID:    request.DomainID,
+			Key:         request.Key,
+			Name:        request.Name,
+			Description: request.Description,
+			Active:      request.Active,
+		},
+	)
+	if err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, domain.ErrCatalogTaxonomySubdomainNotFound)
+	}
+
+	return c.JSON(http.StatusOK, updated)
+}
+
+// deleteCatalogTaxonomySubdomain deletes one taxonomy subdomain object by ID.
+func (s *Server) deleteCatalogTaxonomySubdomain(c *echo.Context) error {
+	if s.taxonomyRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy registry API is unavailable",
+		})
+	}
+
+	subdomainID, err := decodeCatalogTaxonomyObjectIDFromPath(c.Param("id"), "subdomain_id")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	if err := s.taxonomyRegistry.DeleteSubdomain(c.Request().Context(), subdomainID); err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, domain.ErrCatalogTaxonomySubdomainNotFound)
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+// listCatalogTaxonomyTags returns taxonomy tag objects.
+func (s *Server) listCatalogTaxonomyTags(c *echo.Context) error {
+	if s.taxonomyRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy registry API is unavailable",
+		})
+	}
+
+	filter, err := decodeCatalogTaxonomyTagListFilter(c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	tags, err := s.taxonomyRegistry.ListTags(c.Request().Context(), filter)
+	if err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, nil)
+	}
+
+	return c.JSON(http.StatusOK, tags)
+}
+
+// createCatalogTaxonomyTag creates one taxonomy tag object.
+func (s *Server) createCatalogTaxonomyTag(c *echo.Context) error {
+	if s.taxonomyRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy registry API is unavailable",
+		})
+	}
+
+	request, err := decodeCatalogTaxonomyRequest[CatalogTaxonomyTagCreateRequest](c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	created, err := s.taxonomyRegistry.CreateTag(
+		c.Request().Context(),
+		domain.CatalogTaxonomyTagCreateInput{
+			TagID:       request.TagID,
+			Key:         request.Key,
+			Name:        request.Name,
+			Description: request.Description,
+			Color:       request.Color,
+			Active:      request.Active,
+		},
+	)
+	if err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, nil)
+	}
+
+	return c.JSON(http.StatusCreated, created)
+}
+
+// updateCatalogTaxonomyTag patches one taxonomy tag object by ID.
+func (s *Server) updateCatalogTaxonomyTag(c *echo.Context) error {
+	if s.taxonomyRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy registry API is unavailable",
+		})
+	}
+
+	tagID, err := decodeCatalogTaxonomyObjectIDFromPath(c.Param("id"), "tag_id")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	request, err := decodeCatalogTaxonomyRequest[CatalogTaxonomyTagUpdateRequest](c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	if !hasCatalogTaxonomyTagUpdateValues(request) {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "at least one of key, name, description, color, or active is required",
+		})
+	}
+
+	updated, err := s.taxonomyRegistry.UpdateTag(
+		c.Request().Context(),
+		domain.CatalogTaxonomyTagUpdateInput{
+			TagID:       tagID,
+			Key:         request.Key,
+			Name:        request.Name,
+			Description: request.Description,
+			Color:       request.Color,
+			Active:      request.Active,
+		},
+	)
+	if err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, domain.ErrCatalogTaxonomyTagNotFound)
+	}
+
+	return c.JSON(http.StatusOK, updated)
+}
+
+// deleteCatalogTaxonomyTag deletes one taxonomy tag object by ID.
+func (s *Server) deleteCatalogTaxonomyTag(c *echo.Context) error {
+	if s.taxonomyRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy registry API is unavailable",
+		})
+	}
+
+	tagID, err := decodeCatalogTaxonomyObjectIDFromPath(c.Param("id"), "tag_id")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	if err := s.taxonomyRegistry.DeleteTag(c.Request().Context(), tagID); err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, domain.ErrCatalogTaxonomyTagNotFound)
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}
+
 func decodeCatalogItemIDFromPath(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -749,6 +1327,248 @@ func decodeCatalogItemIDFromPath(raw string) (string, error) {
 	}
 
 	return itemID, nil
+}
+
+func decodeCatalogTaxonomyObjectIDFromPath(raw string, field string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fmt.Errorf("%s is required", field)
+	}
+
+	decoded, err := url.PathUnescape(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("%s path is invalid", field)
+	}
+
+	normalized := strings.TrimSpace(decoded)
+	if normalized == "" {
+		return "", fmt.Errorf("%s is required", field)
+	}
+	return normalized, nil
+}
+
+func decodeCatalogTaxonomyRequest[T any](c *echo.Context) (T, error) {
+	var zero T
+
+	limitedReader := io.LimitReader(c.Request().Body, catalogTaxonomyRequestMaxBodyBytes+1)
+	payload, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return zero, fmt.Errorf("invalid request payload")
+	}
+	if len(payload) == 0 {
+		return zero, fmt.Errorf("request body is required")
+	}
+	if len(payload) > catalogTaxonomyRequestMaxBodyBytes {
+		return zero, fmt.Errorf("request payload exceeds %d bytes", catalogTaxonomyRequestMaxBodyBytes)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+
+	var request T
+	if err := decoder.Decode(&request); err != nil {
+		return zero, fmt.Errorf("invalid request payload")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return zero, fmt.Errorf("invalid request payload")
+	}
+
+	return request, nil
+}
+
+func decodeCatalogTaxonomyDomainListFilter(
+	c *echo.Context,
+) (domain.CatalogTaxonomyDomainListFilter, error) {
+	active, err := decodeCatalogTaxonomyBoolQueryParam(c.QueryParam("active"), "active")
+	if err != nil {
+		return domain.CatalogTaxonomyDomainListFilter{}, err
+	}
+
+	return domain.CatalogTaxonomyDomainListFilter{
+		DomainID:  strings.TrimSpace(c.QueryParam("domain_id")),
+		DomainIDs: decodeCatalogTaxonomyCSVQueryParam(c.QueryParam("domain_ids")),
+		Key:       strings.TrimSpace(c.QueryParam("key")),
+		Keys:      decodeCatalogTaxonomyCSVQueryParam(c.QueryParam("keys")),
+		Active:    active,
+	}, nil
+}
+
+func decodeCatalogTaxonomySubdomainListFilter(
+	c *echo.Context,
+) (domain.CatalogTaxonomySubdomainListFilter, error) {
+	active, err := decodeCatalogTaxonomyBoolQueryParam(c.QueryParam("active"), "active")
+	if err != nil {
+		return domain.CatalogTaxonomySubdomainListFilter{}, err
+	}
+
+	return domain.CatalogTaxonomySubdomainListFilter{
+		SubdomainID:  strings.TrimSpace(c.QueryParam("subdomain_id")),
+		SubdomainIDs: decodeCatalogTaxonomyCSVQueryParam(c.QueryParam("subdomain_ids")),
+		DomainID:     strings.TrimSpace(c.QueryParam("domain_id")),
+		DomainIDs:    decodeCatalogTaxonomyCSVQueryParam(c.QueryParam("domain_ids")),
+		Key:          strings.TrimSpace(c.QueryParam("key")),
+		Keys:         decodeCatalogTaxonomyCSVQueryParam(c.QueryParam("keys")),
+		Active:       active,
+	}, nil
+}
+
+func decodeCatalogTaxonomyTagListFilter(c *echo.Context) (domain.CatalogTaxonomyTagListFilter, error) {
+	active, err := decodeCatalogTaxonomyBoolQueryParam(c.QueryParam("active"), "active")
+	if err != nil {
+		return domain.CatalogTaxonomyTagListFilter{}, err
+	}
+
+	return domain.CatalogTaxonomyTagListFilter{
+		TagID:  strings.TrimSpace(c.QueryParam("tag_id")),
+		TagIDs: decodeCatalogTaxonomyCSVQueryParam(c.QueryParam("tag_ids")),
+		Key:    strings.TrimSpace(c.QueryParam("key")),
+		Keys:   decodeCatalogTaxonomyCSVQueryParam(c.QueryParam("keys")),
+		Active: active,
+	}, nil
+}
+
+func decodeCatalogListTaxonomyFilter(c *echo.Context) (domain.CatalogEffectiveListFilter, error) {
+	filter := domain.CatalogEffectiveListFilter{
+		PrimaryDomainID:   strings.TrimSpace(c.QueryParam("primary_domain_id")),
+		SecondaryDomainID: strings.TrimSpace(c.QueryParam("secondary_domain_id")),
+		SubdomainID:       strings.TrimSpace(c.QueryParam("subdomain_id")),
+		TagIDs:            decodeCatalogTaxonomyCSVQueryParam(c.QueryParam("tag_ids")),
+	}
+
+	tagMatchRaw := strings.TrimSpace(c.QueryParam("tag_match"))
+	if tagMatchRaw == "" {
+		return filter, nil
+	}
+
+	tagMatch := domain.CatalogTagMatchMode(strings.ToLower(tagMatchRaw))
+	if !tagMatch.IsValid() {
+		return domain.CatalogEffectiveListFilter{}, fmt.Errorf(
+			"query parameter %q must be one of: any, all",
+			"tag_match",
+		)
+	}
+	filter.TagMatch = tagMatch
+	return filter, nil
+}
+
+func hasCatalogTaxonomyListFilterConstraints(filter domain.CatalogEffectiveListFilter) bool {
+	return strings.TrimSpace(filter.PrimaryDomainID) != "" ||
+		strings.TrimSpace(filter.SecondaryDomainID) != "" ||
+		strings.TrimSpace(filter.SubdomainID) != "" ||
+		len(filter.TagIDs) > 0 ||
+		strings.TrimSpace(string(filter.TagMatch)) != ""
+}
+
+func decodeCatalogTaxonomyBoolQueryParam(
+	raw string,
+	field string,
+) (*bool, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, nil
+	}
+
+	parsed, err := strconv.ParseBool(trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("query parameter %q must be a boolean", field)
+	}
+
+	return &parsed, nil
+}
+
+func decodeCatalogTaxonomyCSVQueryParam(raw string) []string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+
+	parts := strings.Split(trimmed, ",")
+	result := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		candidate := strings.TrimSpace(part)
+		if candidate == "" {
+			continue
+		}
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		result = append(result, candidate)
+	}
+
+	return result
+}
+
+func hasCatalogTaxonomyDomainUpdateValues(request CatalogTaxonomyDomainUpdateRequest) bool {
+	return request.Key != nil || request.Name != nil || request.Description != nil || request.Active != nil
+}
+
+func hasCatalogTaxonomySubdomainUpdateValues(request CatalogTaxonomySubdomainUpdateRequest) bool {
+	return request.DomainID != nil ||
+		request.Key != nil ||
+		request.Name != nil ||
+		request.Description != nil ||
+		request.Active != nil
+}
+
+func hasCatalogTaxonomyTagUpdateValues(request CatalogTaxonomyTagUpdateRequest) bool {
+	return request.Key != nil ||
+		request.Name != nil ||
+		request.Description != nil ||
+		request.Color != nil ||
+		request.Active != nil
+}
+
+func encodeCatalogTaxonomyServiceError(
+	c *echo.Context,
+	serviceErr error,
+	notFoundSentinel error,
+) error {
+	switch {
+	case notFoundSentinel != nil && errors.Is(serviceErr, notFoundSentinel):
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": serviceErr.Error(),
+		})
+	case errors.Is(serviceErr, domain.ErrCatalogTaxonomyValidation),
+		errors.Is(serviceErr, domain.ErrCatalogTaxonomyInvalidRelationship):
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": serviceErr.Error(),
+		})
+	case errors.Is(serviceErr, domain.ErrCatalogTaxonomyConflict):
+		return c.JSON(http.StatusConflict, map[string]string{
+			"error": serviceErr.Error(),
+		})
+	default:
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": serviceErr.Error(),
+		})
+	}
+}
+
+func encodeCatalogTaxonomyAssignmentServiceError(c *echo.Context, serviceErr error) error {
+	switch {
+	case errors.Is(serviceErr, domain.ErrCatalogTaxonomyAssignmentItemNotFound),
+		errors.Is(serviceErr, domain.ErrCatalogTaxonomyDomainNotFound),
+		errors.Is(serviceErr, domain.ErrCatalogTaxonomySubdomainNotFound),
+		errors.Is(serviceErr, domain.ErrCatalogTaxonomyTagNotFound):
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": serviceErr.Error(),
+		})
+	case errors.Is(serviceErr, domain.ErrCatalogTaxonomyValidation),
+		errors.Is(serviceErr, domain.ErrCatalogTaxonomyInvalidRelationship):
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": serviceErr.Error(),
+		})
+	case errors.Is(serviceErr, domain.ErrCatalogTaxonomyConflict):
+		return c.JSON(http.StatusConflict, map[string]string{
+			"error": serviceErr.Error(),
+		})
+	default:
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": serviceErr.Error(),
+		})
+	}
 }
 
 func decodeCatalogMetadataPatchRequest(c *echo.Context) (PatchCatalogMetadataRequest, error) {
@@ -973,13 +1793,18 @@ func catalogMetadataResponseFromView(view domain.CatalogMetadataView) CatalogMet
 			UpdatedBy:      view.Overlay.UpdatedBy,
 		},
 		Effective: CatalogMetadataEffectiveResponse{
-			Name:             view.Effective.Name,
-			Description:      view.Effective.Description,
-			CustomMetadata:   view.Effective.CustomMetadata,
-			Labels:           view.Effective.Labels,
-			ContentWritable:  view.Effective.ContentWritable,
-			MetadataWritable: view.Effective.MetadataWritable,
-			ReadOnly:         view.Effective.ReadOnly,
+			Name:               view.Effective.Name,
+			Description:        view.Effective.Description,
+			PrimaryDomain:      cloneCatalogTaxonomyReference(view.Effective.PrimaryDomain),
+			PrimarySubdomain:   cloneCatalogTaxonomyReference(view.Effective.PrimarySubdomain),
+			SecondaryDomain:    cloneCatalogTaxonomyReference(view.Effective.SecondaryDomain),
+			SecondarySubdomain: cloneCatalogTaxonomyReference(view.Effective.SecondarySubdomain),
+			Tags:               cloneCatalogTaxonomyReferences(view.Effective.Tags),
+			CustomMetadata:     view.Effective.CustomMetadata,
+			Labels:             view.Effective.Labels,
+			ContentWritable:    view.Effective.ContentWritable,
+			MetadataWritable:   view.Effective.MetadataWritable,
+			ReadOnly:           view.Effective.ReadOnly,
 		},
 	}
 
@@ -995,6 +1820,9 @@ func catalogMetadataResponseFromView(view domain.CatalogMetadataView) CatalogMet
 	}
 	if response.Effective.CustomMetadata == nil {
 		response.Effective.CustomMetadata = map[string]any{}
+	}
+	if response.Effective.Tags == nil {
+		response.Effective.Tags = []domain.CatalogTaxonomyReference{}
 	}
 	if response.Effective.Labels == nil {
 		response.Effective.Labels = []string{}

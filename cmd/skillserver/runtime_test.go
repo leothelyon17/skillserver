@@ -181,6 +181,7 @@ func defaultRuntimeMCPConfig(mode MCPTransportMode) MCPRuntimeConfig {
 		HTTPPath:           defaultMCPHTTPPath,
 		SessionTimeout:     defaultMCPSessionTimeout,
 		Stateless:          defaultMCPStateless,
+		EnableWrites:       defaultMCPEnableWrites,
 		EnableEventStore:   defaultMCPEnableEventStore,
 		EventStoreMaxBytes: defaultMCPEventStoreMaxBytes,
 	}

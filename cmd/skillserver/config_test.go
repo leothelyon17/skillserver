@@ -28,6 +28,9 @@ func TestMCPConfig_Defaults(t *testing.T) {
 	if cfg.Stateless != defaultMCPStateless {
 		t.Fatalf("expected default stateless %v, got %v", defaultMCPStateless, cfg.Stateless)
 	}
+	if cfg.EnableWrites != defaultMCPEnableWrites {
+		t.Fatalf("expected default enable writes %v, got %v", defaultMCPEnableWrites, cfg.EnableWrites)
+	}
 	if cfg.EnableEventStore != defaultMCPEnableEventStore {
 		t.Fatalf("expected default event store enabled %v, got %v", defaultMCPEnableEventStore, cfg.EnableEventStore)
 	}
@@ -42,6 +45,7 @@ func TestMCPConfig_EnvOverrides(t *testing.T) {
 		envMCPHTTPPath:           "/remote-mcp",
 		envMCPSessionTimeout:     "45m",
 		envMCPStateless:          "true",
+		envMCPEnableWrites:       "true",
 		envMCPEnableEventStore:   "false",
 		envMCPEventStoreMaxBytes: "2097152",
 	}
@@ -63,6 +67,9 @@ func TestMCPConfig_EnvOverrides(t *testing.T) {
 	if !cfg.Stateless {
 		t.Fatalf("expected stateless true from env")
 	}
+	if !cfg.EnableWrites {
+		t.Fatalf("expected enable writes true from env")
+	}
 	if cfg.EnableEventStore {
 		t.Fatalf("expected event store false from env")
 	}
@@ -77,6 +84,7 @@ func TestMCPConfig_FlagPrecedence(t *testing.T) {
 		envMCPHTTPPath:           "/env-mcp",
 		envMCPSessionTimeout:     "1h",
 		envMCPStateless:          "false",
+		envMCPEnableWrites:       "false",
 		envMCPEnableEventStore:   "true",
 		envMCPEventStoreMaxBytes: "1024",
 	}
@@ -86,6 +94,7 @@ func TestMCPConfig_FlagPrecedence(t *testing.T) {
 		"--mcp-http-path=/flag-mcp",
 		"--mcp-session-timeout=15m",
 		"--mcp-stateless=true",
+		"--mcp-enable-writes=true",
 		"--mcp-enable-event-store=false",
 		"--mcp-event-store-max-bytes=2048",
 	}
@@ -106,6 +115,9 @@ func TestMCPConfig_FlagPrecedence(t *testing.T) {
 	}
 	if !cfg.Stateless {
 		t.Fatalf("expected stateless true from flag")
+	}
+	if !cfg.EnableWrites {
+		t.Fatalf("expected enable writes true from flag")
 	}
 	if cfg.EnableEventStore {
 		t.Fatalf("expected event store false from flag")
@@ -160,6 +172,18 @@ func TestMCPConfig_InvalidEventStoreMaxBytes(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "greater than zero") {
 		t.Fatalf("expected max bytes validation error, got: %v", err)
+	}
+}
+
+func TestMCPConfig_InvalidEnableWritesBoolean(t *testing.T) {
+	_, err := parseMCPConfigForTest(nil, map[string]string{
+		envMCPEnableWrites: "definitely",
+	})
+	if err == nil {
+		t.Fatalf("expected invalid enable writes boolean error, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be a boolean") {
+		t.Fatalf("expected boolean validation error, got: %v", err)
 	}
 }
 

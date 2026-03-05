@@ -68,6 +68,77 @@ var schemaMigrations = []migration{
 			);`,
 		},
 	},
+	{
+		version: 2,
+		name:    "catalog_taxonomy_registry_and_assignments",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS catalog_domains (
+				domain_id TEXT PRIMARY KEY,
+				key TEXT NOT NULL UNIQUE,
+				name TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);`,
+			`CREATE TABLE IF NOT EXISTS catalog_subdomains (
+				subdomain_id TEXT PRIMARY KEY,
+				domain_id TEXT NOT NULL,
+				key TEXT NOT NULL,
+				name TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				UNIQUE(domain_id, key),
+				FOREIGN KEY (domain_id) REFERENCES catalog_domains(domain_id) ON UPDATE CASCADE ON DELETE RESTRICT
+			);`,
+			`CREATE TABLE IF NOT EXISTS catalog_tags (
+				tag_id TEXT PRIMARY KEY,
+				key TEXT NOT NULL UNIQUE,
+				name TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				color TEXT NOT NULL DEFAULT '',
+				active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);`,
+			`CREATE TABLE IF NOT EXISTS catalog_item_taxonomy_assignments (
+				item_id TEXT PRIMARY KEY,
+				primary_domain_id TEXT,
+				primary_subdomain_id TEXT,
+				secondary_domain_id TEXT,
+				secondary_subdomain_id TEXT,
+				updated_at TEXT NOT NULL,
+				updated_by TEXT,
+				FOREIGN KEY (item_id) REFERENCES catalog_source_items(item_id) ON UPDATE CASCADE ON DELETE CASCADE,
+				FOREIGN KEY (primary_domain_id) REFERENCES catalog_domains(domain_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+				FOREIGN KEY (primary_subdomain_id) REFERENCES catalog_subdomains(subdomain_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+				FOREIGN KEY (secondary_domain_id) REFERENCES catalog_domains(domain_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+				FOREIGN KEY (secondary_subdomain_id) REFERENCES catalog_subdomains(subdomain_id) ON UPDATE CASCADE ON DELETE RESTRICT
+			);`,
+			`CREATE TABLE IF NOT EXISTS catalog_item_tag_assignments (
+				item_id TEXT NOT NULL,
+				tag_id TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (item_id, tag_id),
+				FOREIGN KEY (item_id) REFERENCES catalog_source_items(item_id) ON UPDATE CASCADE ON DELETE CASCADE,
+				FOREIGN KEY (tag_id) REFERENCES catalog_tags(tag_id) ON UPDATE CASCADE ON DELETE RESTRICT
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_subdomains_domain_id
+			ON catalog_subdomains (domain_id);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_item_taxonomy_primary_domain
+			ON catalog_item_taxonomy_assignments (primary_domain_id);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_item_taxonomy_secondary_domain
+			ON catalog_item_taxonomy_assignments (secondary_domain_id);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_item_taxonomy_primary_subdomain
+			ON catalog_item_taxonomy_assignments (primary_subdomain_id);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_item_taxonomy_secondary_subdomain
+			ON catalog_item_taxonomy_assignments (secondary_subdomain_id);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_item_tag_assignments_tag
+			ON catalog_item_tag_assignments (tag_id);`,
+		},
+	},
 }
 
 // NewMigrationRunner creates a migration runner for the provided sqlite handle.

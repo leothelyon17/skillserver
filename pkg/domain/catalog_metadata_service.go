@@ -70,13 +70,18 @@ type CatalogMetadataOverlayView struct {
 
 // CatalogMetadataEffectiveView is the effective metadata exposed to clients.
 type CatalogMetadataEffectiveView struct {
-	Name             string         `json:"name"`
-	Description      string         `json:"description,omitempty"`
-	CustomMetadata   map[string]any `json:"custom_metadata"`
-	Labels           []string       `json:"labels"`
-	ContentWritable  bool           `json:"content_writable"`
-	MetadataWritable bool           `json:"metadata_writable"`
-	ReadOnly         bool           `json:"read_only"`
+	Name               string                     `json:"name"`
+	Description        string                     `json:"description,omitempty"`
+	PrimaryDomain      *CatalogTaxonomyReference  `json:"primary_domain,omitempty"`
+	PrimarySubdomain   *CatalogTaxonomyReference  `json:"primary_subdomain,omitempty"`
+	SecondaryDomain    *CatalogTaxonomyReference  `json:"secondary_domain,omitempty"`
+	SecondarySubdomain *CatalogTaxonomyReference  `json:"secondary_subdomain,omitempty"`
+	Tags               []CatalogTaxonomyReference `json:"tags"`
+	CustomMetadata     map[string]any             `json:"custom_metadata"`
+	Labels             []string                   `json:"labels"`
+	ContentWritable    bool                       `json:"content_writable"`
+	MetadataWritable   bool                       `json:"metadata_writable"`
+	ReadOnly           bool                       `json:"read_only"`
 }
 
 // CatalogMetadataView combines source, overlay, and effective metadata views.
@@ -319,13 +324,18 @@ func mapCatalogMetadataView(
 	}
 
 	effective := CatalogMetadataEffectiveView{
-		Name:             effectiveItem.Name,
-		Description:      effectiveItem.Description,
-		CustomMetadata:   copyCatalogMetadataMap(effectiveItem.CustomMetadata),
-		Labels:           append([]string{}, effectiveItem.Labels...),
-		ContentWritable:  effectiveItem.ContentWritable,
-		MetadataWritable: effectiveItem.MetadataWritable,
-		ReadOnly:         effectiveItem.ReadOnly,
+		Name:               effectiveItem.Name,
+		Description:        effectiveItem.Description,
+		PrimaryDomain:      copyCatalogTaxonomyReference(effectiveItem.PrimaryDomain),
+		PrimarySubdomain:   copyCatalogTaxonomyReference(effectiveItem.PrimarySubdomain),
+		SecondaryDomain:    copyCatalogTaxonomyReference(effectiveItem.SecondaryDomain),
+		SecondarySubdomain: copyCatalogTaxonomyReference(effectiveItem.SecondarySubdomain),
+		Tags:               copyCatalogTaxonomyReferences(effectiveItem.Tags),
+		CustomMetadata:     copyCatalogMetadataMap(effectiveItem.CustomMetadata),
+		Labels:             append([]string{}, effectiveItem.Labels...),
+		ContentWritable:    effectiveItem.ContentWritable,
+		MetadataWritable:   effectiveItem.MetadataWritable,
+		ReadOnly:           effectiveItem.ReadOnly,
 	}
 	if effective.CustomMetadata == nil {
 		effective.CustomMetadata = map[string]any{}
@@ -375,4 +385,21 @@ func normalizeCatalogMetadataOptionalText(value *string) *string {
 		return nil
 	}
 	return &trimmed
+}
+
+func copyCatalogTaxonomyReference(reference *CatalogTaxonomyReference) *CatalogTaxonomyReference {
+	if reference == nil {
+		return nil
+	}
+	copied := *reference
+	return &copied
+}
+
+func copyCatalogTaxonomyReferences(references []CatalogTaxonomyReference) []CatalogTaxonomyReference {
+	if len(references) == 0 {
+		return []CatalogTaxonomyReference{}
+	}
+	copied := make([]CatalogTaxonomyReference, len(references))
+	copy(copied, references)
+	return copied
 }

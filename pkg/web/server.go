@@ -28,6 +28,8 @@ type Server struct {
 	skillManager           domain.SkillManager
 	fsManager              *domain.FileSystemManager
 	catalogMetadataService *domain.CatalogMetadataService
+	taxonomyAssignment     *domain.CatalogTaxonomyAssignmentService
+	taxonomyRegistry       *domain.CatalogTaxonomyRegistryService
 	gitRepos               []string
 	gitSyncer              gitSyncer
 	configManager          *git.ConfigManager
@@ -81,6 +83,20 @@ func NewServer(
 	api.GET("/catalog/search", server.searchCatalog)
 	api.GET("/catalog/:id/metadata", server.getCatalogMetadata)
 	api.PATCH("/catalog/:id/metadata", server.patchCatalogMetadata)
+	api.GET("/catalog/:id/taxonomy", server.getCatalogItemTaxonomy)
+	api.PATCH("/catalog/:id/taxonomy", server.patchCatalogItemTaxonomy)
+	api.GET("/catalog/taxonomy/domains", server.listCatalogTaxonomyDomains)
+	api.POST("/catalog/taxonomy/domains", server.createCatalogTaxonomyDomain)
+	api.PATCH("/catalog/taxonomy/domains/:id", server.updateCatalogTaxonomyDomain)
+	api.DELETE("/catalog/taxonomy/domains/:id", server.deleteCatalogTaxonomyDomain)
+	api.GET("/catalog/taxonomy/subdomains", server.listCatalogTaxonomySubdomains)
+	api.POST("/catalog/taxonomy/subdomains", server.createCatalogTaxonomySubdomain)
+	api.PATCH("/catalog/taxonomy/subdomains/:id", server.updateCatalogTaxonomySubdomain)
+	api.DELETE("/catalog/taxonomy/subdomains/:id", server.deleteCatalogTaxonomySubdomain)
+	api.GET("/catalog/taxonomy/tags", server.listCatalogTaxonomyTags)
+	api.POST("/catalog/taxonomy/tags", server.createCatalogTaxonomyTag)
+	api.PATCH("/catalog/taxonomy/tags/:id", server.updateCatalogTaxonomyTag)
+	api.DELETE("/catalog/taxonomy/tags/:id", server.deleteCatalogTaxonomyTag)
 	api.GET("/skills", server.listSkills)
 	api.GET("/skills/:name", server.getSkill)
 	api.GET("/skills/by-id/:repo/:name", server.getSkill)
@@ -144,6 +160,16 @@ func NewServer(
 // SetCatalogMetadataService configures metadata overlay handlers.
 func (s *Server) SetCatalogMetadataService(service *domain.CatalogMetadataService) {
 	s.catalogMetadataService = service
+}
+
+// SetCatalogTaxonomyAssignmentService configures catalog item taxonomy assignment handlers.
+func (s *Server) SetCatalogTaxonomyAssignmentService(service *domain.CatalogTaxonomyAssignmentService) {
+	s.taxonomyAssignment = service
+}
+
+// SetCatalogTaxonomyRegistryService configures taxonomy registry handlers.
+func (s *Server) SetCatalogTaxonomyRegistryService(service *domain.CatalogTaxonomyRegistryService) {
+	s.taxonomyRegistry = service
 }
 
 // SetManualGitRepoSyncHook configures post-sync behavior for POST /api/git-repos/:id/sync.

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -361,6 +362,144 @@ func TestCatalogPersistenceCoordinator_FullSyncAndRebuild_PreservesOverlayAcross
 	}
 	if !catalogItemsContainID(restartedSearchResults, itemID) {
 		t.Fatalf("expected second-runtime search to include item %q after restart", itemID)
+	}
+}
+
+func TestCatalogPersistenceCoordinator_FullSyncAndRebuild_BackfillsLegacyLabelsIntoTaxonomyTags(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	skillsDir := t.TempDir()
+	writeSkillFixture(
+		t,
+		filepath.Join(skillsDir, "taxonomy-backfill-skill"),
+		"taxonomy-backfill-skill",
+		"Backfill fixture source description",
+		"# Taxonomy Backfill Skill\n",
+	)
+
+	manager, err := domain.NewFileSystemManager(skillsDir, nil)
+	if err != nil {
+		t.Fatalf("failed to initialize file system manager: %v", err)
+	}
+
+	persistenceDir := t.TempDir()
+	cfg := PersistenceRuntimeConfig{
+		Enabled: true,
+		Dir:     persistenceDir,
+		DBPath:  filepath.Join(persistenceDir, "catalog.sqlite"),
+	}
+	runtime, err := bootstrapCatalogPersistenceRuntime(
+		ctx,
+		cfg,
+		manager,
+		log.New(io.Discard, "", 0),
+	)
+	if err != nil {
+		t.Fatalf("failed to bootstrap persistence runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := runtime.Close(); closeErr != nil {
+			t.Fatalf("failed closing persistence runtime: %v", closeErr)
+		}
+	})
+
+	if err := runtime.coordinator.FullSyncAndRebuild(ctx); err != nil {
+		t.Fatalf("initial full sync and rebuild failed: %v", err)
+	}
+
+	sourceRows, err := runtime.sourceRepo.List(ctx, persistence.CatalogSourceListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list source rows: %v", err)
+	}
+	if len(sourceRows) != 1 {
+		t.Fatalf("expected one source row, got %d", len(sourceRows))
+	}
+	itemID := sourceRows[0].ItemID
+
+	if err := runtime.overlayRepo.Upsert(ctx, persistence.CatalogMetadataOverlayRow{
+		ItemID:    itemID,
+		Labels:    []string{"Backend", "backend", "CLI Tools"},
+		UpdatedAt: time.Date(2026, time.March, 5, 4, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("failed to upsert legacy labels overlay: %v", err)
+	}
+
+	if err := runtime.coordinator.FullSyncAndRebuild(ctx); err != nil {
+		t.Fatalf("full sync and rebuild with backfill failed: %v", err)
+	}
+
+	tagRepo, err := persistence.NewCatalogTagRepository(runtime.db)
+	if err != nil {
+		t.Fatalf("failed to create tag repository: %v", err)
+	}
+	tagAssignmentRepo, err := persistence.NewCatalogItemTagAssignmentRepository(runtime.db)
+	if err != nil {
+		t.Fatalf("failed to create tag assignment repository: %v", err)
+	}
+
+	tags, err := tagRepo.List(ctx, persistence.CatalogTagListFilter{Keys: []string{"backend", "cli-tools"}})
+	if err != nil {
+		t.Fatalf("failed to list backfilled tags: %v", err)
+	}
+	if len(tags) != 2 {
+		t.Fatalf("expected two backfilled tags, got %d", len(tags))
+	}
+
+	tagIDs := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tagIDs = append(tagIDs, tag.TagID)
+	}
+	slices.Sort(tagIDs)
+
+	assignments, err := tagAssignmentRepo.ListByItemID(ctx, itemID)
+	if err != nil {
+		t.Fatalf("failed to list item tag assignments after backfill: %v", err)
+	}
+	if len(assignments) != 2 {
+		t.Fatalf("expected two tag assignments after backfill, got %d", len(assignments))
+	}
+
+	assignedTagIDs := make([]string, 0, len(assignments))
+	for _, assignment := range assignments {
+		assignedTagIDs = append(assignedTagIDs, assignment.TagID)
+	}
+	slices.Sort(assignedTagIDs)
+	if !slices.Equal(tagIDs, assignedTagIDs) {
+		t.Fatalf("expected assigned tag IDs %+v, got %+v", tagIDs, assignedTagIDs)
+	}
+
+	effectiveItems, err := runtime.coordinator.effectiveService.List(ctx, domain.CatalogEffectiveListFilter{ItemID: itemID})
+	if err != nil {
+		t.Fatalf("failed to list effective item after backfill: %v", err)
+	}
+	if len(effectiveItems) != 1 {
+		t.Fatalf("expected one effective item after backfill, got %d", len(effectiveItems))
+	}
+	if len(effectiveItems[0].Labels) != 2 ||
+		effectiveItems[0].Labels[0] != "Backend" ||
+		effectiveItems[0].Labels[1] != "CLI Tools" {
+		t.Fatalf("expected taxonomy-derived effective labels [Backend CLI Tools], got %+v", effectiveItems[0].Labels)
+	}
+
+	if err := runtime.coordinator.FullSyncAndRebuild(ctx); err != nil {
+		t.Fatalf("idempotent full sync and rebuild failed: %v", err)
+	}
+
+	tagsAfterSecondRun, err := tagRepo.List(ctx, persistence.CatalogTagListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tags after idempotent backfill run: %v", err)
+	}
+	if len(tagsAfterSecondRun) != 2 {
+		t.Fatalf("expected idempotent run to keep exactly two tags, got %d", len(tagsAfterSecondRun))
+	}
+
+	assignmentsAfterSecondRun, err := tagAssignmentRepo.ListByItemID(ctx, itemID)
+	if err != nil {
+		t.Fatalf("failed to list assignments after idempotent backfill run: %v", err)
+	}
+	if len(assignmentsAfterSecondRun) != 2 {
+		t.Fatalf("expected idempotent run to keep exactly two assignments, got %d", len(assignmentsAfterSecondRun))
 	}
 }
 

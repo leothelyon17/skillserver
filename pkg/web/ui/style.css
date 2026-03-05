@@ -387,3 +387,29 @@ header h1 {
     padding: 20px;
     color: #9ca3af;
 }
+
+.catalog-taxonomy-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.1;
+}
+
+.catalog-taxonomy-chip-primary {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.catalog-taxonomy-chip-secondary {
+    background: #ede9fe;
+    color: #6d28d9;
+}
+
+.catalog-taxonomy-chip-tag {
+    background: #dcfce7;
+    color: #166534;
+}

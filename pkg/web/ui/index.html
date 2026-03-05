@@ -36,6 +36,29 @@
                 <button @click="showGitReposModal = true; loadGitRepos()" class="btn btn-secondary">
                     <i class="fas fa-code-branch mr-2"></i>Git Repos
                 </button>
+                <div class="relative">
+                    <button
+                        @click="showOptionsMenu = !showOptionsMenu"
+                        class="btn btn-secondary"
+                        aria-haspopup="true"
+                        :aria-expanded="showOptionsMenu ? 'true' : 'false'"
+                    >
+                        <i class="fas fa-sliders-h mr-2"></i>Options
+                    </button>
+                    <div
+                        x-show="showOptionsMenu"
+                        @click.outside="showOptionsMenu = false"
+                        class="absolute right-0 mt-2 w-52 rounded-lg border border-gray-200 bg-white py-2 text-sm shadow-lg dark:border-gray-700 dark:bg-gray-800 z-20"
+                        style="display: none;"
+                    >
+                        <button
+                            @click="showOptionsMenu = false; openTaxonomyManager()"
+                            class="w-full px-4 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                        >
+                            <i class="fas fa-sitemap mr-2"></i>Taxonomy Manager
+                        </button>
+                    </div>
+                </div>
                 <button @click="showEditor = true; editingSkill = null; skillContent = ''; skillName = ''; skillDescription = ''; skillLicense = ''; skillCompatibility = ''; nameValidationError = ''" class="btn btn-primary">
                     <i class="fas fa-plus mr-2"></i>New Skill
                 </button>
@@ -73,6 +96,118 @@
                 <input type="checkbox" x-model="showPrompts" @change="searchSkills()" class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800">
                 <span>Show Prompts</span>
             </label>
+            <button
+                @click="toggleTaxonomyFilters()"
+                class="px-3 py-1.5 rounded border text-sm transition"
+                :class="showTaxonomyFilters
+                    ? 'border-blue-500 text-blue-700 bg-blue-50 dark:border-blue-400 dark:text-blue-200 dark:bg-blue-900/30'
+                    : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-100 dark:border-gray-600 dark:text-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700'"
+            >
+                <i class="fas fa-filter mr-2"></i>Taxonomy Filters
+            </button>
+            <span
+                x-show="hasActiveTaxonomyFilters()"
+                class="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
+            >
+                <i class="fas fa-check-circle"></i>Active
+            </span>
+        </div>
+        <div
+            x-show="showTaxonomyFilters"
+            class="mb-5 rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800"
+            style="display: none;"
+        >
+            <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    <i class="fas fa-sitemap mr-2"></i>Catalog Taxonomy Filters
+                </h3>
+                <button
+                    @click="clearTaxonomyFilters()"
+                    class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                    :disabled="!hasActiveTaxonomyFilters()"
+                >
+                    Clear Filters
+                </button>
+            </div>
+
+            <p
+                x-show="taxonomyCatalog.errorMessage"
+                class="mb-3 text-sm rounded border border-red-200 bg-red-50 px-3 py-2 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+                x-text="taxonomyCatalog.errorMessage"
+            ></p>
+
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div>
+                    <label class="form-label">Primary Domain</label>
+                    <select
+                        x-model="taxonomyFilters.primaryDomainID"
+                        @change="searchSkills()"
+                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                    >
+                        <option value="">Any primary domain</option>
+                        <template x-for="domain in taxonomyCatalog.domains" :key="`taxonomy-filter-primary-${domain.domain_id}`">
+                            <option :value="domain.domain_id" x-text="domain.name"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Secondary Domain</label>
+                    <select
+                        x-model="taxonomyFilters.secondaryDomainID"
+                        @change="searchSkills()"
+                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                    >
+                        <option value="">Any secondary domain</option>
+                        <template x-for="domain in taxonomyCatalog.domains" :key="`taxonomy-filter-secondary-${domain.domain_id}`">
+                            <option :value="domain.domain_id" x-text="domain.name"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Subdomain</label>
+                    <select
+                        x-model="taxonomyFilters.subdomainID"
+                        @change="searchSkills()"
+                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                    >
+                        <option value="">Any subdomain</option>
+                        <template x-for="subdomain in taxonomyCatalog.subdomains" :key="`taxonomy-filter-subdomain-${subdomain.subdomain_id}`">
+                            <option :value="subdomain.subdomain_id" x-text="`${subdomain.name} (${domainNameByID(subdomain.domain_id)})`"></option>
+                        </template>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Tag Match</label>
+                    <select
+                        x-model="taxonomyFilters.tagMatch"
+                        @change="searchSkills()"
+                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                    >
+                        <option value="any">Any selected tag</option>
+                        <option value="all">All selected tags</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="mt-3">
+                <label class="form-label">Tags</label>
+                <div class="max-h-40 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 dark:border-gray-700 dark:bg-gray-900/40">
+                    <template x-if="taxonomyCatalog.tags.length === 0">
+                        <p class="text-xs text-gray-500 dark:text-gray-400">No taxonomy tags available.</p>
+                    </template>
+                    <template x-for="tag in taxonomyCatalog.tags" :key="`taxonomy-filter-tag-${tag.tag_id}`">
+                        <label class="flex items-center justify-between gap-3 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 cursor-pointer">
+                            <span class="text-sm text-gray-700 dark:text-gray-200" x-text="tag.name"></span>
+                            <input
+                                type="checkbox"
+                                class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                                :checked="taxonomyFilters.tagIDs.includes(tag.tag_id)"
+                                @change="toggleTaxonomyFilterTag(tag.tag_id, $event.target.checked)"
+                            >
+                        </label>
+                    </template>
+                </div>
+            </div>
         </div>
 
         <!-- Skills List -->
@@ -93,6 +228,25 @@
                         </div>
                     </div>
                     <p x-text="item.description || 'No description'" class="skill-description text-gray-600 dark:text-gray-400"></p>
+                    <div class="catalog-taxonomy mb-3 space-y-2" x-show="itemHasTaxonomy(item)">
+                        <div class="flex flex-wrap gap-2">
+                            <span
+                                x-show="item.primary_domain"
+                                class="catalog-taxonomy-chip catalog-taxonomy-chip-primary"
+                                x-text="formatDomainChip(item.primary_domain, item.primary_subdomain, 'Primary')"
+                            ></span>
+                            <span
+                                x-show="item.secondary_domain"
+                                class="catalog-taxonomy-chip catalog-taxonomy-chip-secondary"
+                                x-text="formatDomainChip(item.secondary_domain, item.secondary_subdomain, 'Secondary')"
+                            ></span>
+                        </div>
+                        <div class="flex flex-wrap gap-2" x-show="Array.isArray(item.tags) && item.tags.length > 0">
+                            <template x-for="tag in (Array.isArray(item.tags) ? item.tags : []).slice(0, 5)" :key="`${item.id || item.name}-taxonomy-tag-${tag.id}`">
+                                <span class="catalog-taxonomy-chip catalog-taxonomy-chip-tag" x-text="`#${tag.name}`"></span>
+                            </template>
+                        </div>
+                    </div>
                     <div class="skill-tags" x-show="Array.isArray(item.labels) && item.labels.length > 0">
                         <template x-for="label in item.labels.slice(0, 4)" :key="`${item.id || item.name}-${label}`">
                             <span class="tag" x-text="label"></span>
@@ -102,10 +256,10 @@
                         <button x-show="isItemMetadataWritable(item)" @click.stop="openMetadataEditor(item)" class="btn btn-small btn-secondary">
                             <i class="fas fa-tags mr-1"></i>Metadata
                         </button>
-                        <button x-show="isSkillCatalogItem(item)" @click.stop="exportSkill(item.name)" class="btn btn-small btn-secondary">
+                        <button x-show="isSkillCatalogItem(item)" @click.stop="exportSkill(catalogSkillIdentifier(item))" class="btn btn-small btn-secondary">
                             <i class="fas fa-download mr-1"></i>Export
                         </button>
-                        <button x-show="isSkillCatalogItem(item) && canEditItemContent(item)" @click.stop="deleteSkill(item.name)" class="btn btn-small btn-danger">
+                        <button x-show="isSkillCatalogItem(item) && canEditItemContent(item)" @click.stop="deleteSkill(catalogSkillIdentifier(item))" class="btn btn-small btn-danger">
                             <i class="fas fa-trash mr-1"></i>Delete
                         </button>
                         <button x-show="normalizeClassifier(item.classifier) === 'prompt'" @click.stop="openPromptPreview(item)" class="btn btn-small btn-secondary">
@@ -347,7 +501,7 @@
         <div 
             x-show="confirmModal.show"
             @keydown.escape.window="confirmModal.show = false; if (confirmModal.callback) { confirmModal.callback(false); confirmModal.callback = null; }"
-            class="fixed inset-0 bg-black bg-opacity-50 z-[60] flex items-center justify-center"
+            class="fixed inset-0 bg-black bg-opacity-50 z-[90] flex items-center justify-center"
             style="display: none;"
         >
             <div 
@@ -507,6 +661,95 @@
                                     placeholder="example: catalog, git, operator-owned"
                                 >
                             </div>
+                            <div class="pt-2 border-t border-gray-200 dark:border-gray-700">
+                                <h4 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+                                    <i class="fas fa-sitemap mr-2"></i>Taxonomy Assignment
+                                </h4>
+
+                                <p
+                                    x-show="metadataEditorModal.taxonomyErrorMessage"
+                                    class="mb-3 text-sm rounded border border-red-200 bg-red-50 px-3 py-2 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+                                    x-text="metadataEditorModal.taxonomyErrorMessage"
+                                ></p>
+
+                                <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                    <div>
+                                        <label class="form-label">Primary Domain</label>
+                                        <select
+                                            x-model="metadataEditorModal.form.primaryDomainID"
+                                            @change="handleMetadataDomainChange('primary')"
+                                            :disabled="!metadataEditorModal.metadataWritable || metadataEditorModal.saving || !taxonomyCatalog.available"
+                                            class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        >
+                                            <option value="">Unassigned</option>
+                                            <template x-for="domain in taxonomyCatalog.domains" :key="`metadata-primary-domain-${domain.domain_id}`">
+                                                <option :value="domain.domain_id" x-text="domain.name"></option>
+                                            </template>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="form-label">Primary Subdomain</label>
+                                        <select
+                                            x-model="metadataEditorModal.form.primarySubdomainID"
+                                            :disabled="!metadataEditorModal.metadataWritable || metadataEditorModal.saving || !taxonomyCatalog.available || !metadataEditorModal.form.primaryDomainID"
+                                            class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        >
+                                            <option value="">Unassigned</option>
+                                            <template x-for="subdomain in metadataSubdomainsForDomain(metadataEditorModal.form.primaryDomainID)" :key="`metadata-primary-subdomain-${subdomain.subdomain_id}`">
+                                                <option :value="subdomain.subdomain_id" x-text="subdomain.name"></option>
+                                            </template>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="form-label">Secondary Domain</label>
+                                        <select
+                                            x-model="metadataEditorModal.form.secondaryDomainID"
+                                            @change="handleMetadataDomainChange('secondary')"
+                                            :disabled="!metadataEditorModal.metadataWritable || metadataEditorModal.saving || !taxonomyCatalog.available"
+                                            class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        >
+                                            <option value="">Unassigned</option>
+                                            <template x-for="domain in taxonomyCatalog.domains" :key="`metadata-secondary-domain-${domain.domain_id}`">
+                                                <option :value="domain.domain_id" x-text="domain.name"></option>
+                                            </template>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="form-label">Secondary Subdomain</label>
+                                        <select
+                                            x-model="metadataEditorModal.form.secondarySubdomainID"
+                                            :disabled="!metadataEditorModal.metadataWritable || metadataEditorModal.saving || !taxonomyCatalog.available || !metadataEditorModal.form.secondaryDomainID"
+                                            class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        >
+                                            <option value="">Unassigned</option>
+                                            <template x-for="subdomain in metadataSubdomainsForDomain(metadataEditorModal.form.secondaryDomainID)" :key="`metadata-secondary-subdomain-${subdomain.subdomain_id}`">
+                                                <option :value="subdomain.subdomain_id" x-text="subdomain.name"></option>
+                                            </template>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="mt-3">
+                                    <label class="form-label">Tags</label>
+                                    <div class="max-h-36 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 dark:border-gray-700 dark:bg-gray-900/40">
+                                        <template x-if="taxonomyCatalog.tags.length === 0">
+                                            <p class="text-xs text-gray-500 dark:text-gray-400">No tags available.</p>
+                                        </template>
+                                        <template x-for="tag in taxonomyCatalog.tags" :key="`metadata-tag-${tag.tag_id}`">
+                                            <label class="flex items-center justify-between gap-3 rounded px-2 py-1 hover:bg-gray-100 dark:hover:bg-gray-800 cursor-pointer">
+                                                <span class="text-sm text-gray-700 dark:text-gray-200" x-text="tag.name"></span>
+                                                <input
+                                                    type="checkbox"
+                                                    class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                                                    :checked="metadataEditorModal.form.tagIDs.includes(tag.tag_id)"
+                                                    :disabled="!metadataEditorModal.metadataWritable || metadataEditorModal.saving || !taxonomyCatalog.available"
+                                                    @change="toggleMetadataTagSelection(tag.tag_id, $event.target.checked)"
+                                                >
+                                            </label>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
                             <div>
                                 <label class="form-label">Custom Metadata (JSON object)</label>
                                 <textarea
@@ -539,6 +782,461 @@
                         <i x-show="!metadataEditorModal.saving" class="fas fa-save mr-2"></i>
                         <i x-show="metadataEditorModal.saving" class="fas fa-spinner fa-spin mr-2"></i>
                         Save Metadata
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Taxonomy Manager Modal -->
+        <div
+            x-show="taxonomyManagerModal.show"
+            @keydown.escape.window="closeTaxonomyManager()"
+            class="fixed inset-0 bg-black bg-opacity-50 z-[60] flex items-center justify-center p-4"
+            style="display: none;"
+        >
+            <div
+                @click.stop
+                class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-4xl max-h-[92vh] flex flex-col"
+            >
+                <div class="flex items-center justify-between gap-3 border-b border-gray-200 dark:border-gray-700 p-4">
+                    <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                        <i class="fas fa-sitemap mr-2"></i>Taxonomy Manager
+                    </h3>
+                    <button
+                        @click="closeTaxonomyManager()"
+                        class="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
+                    >
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+
+                <div class="border-b border-gray-200 dark:border-gray-700 px-4 pt-3">
+                    <div class="flex flex-wrap gap-2">
+                        <button
+                            @click="taxonomyManagerModal.activeTab = 'domains'; taxonomyManagerModal.errorMessage = ''"
+                            class="px-3 py-2 text-sm rounded-t border border-b-0"
+                            :class="taxonomyManagerModal.activeTab === 'domains'
+                                ? 'bg-white border-gray-300 text-blue-700 dark:bg-gray-800 dark:border-gray-600 dark:text-blue-300'
+                                : 'bg-gray-100 border-transparent text-gray-600 hover:text-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:text-gray-100'"
+                        >
+                            Domains
+                        </button>
+                        <button
+                            @click="taxonomyManagerModal.activeTab = 'subdomains'; taxonomyManagerModal.errorMessage = ''"
+                            class="px-3 py-2 text-sm rounded-t border border-b-0"
+                            :class="taxonomyManagerModal.activeTab === 'subdomains'
+                                ? 'bg-white border-gray-300 text-blue-700 dark:bg-gray-800 dark:border-gray-600 dark:text-blue-300'
+                                : 'bg-gray-100 border-transparent text-gray-600 hover:text-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:text-gray-100'"
+                        >
+                            Subdomains
+                        </button>
+                        <button
+                            @click="taxonomyManagerModal.activeTab = 'tags'; taxonomyManagerModal.errorMessage = ''"
+                            class="px-3 py-2 text-sm rounded-t border border-b-0"
+                            :class="taxonomyManagerModal.activeTab === 'tags'
+                                ? 'bg-white border-gray-300 text-blue-700 dark:bg-gray-800 dark:border-gray-600 dark:text-blue-300'
+                                : 'bg-gray-100 border-transparent text-gray-600 hover:text-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:text-gray-100'"
+                        >
+                            Tags
+                        </button>
+                    </div>
+                </div>
+
+                <div class="flex-1 overflow-auto p-4 space-y-4">
+                    <div x-show="taxonomyManagerModal.loading" class="text-sm text-gray-600 dark:text-gray-300">
+                        <i class="fas fa-spinner fa-spin mr-2"></i>Loading taxonomy registry...
+                    </div>
+
+                    <p
+                        x-show="taxonomyManagerModal.errorMessage"
+                        class="text-sm rounded border border-red-200 bg-red-50 px-3 py-2 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+                        x-text="taxonomyManagerModal.errorMessage"
+                    ></p>
+
+                    <div x-show="!taxonomyManagerModal.loading && taxonomyManagerModal.activeTab === 'domains'" class="space-y-3">
+                        <div class="rounded border border-gray-200 dark:border-gray-700 p-3">
+                            <h4 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3" x-text="taxonomyManagerModal.forms.domain.editingID ? 'Edit Domain' : 'Create Domain'"></h4>
+                            <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                <div>
+                                    <label class="form-label">Domain ID</label>
+                                    <input
+                                        type="text"
+                                        x-model="taxonomyManagerModal.forms.domain.domainID"
+                                        :disabled="taxonomyManagerModal.forms.domain.editingID !== '' || taxonomyManagerModal.saving"
+                                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        placeholder="domain-platform"
+                                    >
+                                </div>
+                                <div>
+                                    <label class="form-label">Key</label>
+                                    <input
+                                        type="text"
+                                        x-model="taxonomyManagerModal.forms.domain.key"
+                                        :disabled="taxonomyManagerModal.saving"
+                                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        placeholder="platform"
+                                    >
+                                </div>
+                                <div>
+                                    <label class="form-label">Name</label>
+                                    <input
+                                        type="text"
+                                        x-model="taxonomyManagerModal.forms.domain.name"
+                                        :disabled="taxonomyManagerModal.saving"
+                                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        placeholder="Platform"
+                                    >
+                                </div>
+                                <div>
+                                    <label class="form-label">Description</label>
+                                    <input
+                                        type="text"
+                                        x-model="taxonomyManagerModal.forms.domain.description"
+                                        :disabled="taxonomyManagerModal.saving"
+                                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        placeholder="Optional description"
+                                    >
+                                </div>
+                            </div>
+                            <label class="inline-flex items-center gap-2 mt-3 text-sm text-gray-700 dark:text-gray-300">
+                                <input type="checkbox" x-model="taxonomyManagerModal.forms.domain.active" :disabled="taxonomyManagerModal.saving">
+                                <span>Active</span>
+                            </label>
+                            <div class="mt-3 flex flex-wrap gap-2">
+                                <button
+                                    @click="saveTaxonomyDomain()"
+                                    class="btn btn-primary btn-small"
+                                    :disabled="taxonomyManagerModal.saving"
+                                >
+                                    <i x-show="!taxonomyManagerModal.saving" class="fas fa-save mr-1"></i>
+                                    <i x-show="taxonomyManagerModal.saving" class="fas fa-spinner fa-spin mr-1"></i>
+                                    <span x-text="taxonomyManagerModal.forms.domain.editingID ? 'Update Domain' : 'Create Domain'"></span>
+                                </button>
+                                <button
+                                    x-show="taxonomyManagerModal.forms.domain.editingID"
+                                    @click="resetTaxonomyDomainForm()"
+                                    class="btn btn-secondary btn-small"
+                                    :disabled="taxonomyManagerModal.saving"
+                                >
+                                    Cancel Edit
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
+                            <div class="max-h-60 overflow-auto">
+                                <table class="w-full text-sm">
+                                    <thead class="bg-gray-100 dark:bg-gray-900">
+                                        <tr class="text-left text-gray-700 dark:text-gray-200">
+                                            <th class="px-3 py-2">Domain</th>
+                                            <th class="px-3 py-2">Key</th>
+                                            <th class="px-3 py-2">Status</th>
+                                            <th class="px-3 py-2 w-40">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <template x-for="domain in taxonomyCatalog.domains" :key="`taxonomy-domain-row-${domain.domain_id}`">
+                                            <tr class="border-t border-gray-200 dark:border-gray-700">
+                                                <td class="px-3 py-2">
+                                                    <div class="font-medium text-gray-900 dark:text-gray-100" x-text="domain.name"></div>
+                                                    <div class="text-xs text-gray-500 dark:text-gray-400" x-text="domain.domain_id"></div>
+                                                </td>
+                                                <td class="px-3 py-2 text-gray-700 dark:text-gray-300" x-text="domain.key"></td>
+                                                <td class="px-3 py-2">
+                                                    <span
+                                                        class="text-xs px-2 py-0.5 rounded-full font-medium"
+                                                        :class="domain.active ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300'"
+                                                        x-text="domain.active ? 'Active' : 'Inactive'"
+                                                    ></span>
+                                                </td>
+                                                <td class="px-3 py-2">
+                                                    <div class="flex gap-2">
+                                                        <button @click="editTaxonomyDomain(domain)" class="btn btn-small btn-secondary">Edit</button>
+                                                        <button @click="deleteTaxonomyDomain(domain)" class="btn btn-small btn-danger">Delete</button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div x-show="!taxonomyManagerModal.loading && taxonomyManagerModal.activeTab === 'subdomains'" class="space-y-3">
+                        <div class="rounded border border-gray-200 dark:border-gray-700 p-3">
+                            <h4 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3" x-text="taxonomyManagerModal.forms.subdomain.editingID ? 'Edit Subdomain' : 'Create Subdomain'"></h4>
+                            <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                <div>
+                                    <label class="form-label">Subdomain ID</label>
+                                    <input
+                                        type="text"
+                                        x-model="taxonomyManagerModal.forms.subdomain.subdomainID"
+                                        :disabled="taxonomyManagerModal.forms.subdomain.editingID !== '' || taxonomyManagerModal.saving"
+                                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        placeholder="subdomain-platform-api"
+                                    >
+                                </div>
+                                <div>
+                                    <label class="form-label">Domain</label>
+                                    <select
+                                        x-model="taxonomyManagerModal.forms.subdomain.domainID"
+                                        :disabled="taxonomyManagerModal.saving"
+                                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                    >
+                                        <option value="">Select domain</option>
+                                        <template x-for="domain in taxonomyCatalog.domains" :key="`taxonomy-subdomain-form-domain-${domain.domain_id}`">
+                                            <option :value="domain.domain_id" x-text="domain.name"></option>
+                                        </template>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="form-label">Key</label>
+                                    <input
+                                        type="text"
+                                        x-model="taxonomyManagerModal.forms.subdomain.key"
+                                        :disabled="taxonomyManagerModal.saving"
+                                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        placeholder="api"
+                                    >
+                                </div>
+                                <div>
+                                    <label class="form-label">Name</label>
+                                    <input
+                                        type="text"
+                                        x-model="taxonomyManagerModal.forms.subdomain.name"
+                                        :disabled="taxonomyManagerModal.saving"
+                                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        placeholder="API"
+                                    >
+                                </div>
+                            </div>
+                            <div class="mt-3">
+                                <label class="form-label">Description</label>
+                                <input
+                                    type="text"
+                                    x-model="taxonomyManagerModal.forms.subdomain.description"
+                                    :disabled="taxonomyManagerModal.saving"
+                                    class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                    placeholder="Optional description"
+                                >
+                            </div>
+                            <label class="inline-flex items-center gap-2 mt-3 text-sm text-gray-700 dark:text-gray-300">
+                                <input type="checkbox" x-model="taxonomyManagerModal.forms.subdomain.active" :disabled="taxonomyManagerModal.saving">
+                                <span>Active</span>
+                            </label>
+                            <div class="mt-3 flex flex-wrap gap-2">
+                                <button
+                                    @click="saveTaxonomySubdomain()"
+                                    class="btn btn-primary btn-small"
+                                    :disabled="taxonomyManagerModal.saving"
+                                >
+                                    <i x-show="!taxonomyManagerModal.saving" class="fas fa-save mr-1"></i>
+                                    <i x-show="taxonomyManagerModal.saving" class="fas fa-spinner fa-spin mr-1"></i>
+                                    <span x-text="taxonomyManagerModal.forms.subdomain.editingID ? 'Update Subdomain' : 'Create Subdomain'"></span>
+                                </button>
+                                <button
+                                    x-show="taxonomyManagerModal.forms.subdomain.editingID"
+                                    @click="resetTaxonomySubdomainForm()"
+                                    class="btn btn-secondary btn-small"
+                                    :disabled="taxonomyManagerModal.saving"
+                                >
+                                    Cancel Edit
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
+                            <div class="max-h-60 overflow-auto">
+                                <table class="w-full text-sm">
+                                    <thead class="bg-gray-100 dark:bg-gray-900">
+                                        <tr class="text-left text-gray-700 dark:text-gray-200">
+                                            <th class="px-3 py-2">Subdomain</th>
+                                            <th class="px-3 py-2">Domain</th>
+                                            <th class="px-3 py-2">Status</th>
+                                            <th class="px-3 py-2 w-40">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <template x-for="subdomain in taxonomyCatalog.subdomains" :key="`taxonomy-subdomain-row-${subdomain.subdomain_id}`">
+                                            <tr class="border-t border-gray-200 dark:border-gray-700">
+                                                <td class="px-3 py-2">
+                                                    <div class="font-medium text-gray-900 dark:text-gray-100" x-text="subdomain.name"></div>
+                                                    <div class="text-xs text-gray-500 dark:text-gray-400">
+                                                        <span x-text="subdomain.subdomain_id"></span>
+                                                        <span class="mx-1">•</span>
+                                                        <span x-text="subdomain.key"></span>
+                                                    </div>
+                                                </td>
+                                                <td class="px-3 py-2 text-gray-700 dark:text-gray-300" x-text="domainNameByID(subdomain.domain_id)"></td>
+                                                <td class="px-3 py-2">
+                                                    <span
+                                                        class="text-xs px-2 py-0.5 rounded-full font-medium"
+                                                        :class="subdomain.active ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300'"
+                                                        x-text="subdomain.active ? 'Active' : 'Inactive'"
+                                                    ></span>
+                                                </td>
+                                                <td class="px-3 py-2">
+                                                    <div class="flex gap-2">
+                                                        <button @click="editTaxonomySubdomain(subdomain)" class="btn btn-small btn-secondary">Edit</button>
+                                                        <button @click="deleteTaxonomySubdomain(subdomain)" class="btn btn-small btn-danger">Delete</button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div x-show="!taxonomyManagerModal.loading && taxonomyManagerModal.activeTab === 'tags'" class="space-y-3">
+                        <div class="rounded border border-gray-200 dark:border-gray-700 p-3">
+                            <h4 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3" x-text="taxonomyManagerModal.forms.tag.editingID ? 'Edit Tag' : 'Create Tag'"></h4>
+                            <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                <div>
+                                    <label class="form-label">Tag ID</label>
+                                    <input
+                                        type="text"
+                                        x-model="taxonomyManagerModal.forms.tag.tagID"
+                                        :disabled="taxonomyManagerModal.forms.tag.editingID !== '' || taxonomyManagerModal.saving"
+                                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        placeholder="tag-backend"
+                                    >
+                                </div>
+                                <div>
+                                    <label class="form-label">Key</label>
+                                    <input
+                                        type="text"
+                                        x-model="taxonomyManagerModal.forms.tag.key"
+                                        :disabled="taxonomyManagerModal.saving"
+                                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        placeholder="backend"
+                                    >
+                                </div>
+                                <div>
+                                    <label class="form-label">Name</label>
+                                    <input
+                                        type="text"
+                                        x-model="taxonomyManagerModal.forms.tag.name"
+                                        :disabled="taxonomyManagerModal.saving"
+                                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        placeholder="Backend"
+                                    >
+                                </div>
+                                <div>
+                                    <label class="form-label">Color (hex)</label>
+                                    <input
+                                        type="text"
+                                        x-model="taxonomyManagerModal.forms.tag.color"
+                                        :disabled="taxonomyManagerModal.saving"
+                                        class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                        placeholder="#33aaff"
+                                    >
+                                </div>
+                            </div>
+                            <div class="mt-3">
+                                <label class="form-label">Description</label>
+                                <input
+                                    type="text"
+                                    x-model="taxonomyManagerModal.forms.tag.description"
+                                    :disabled="taxonomyManagerModal.saving"
+                                    class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                    placeholder="Optional description"
+                                >
+                            </div>
+                            <label class="inline-flex items-center gap-2 mt-3 text-sm text-gray-700 dark:text-gray-300">
+                                <input type="checkbox" x-model="taxonomyManagerModal.forms.tag.active" :disabled="taxonomyManagerModal.saving">
+                                <span>Active</span>
+                            </label>
+                            <div class="mt-3 flex flex-wrap gap-2">
+                                <button
+                                    @click="saveTaxonomyTag()"
+                                    class="btn btn-primary btn-small"
+                                    :disabled="taxonomyManagerModal.saving"
+                                >
+                                    <i x-show="!taxonomyManagerModal.saving" class="fas fa-save mr-1"></i>
+                                    <i x-show="taxonomyManagerModal.saving" class="fas fa-spinner fa-spin mr-1"></i>
+                                    <span x-text="taxonomyManagerModal.forms.tag.editingID ? 'Update Tag' : 'Create Tag'"></span>
+                                </button>
+                                <button
+                                    x-show="taxonomyManagerModal.forms.tag.editingID"
+                                    @click="resetTaxonomyTagForm()"
+                                    class="btn btn-secondary btn-small"
+                                    :disabled="taxonomyManagerModal.saving"
+                                >
+                                    Cancel Edit
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
+                            <div class="max-h-60 overflow-auto">
+                                <table class="w-full text-sm">
+                                    <thead class="bg-gray-100 dark:bg-gray-900">
+                                        <tr class="text-left text-gray-700 dark:text-gray-200">
+                                            <th class="px-3 py-2">Tag</th>
+                                            <th class="px-3 py-2">Color</th>
+                                            <th class="px-3 py-2">Status</th>
+                                            <th class="px-3 py-2 w-40">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <template x-for="tag in taxonomyCatalog.tags" :key="`taxonomy-tag-row-${tag.tag_id}`">
+                                            <tr class="border-t border-gray-200 dark:border-gray-700">
+                                                <td class="px-3 py-2">
+                                                    <div class="font-medium text-gray-900 dark:text-gray-100" x-text="tag.name"></div>
+                                                    <div class="text-xs text-gray-500 dark:text-gray-400">
+                                                        <span x-text="tag.tag_id"></span>
+                                                        <span class="mx-1">•</span>
+                                                        <span x-text="tag.key"></span>
+                                                    </div>
+                                                </td>
+                                                <td class="px-3 py-2">
+                                                    <span
+                                                        class="inline-flex items-center gap-2 text-gray-700 dark:text-gray-300"
+                                                        :title="tag.color || ''"
+                                                    >
+                                                        <span class="inline-block h-3 w-3 rounded-full border border-gray-300 dark:border-gray-600" :style="`background:${tag.color || '#9ca3af'}`"></span>
+                                                        <span x-text="tag.color || 'n/a'"></span>
+                                                    </span>
+                                                </td>
+                                                <td class="px-3 py-2">
+                                                    <span
+                                                        class="text-xs px-2 py-0.5 rounded-full font-medium"
+                                                        :class="tag.active ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300'"
+                                                        x-text="tag.active ? 'Active' : 'Inactive'"
+                                                    ></span>
+                                                </td>
+                                                <td class="px-3 py-2">
+                                                    <div class="flex gap-2">
+                                                        <button @click="editTaxonomyTag(tag)" class="btn btn-small btn-secondary">Edit</button>
+                                                        <button @click="deleteTaxonomyTag(tag)" class="btn btn-small btn-danger">Delete</button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-between gap-3 border-t border-gray-200 dark:border-gray-700 p-4">
+                    <button
+                        @click="refreshTaxonomyCatalog()"
+                        class="btn btn-secondary btn-small"
+                        :disabled="taxonomyManagerModal.loading || taxonomyManagerModal.saving"
+                    >
+                        <i class="fas fa-sync mr-1"></i>Refresh
+                    </button>
+                    <button
+                        @click="closeTaxonomyManager()"
+                        class="btn btn-secondary btn-small"
+                        :disabled="taxonomyManagerModal.saving"
+                    >
+                        Close
                     </button>
                 </div>
             </div>
@@ -796,6 +1494,59 @@
                 searchQuery: '',
                 showSkills: true,
                 showPrompts: true,
+                showOptionsMenu: false,
+                showTaxonomyFilters: false,
+                taxonomyFilters: {
+                    primaryDomainID: '',
+                    secondaryDomainID: '',
+                    subdomainID: '',
+                    tagIDs: [],
+                    tagMatch: 'any'
+                },
+                taxonomyCatalog: {
+                    loading: false,
+                    loaded: false,
+                    available: true,
+                    errorMessage: '',
+                    domains: [],
+                    subdomains: [],
+                    tags: []
+                },
+                taxonomyManagerModal: {
+                    show: false,
+                    loading: false,
+                    saving: false,
+                    activeTab: 'domains',
+                    errorMessage: '',
+                    forms: {
+                        domain: {
+                            editingID: '',
+                            domainID: '',
+                            key: '',
+                            name: '',
+                            description: '',
+                            active: true
+                        },
+                        subdomain: {
+                            editingID: '',
+                            subdomainID: '',
+                            domainID: '',
+                            key: '',
+                            name: '',
+                            description: '',
+                            active: true
+                        },
+                        tag: {
+                            editingID: '',
+                            tagID: '',
+                            key: '',
+                            name: '',
+                            description: '',
+                            color: '',
+                            active: true
+                        }
+                    }
+                },
                 showEditor: false,
                 editingSkill: null,
                 skillName: '',
@@ -837,8 +1588,14 @@
                         displayName: '',
                         description: '',
                         labelsText: '',
+                        primaryDomainID: '',
+                        primarySubdomainID: '',
+                        secondaryDomainID: '',
+                        secondarySubdomainID: '',
+                        tagIDs: [],
                         customMetadataJSON: '{}'
                     },
+                    taxonomyErrorMessage: '',
                     errorMessage: ''
                 },
                 toasts: [],
@@ -981,6 +1738,225 @@
                     return this.showSkills || this.showPrompts;
                 },
 
+                hasActiveTaxonomyFilters() {
+                    return this.taxonomyFilters.primaryDomainID !== '' ||
+                        this.taxonomyFilters.secondaryDomainID !== '' ||
+                        this.taxonomyFilters.subdomainID !== '' ||
+                        this.taxonomyFilters.tagIDs.length > 0;
+                },
+
+                toggleTaxonomyFilters() {
+                    this.showTaxonomyFilters = !this.showTaxonomyFilters;
+                    if (this.showTaxonomyFilters) {
+                        this.loadTaxonomyCatalog();
+                    }
+                },
+
+                clearTaxonomyFilters() {
+                    this.taxonomyFilters = {
+                        primaryDomainID: '',
+                        secondaryDomainID: '',
+                        subdomainID: '',
+                        tagIDs: [],
+                        tagMatch: 'any'
+                    };
+                    this.searchSkills();
+                },
+
+                toggleTaxonomyFilterTag(tagID, checked) {
+                    const normalizedTagID = String(tagID || '').trim();
+                    if (!normalizedTagID) {
+                        return;
+                    }
+                    const current = new Set(this.taxonomyFilters.tagIDs || []);
+                    if (checked) {
+                        current.add(normalizedTagID);
+                    } else {
+                        current.delete(normalizedTagID);
+                    }
+                    this.taxonomyFilters.tagIDs = Array.from(current);
+                    this.searchSkills();
+                },
+
+                itemHasTaxonomy(item) {
+                    if (!item || typeof item !== 'object') {
+                        return false;
+                    }
+                    return !!item.primary_domain ||
+                        !!item.secondary_domain ||
+                        (Array.isArray(item.tags) && item.tags.length > 0);
+                },
+
+                formatDomainChip(domain, subdomain, labelPrefix) {
+                    if (!domain || typeof domain !== 'object') {
+                        return '';
+                    }
+                    const parts = [String(labelPrefix || '').trim(), domain.name || domain.key || domain.id]
+                        .filter((part) => typeof part === 'string' && part.trim() !== '');
+                    if (subdomain && typeof subdomain === 'object') {
+                        const subdomainLabel = subdomain.name || subdomain.key || subdomain.id;
+                        if (subdomainLabel) {
+                            parts.push(`› ${subdomainLabel}`);
+                        }
+                    }
+                    return parts.join(': ').replace(': ›', ' ›');
+                },
+
+                domainNameByID(domainID) {
+                    const normalizedDomainID = String(domainID || '').trim();
+                    if (!normalizedDomainID) {
+                        return '';
+                    }
+                    const domain = this.taxonomyCatalog.domains.find((candidate) => candidate.domain_id === normalizedDomainID);
+                    return domain ? domain.name : normalizedDomainID;
+                },
+
+                metadataSubdomainsForDomain(domainID) {
+                    const normalizedDomainID = String(domainID || '').trim();
+                    if (!normalizedDomainID) {
+                        return [];
+                    }
+                    return this.taxonomyCatalog.subdomains.filter((subdomain) => subdomain.domain_id === normalizedDomainID);
+                },
+
+                handleMetadataDomainChange(scope) {
+                    if (scope === 'primary') {
+                        const allowed = new Set(this.metadataSubdomainsForDomain(this.metadataEditorModal.form.primaryDomainID).map((item) => item.subdomain_id));
+                        if (!allowed.has(this.metadataEditorModal.form.primarySubdomainID)) {
+                            this.metadataEditorModal.form.primarySubdomainID = '';
+                        }
+                    } else if (scope === 'secondary') {
+                        const allowed = new Set(this.metadataSubdomainsForDomain(this.metadataEditorModal.form.secondaryDomainID).map((item) => item.subdomain_id));
+                        if (!allowed.has(this.metadataEditorModal.form.secondarySubdomainID)) {
+                            this.metadataEditorModal.form.secondarySubdomainID = '';
+                        }
+                    }
+                },
+
+                validateMetadataTaxonomySelection() {
+                    const primaryDomainID = this.normalizeTaxonomyObjectID(this.metadataEditorModal.form.primaryDomainID);
+                    const primarySubdomainID = this.normalizeTaxonomyObjectID(this.metadataEditorModal.form.primarySubdomainID);
+                    const secondaryDomainID = this.normalizeTaxonomyObjectID(this.metadataEditorModal.form.secondaryDomainID);
+                    const secondarySubdomainID = this.normalizeTaxonomyObjectID(this.metadataEditorModal.form.secondarySubdomainID);
+
+                    if (primarySubdomainID && !primaryDomainID) {
+                        return 'Select a primary domain before choosing a primary subdomain.';
+                    }
+                    if (secondarySubdomainID && !secondaryDomainID) {
+                        return 'Select a secondary domain before choosing a secondary subdomain.';
+                    }
+
+                    const primaryAllowed = new Set(this.metadataSubdomainsForDomain(primaryDomainID).map((subdomain) => subdomain.subdomain_id));
+                    if (primarySubdomainID && !primaryAllowed.has(primarySubdomainID)) {
+                        return 'Primary subdomain must belong to the selected primary domain.';
+                    }
+
+                    const secondaryAllowed = new Set(this.metadataSubdomainsForDomain(secondaryDomainID).map((subdomain) => subdomain.subdomain_id));
+                    if (secondarySubdomainID && !secondaryAllowed.has(secondarySubdomainID)) {
+                        return 'Secondary subdomain must belong to the selected secondary domain.';
+                    }
+
+                    return '';
+                },
+
+                toggleMetadataTagSelection(tagID, checked) {
+                    const normalizedTagID = String(tagID || '').trim();
+                    if (!normalizedTagID) {
+                        return;
+                    }
+                    const current = new Set(this.metadataEditorModal.form.tagIDs || []);
+                    if (checked) {
+                        current.add(normalizedTagID);
+                    } else {
+                        current.delete(normalizedTagID);
+                    }
+                    this.metadataEditorModal.form.tagIDs = Array.from(current);
+                },
+
+                taxonomyFilterTagMatchMode() {
+                    return this.taxonomyFilters.tagMatch === 'all' ? 'all' : 'any';
+                },
+
+                normalizeCatalogTagIDs(item) {
+                    if (!item || !Array.isArray(item.tags)) {
+                        return [];
+                    }
+                    return item.tags
+                        .map((tag) => (tag && typeof tag.id === 'string' ? tag.id.trim() : ''))
+                        .filter((value) => value !== '');
+                },
+
+                matchesActiveTaxonomyFilters(item) {
+                    if (!this.hasActiveTaxonomyFilters()) {
+                        return true;
+                    }
+                    if (!item || typeof item !== 'object') {
+                        return false;
+                    }
+
+                    const primaryDomainID = item.primary_domain && typeof item.primary_domain.id === 'string'
+                        ? item.primary_domain.id
+                        : '';
+                    if (this.taxonomyFilters.primaryDomainID && primaryDomainID !== this.taxonomyFilters.primaryDomainID) {
+                        return false;
+                    }
+
+                    const secondaryDomainID = item.secondary_domain && typeof item.secondary_domain.id === 'string'
+                        ? item.secondary_domain.id
+                        : '';
+                    if (this.taxonomyFilters.secondaryDomainID && secondaryDomainID !== this.taxonomyFilters.secondaryDomainID) {
+                        return false;
+                    }
+
+                    if (this.taxonomyFilters.subdomainID) {
+                        const primarySubdomainID = item.primary_subdomain && typeof item.primary_subdomain.id === 'string'
+                            ? item.primary_subdomain.id
+                            : '';
+                        const secondarySubdomainID = item.secondary_subdomain && typeof item.secondary_subdomain.id === 'string'
+                            ? item.secondary_subdomain.id
+                            : '';
+                        if (primarySubdomainID !== this.taxonomyFilters.subdomainID && secondarySubdomainID !== this.taxonomyFilters.subdomainID) {
+                            return false;
+                        }
+                    }
+
+                    if (this.taxonomyFilters.tagIDs.length > 0) {
+                        const itemTagIDs = new Set(this.normalizeCatalogTagIDs(item));
+                        if (this.taxonomyFilterTagMatchMode() === 'all') {
+                            for (const tagID of this.taxonomyFilters.tagIDs) {
+                                if (!itemTagIDs.has(tagID)) {
+                                    return false;
+                                }
+                            }
+                        } else {
+                            const hasAnyMatch = this.taxonomyFilters.tagIDs.some((tagID) => itemTagIDs.has(tagID));
+                            if (!hasAnyMatch) {
+                                return false;
+                            }
+                        }
+                    }
+
+                    return true;
+                },
+
+                taxonomyFilterQueryParams() {
+                    const params = new URLSearchParams();
+                    if (this.taxonomyFilters.primaryDomainID) {
+                        params.set('primary_domain_id', this.taxonomyFilters.primaryDomainID);
+                    }
+                    if (this.taxonomyFilters.secondaryDomainID) {
+                        params.set('secondary_domain_id', this.taxonomyFilters.secondaryDomainID);
+                    }
+                    if (this.taxonomyFilters.subdomainID) {
+                        params.set('subdomain_id', this.taxonomyFilters.subdomainID);
+                    }
+                    if (this.taxonomyFilters.tagIDs.length > 0) {
+                        params.set('tag_ids', this.taxonomyFilters.tagIDs.join(','));
+                        params.set('tag_match', this.taxonomyFilterTagMatchMode());
+                    }
+                    return params;
+                },
+
                 queueSearchSkills() {
                     this.cancelSearchDebounce();
                     this.searchDebounceHandle = setTimeout(() => {
@@ -1033,6 +2009,9 @@
                         if (!this.isItemVisibleForClassifierFilters(item)) {
                             return false;
                         }
+                        if (!this.matchesActiveTaxonomyFilters(item)) {
+                            return false;
+                        }
                         if (!normalizedQuery) {
                             return true;
                         }
@@ -1044,6 +2023,13 @@
                             item && item.parent_skill_id,
                             item && item.resource_path,
                             Array.isArray(item && item.labels) ? item.labels.join(' ') : '',
+                            item && item.primary_domain ? [item.primary_domain.name, item.primary_domain.key, item.primary_domain.id].join(' ') : '',
+                            item && item.primary_subdomain ? [item.primary_subdomain.name, item.primary_subdomain.key, item.primary_subdomain.id].join(' ') : '',
+                            item && item.secondary_domain ? [item.secondary_domain.name, item.secondary_domain.key, item.secondary_domain.id].join(' ') : '',
+                            item && item.secondary_subdomain ? [item.secondary_subdomain.name, item.secondary_subdomain.key, item.secondary_subdomain.id].join(' ') : '',
+                            Array.isArray(item && item.tags)
+                                ? item.tags.map((tag) => [tag.name, tag.key, tag.id].filter(Boolean).join(' ')).join(' ')
+                                : '',
                             item && item.custom_metadata ? JSON.stringify(item.custom_metadata) : ''
                         ]
                             .filter((value) => typeof value === 'string' && value.length > 0)
@@ -1053,17 +2039,59 @@
                     });
                 },
 
-                buildCatalogSearchURL(query) {
-                    let target = `/api/catalog/search?q=${encodeURIComponent(query)}`;
+                buildCatalogListURL() {
+                    const params = new URLSearchParams();
                     const classifier = this.classifierFilterParam();
                     if (classifier) {
-                        target += `&classifier=${encodeURIComponent(classifier)}`;
+                        params.set('classifier', classifier);
                     }
-                    return target;
+                    const taxonomyParams = this.taxonomyFilterQueryParams();
+                    for (const [key, value] of taxonomyParams.entries()) {
+                        params.set(key, value);
+                    }
+                    const queryString = params.toString();
+                    return queryString ? `/api/catalog?${queryString}` : '/api/catalog';
+                },
+
+                buildCatalogSearchURL(query) {
+                    const params = new URLSearchParams();
+                    params.set('q', query);
+                    const classifier = this.classifierFilterParam();
+                    if (classifier) {
+                        params.set('classifier', classifier);
+                    }
+                    const taxonomyParams = this.taxonomyFilterQueryParams();
+                    for (const [key, value] of taxonomyParams.entries()) {
+                        params.set(key, value);
+                    }
+                    return `/api/catalog/search?${params.toString()}`;
                 },
 
                 isSkillCatalogItem(item) {
                     return this.normalizeClassifier(item && item.classifier) === 'skill';
+                },
+
+                catalogSkillIdentifier(item) {
+                    if (!item || typeof item !== 'object') {
+                        return '';
+                    }
+
+                    if (typeof item.id === 'string' && item.id.startsWith('skill:')) {
+                        const fromCatalogID = item.id.slice('skill:'.length).trim();
+                        if (fromCatalogID !== '') {
+                            return fromCatalogID;
+                        }
+                    }
+
+                    if (typeof item.parent_skill_id === 'string' && item.parent_skill_id.trim() !== '') {
+                        return item.parent_skill_id.trim();
+                    }
+
+                    if (typeof item.name === 'string') {
+                        return item.name.trim();
+                    }
+
+                    return '';
                 },
 
                 hasBooleanFlag(item, key) {
@@ -1160,10 +2188,50 @@
 
                     const query = this.searchQuery.trim();
                     if (!query) {
-                        this.searchRequestVersion += 1;
+                        const requestVersion = this.searchRequestVersion + 1;
+                        this.searchRequestVersion = requestVersion;
                         this.cancelInFlightSearch();
-                        this.filteredSkills = this.filterCatalogItems(this.skills);
-                        this.isLoading = false;
+
+                        if (!this.hasActiveTaxonomyFilters()) {
+                            this.filteredSkills = this.filterCatalogItems(this.skills);
+                            this.isLoading = false;
+                            return;
+                        }
+
+                        const controller = new AbortController();
+                        this.searchAbortController = controller;
+                        this.isLoading = true;
+
+                        try {
+                            const response = await fetch(this.buildCatalogListURL(), {
+                                signal: controller.signal
+                            });
+                            if (!response.ok) {
+                                throw new Error(`HTTP ${response.status}`);
+                            }
+                            const results = await response.json();
+                            if (requestVersion !== this.searchRequestVersion) {
+                                return;
+                            }
+                            this.filteredSkills = this.filterCatalogItems(results);
+                        } catch (error) {
+                            if (error && error.name === 'AbortError') {
+                                return;
+                            }
+                            if (requestVersion !== this.searchRequestVersion) {
+                                return;
+                            }
+                            console.error('Catalog filter request failed:', error);
+                            this.filteredSkills = this.filterCatalogItems(this.skills);
+                            this.showToast('Taxonomy filter request failed', 'error');
+                        } finally {
+                            if (this.searchAbortController === controller) {
+                                this.searchAbortController = null;
+                            }
+                            if (requestVersion === this.searchRequestVersion) {
+                                this.isLoading = false;
+                            }
+                        }
                         return;
                     }
 
@@ -1243,14 +2311,15 @@
                 },
 
                 async openSkillForEditing(item) {
-                    if (!item || !item.name) {
+                    const skillIdentifier = this.catalogSkillIdentifier(item);
+                    if (!skillIdentifier) {
                         this.showToast('Cannot open skill: missing skill identifier', 'error');
                         return;
                     }
 
                     this.isLoading = true;
                     try {
-                        const response = await fetch(this.buildSkillApiPath(item.name));
+                        const response = await fetch(this.buildSkillApiPath(skillIdentifier));
                         if (!response.ok) {
                             const errorBody = await response.json().catch(() => null);
                             const errorMessage = errorBody && errorBody.error
@@ -1272,6 +2341,483 @@
 
                 catalogMetadataEndpoint(itemID) {
                     return `/api/catalog/${encodeURIComponent(itemID)}/metadata`;
+                },
+
+                catalogTaxonomyEndpoint(itemID) {
+                    return `/api/catalog/${encodeURIComponent(itemID)}/taxonomy`;
+                },
+
+                taxonomyDomainsEndpoint(domainID = '') {
+                    if (!domainID) {
+                        return '/api/catalog/taxonomy/domains';
+                    }
+                    return `/api/catalog/taxonomy/domains/${encodeURIComponent(domainID)}`;
+                },
+
+                taxonomySubdomainsEndpoint(subdomainID = '') {
+                    if (!subdomainID) {
+                        return '/api/catalog/taxonomy/subdomains';
+                    }
+                    return `/api/catalog/taxonomy/subdomains/${encodeURIComponent(subdomainID)}`;
+                },
+
+                taxonomyTagsEndpoint(tagID = '') {
+                    if (!tagID) {
+                        return '/api/catalog/taxonomy/tags';
+                    }
+                    return `/api/catalog/taxonomy/tags/${encodeURIComponent(tagID)}`;
+                },
+
+                async responseErrorMessage(response, fallbackMessage) {
+                    const fallback = `${fallbackMessage} (HTTP ${response.status})`;
+                    const payload = await response.json().catch(() => null);
+                    if (!payload || typeof payload !== 'object') {
+                        return fallback;
+                    }
+                    if (typeof payload.error === 'string' && payload.error.trim() !== '') {
+                        return payload.error;
+                    }
+                    return fallback;
+                },
+
+                normalizeTaxonomyObjectID(value) {
+                    return String(value || '').trim();
+                },
+
+                normalizeTaxonomyTagIDs(tagIDs) {
+                    if (!Array.isArray(tagIDs)) {
+                        return [];
+                    }
+                    const unique = new Set();
+                    for (const tagID of tagIDs) {
+                        const normalized = this.normalizeTaxonomyObjectID(tagID);
+                        if (normalized !== '') {
+                            unique.add(normalized);
+                        }
+                    }
+                    return Array.from(unique);
+                },
+
+                async loadTaxonomyCatalog(force = false) {
+                    if (this.taxonomyCatalog.loading) {
+                        return;
+                    }
+                    if (this.taxonomyCatalog.loaded && !force) {
+                        return;
+                    }
+
+                    this.taxonomyCatalog.loading = true;
+                    this.taxonomyCatalog.errorMessage = '';
+                    if (this.taxonomyManagerModal.show) {
+                        this.taxonomyManagerModal.loading = true;
+                        this.taxonomyManagerModal.errorMessage = '';
+                    }
+
+                    try {
+                        const [domainsResponse, subdomainsResponse, tagsResponse] = await Promise.all([
+                            fetch(`${this.taxonomyDomainsEndpoint()}?active=true`),
+                            fetch(`${this.taxonomySubdomainsEndpoint()}?active=true`),
+                            fetch(`${this.taxonomyTagsEndpoint()}?active=true`)
+                        ]);
+
+                        if (!domainsResponse.ok) {
+                            throw new Error(await this.responseErrorMessage(domainsResponse, 'Failed to load taxonomy domains'));
+                        }
+                        if (!subdomainsResponse.ok) {
+                            throw new Error(await this.responseErrorMessage(subdomainsResponse, 'Failed to load taxonomy subdomains'));
+                        }
+                        if (!tagsResponse.ok) {
+                            throw new Error(await this.responseErrorMessage(tagsResponse, 'Failed to load taxonomy tags'));
+                        }
+
+                        const [domains, subdomains, tags] = await Promise.all([
+                            domainsResponse.json(),
+                            subdomainsResponse.json(),
+                            tagsResponse.json()
+                        ]);
+
+                        this.taxonomyCatalog.domains = Array.isArray(domains) ? domains : [];
+                        this.taxonomyCatalog.subdomains = Array.isArray(subdomains) ? subdomains : [];
+                        this.taxonomyCatalog.tags = Array.isArray(tags) ? tags : [];
+                        this.taxonomyCatalog.available = true;
+                        this.taxonomyCatalog.loaded = true;
+                    } catch (error) {
+                        const errorMessage = error && error.message ? error.message : 'Failed to load taxonomy catalog';
+                        this.taxonomyCatalog.available = false;
+                        this.taxonomyCatalog.errorMessage = errorMessage;
+                        if (this.taxonomyManagerModal.show) {
+                            this.taxonomyManagerModal.errorMessage = errorMessage;
+                        }
+                    } finally {
+                        this.taxonomyCatalog.loading = false;
+                        if (this.taxonomyManagerModal.show) {
+                            this.taxonomyManagerModal.loading = false;
+                        }
+                    }
+                },
+
+                async refreshTaxonomyCatalog() {
+                    await this.loadTaxonomyCatalog(true);
+                    await this.searchSkills();
+                },
+
+                async openTaxonomyManager() {
+                    this.taxonomyManagerModal.show = true;
+                    this.taxonomyManagerModal.errorMessage = '';
+                    this.taxonomyManagerModal.activeTab = 'domains';
+                    await this.loadTaxonomyCatalog(true);
+                },
+
+                closeTaxonomyManager() {
+                    this.taxonomyManagerModal.show = false;
+                    this.taxonomyManagerModal.loading = false;
+                    this.taxonomyManagerModal.saving = false;
+                    this.taxonomyManagerModal.errorMessage = '';
+                    this.resetTaxonomyDomainForm();
+                    this.resetTaxonomySubdomainForm();
+                    this.resetTaxonomyTagForm();
+                },
+
+                resetTaxonomyDomainForm() {
+                    this.taxonomyManagerModal.forms.domain = {
+                        editingID: '',
+                        domainID: '',
+                        key: '',
+                        name: '',
+                        description: '',
+                        active: true
+                    };
+                },
+
+                editTaxonomyDomain(domain) {
+                    this.taxonomyManagerModal.forms.domain = {
+                        editingID: domain.domain_id,
+                        domainID: domain.domain_id,
+                        key: domain.key || '',
+                        name: domain.name || '',
+                        description: domain.description || '',
+                        active: domain.active !== false
+                    };
+                    this.taxonomyManagerModal.errorMessage = '';
+                },
+
+                async saveTaxonomyDomain() {
+                    const form = this.taxonomyManagerModal.forms.domain;
+                    const isEditing = form.editingID !== '';
+                    const domainID = this.normalizeTaxonomyObjectID(isEditing ? form.editingID : form.domainID);
+                    const key = this.normalizeTaxonomyObjectID(form.key);
+                    const name = String(form.name || '').trim();
+                    if (!domainID || !key || !name) {
+                        this.taxonomyManagerModal.errorMessage = 'Domain ID, key, and name are required.';
+                        return;
+                    }
+
+                    this.taxonomyManagerModal.saving = true;
+                    this.taxonomyManagerModal.errorMessage = '';
+                    try {
+                        const target = isEditing
+                            ? this.taxonomyDomainsEndpoint(domainID)
+                            : this.taxonomyDomainsEndpoint();
+                        const method = isEditing ? 'PATCH' : 'POST';
+                        const body = isEditing
+                            ? {
+                                key,
+                                name,
+                                description: String(form.description || '').trim(),
+                                active: !!form.active
+                            }
+                            : {
+                                domain_id: domainID,
+                                key,
+                                name,
+                                description: String(form.description || '').trim(),
+                                active: !!form.active
+                            };
+
+                        const response = await fetch(target, {
+                            method,
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body)
+                        });
+                        if (!response.ok) {
+                            this.taxonomyManagerModal.errorMessage = await this.responseErrorMessage(response, 'Failed to save taxonomy domain');
+                            return;
+                        }
+
+                        await this.refreshTaxonomyCatalog();
+                        this.resetTaxonomyDomainForm();
+                        this.showToast(isEditing ? 'Domain updated' : 'Domain created', 'success');
+                    } catch (error) {
+                        this.taxonomyManagerModal.errorMessage = error && error.message
+                            ? error.message
+                            : 'Failed to save taxonomy domain';
+                    } finally {
+                        this.taxonomyManagerModal.saving = false;
+                    }
+                },
+
+                async deleteTaxonomyDomain(domain) {
+                    if (!domain || !domain.domain_id) {
+                        return;
+                    }
+                    const confirmed = await this.showConfirm(`Delete domain "${domain.name || domain.domain_id}"?`);
+                    if (!confirmed) {
+                        return;
+                    }
+
+                    this.taxonomyManagerModal.saving = true;
+                    this.taxonomyManagerModal.errorMessage = '';
+                    try {
+                        const response = await fetch(this.taxonomyDomainsEndpoint(domain.domain_id), {
+                            method: 'DELETE'
+                        });
+                        if (!response.ok) {
+                            this.taxonomyManagerModal.errorMessage = await this.responseErrorMessage(response, 'Failed to delete taxonomy domain');
+                            return;
+                        }
+                        await this.refreshTaxonomyCatalog();
+                        if (this.taxonomyManagerModal.forms.domain.editingID === domain.domain_id) {
+                            this.resetTaxonomyDomainForm();
+                        }
+                        this.showToast('Domain deleted', 'success');
+                    } catch (error) {
+                        this.taxonomyManagerModal.errorMessage = error && error.message
+                            ? error.message
+                            : 'Failed to delete taxonomy domain';
+                    } finally {
+                        this.taxonomyManagerModal.saving = false;
+                    }
+                },
+
+                resetTaxonomySubdomainForm() {
+                    this.taxonomyManagerModal.forms.subdomain = {
+                        editingID: '',
+                        subdomainID: '',
+                        domainID: '',
+                        key: '',
+                        name: '',
+                        description: '',
+                        active: true
+                    };
+                },
+
+                editTaxonomySubdomain(subdomain) {
+                    this.taxonomyManagerModal.forms.subdomain = {
+                        editingID: subdomain.subdomain_id,
+                        subdomainID: subdomain.subdomain_id,
+                        domainID: subdomain.domain_id || '',
+                        key: subdomain.key || '',
+                        name: subdomain.name || '',
+                        description: subdomain.description || '',
+                        active: subdomain.active !== false
+                    };
+                    this.taxonomyManagerModal.errorMessage = '';
+                },
+
+                async saveTaxonomySubdomain() {
+                    const form = this.taxonomyManagerModal.forms.subdomain;
+                    const isEditing = form.editingID !== '';
+                    const subdomainID = this.normalizeTaxonomyObjectID(isEditing ? form.editingID : form.subdomainID);
+                    const domainID = this.normalizeTaxonomyObjectID(form.domainID);
+                    const key = this.normalizeTaxonomyObjectID(form.key);
+                    const name = String(form.name || '').trim();
+                    if (!subdomainID || !domainID || !key || !name) {
+                        this.taxonomyManagerModal.errorMessage = 'Subdomain ID, domain, key, and name are required.';
+                        return;
+                    }
+
+                    this.taxonomyManagerModal.saving = true;
+                    this.taxonomyManagerModal.errorMessage = '';
+                    try {
+                        const target = isEditing
+                            ? this.taxonomySubdomainsEndpoint(subdomainID)
+                            : this.taxonomySubdomainsEndpoint();
+                        const method = isEditing ? 'PATCH' : 'POST';
+                        const body = isEditing
+                            ? {
+                                domain_id: domainID,
+                                key,
+                                name,
+                                description: String(form.description || '').trim(),
+                                active: !!form.active
+                            }
+                            : {
+                                subdomain_id: subdomainID,
+                                domain_id: domainID,
+                                key,
+                                name,
+                                description: String(form.description || '').trim(),
+                                active: !!form.active
+                            };
+
+                        const response = await fetch(target, {
+                            method,
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body)
+                        });
+                        if (!response.ok) {
+                            this.taxonomyManagerModal.errorMessage = await this.responseErrorMessage(response, 'Failed to save taxonomy subdomain');
+                            return;
+                        }
+
+                        await this.refreshTaxonomyCatalog();
+                        this.resetTaxonomySubdomainForm();
+                        this.showToast(isEditing ? 'Subdomain updated' : 'Subdomain created', 'success');
+                    } catch (error) {
+                        this.taxonomyManagerModal.errorMessage = error && error.message
+                            ? error.message
+                            : 'Failed to save taxonomy subdomain';
+                    } finally {
+                        this.taxonomyManagerModal.saving = false;
+                    }
+                },
+
+                async deleteTaxonomySubdomain(subdomain) {
+                    if (!subdomain || !subdomain.subdomain_id) {
+                        return;
+                    }
+                    const confirmed = await this.showConfirm(`Delete subdomain "${subdomain.name || subdomain.subdomain_id}"?`);
+                    if (!confirmed) {
+                        return;
+                    }
+
+                    this.taxonomyManagerModal.saving = true;
+                    this.taxonomyManagerModal.errorMessage = '';
+                    try {
+                        const response = await fetch(this.taxonomySubdomainsEndpoint(subdomain.subdomain_id), {
+                            method: 'DELETE'
+                        });
+                        if (!response.ok) {
+                            this.taxonomyManagerModal.errorMessage = await this.responseErrorMessage(response, 'Failed to delete taxonomy subdomain');
+                            return;
+                        }
+                        await this.refreshTaxonomyCatalog();
+                        if (this.taxonomyManagerModal.forms.subdomain.editingID === subdomain.subdomain_id) {
+                            this.resetTaxonomySubdomainForm();
+                        }
+                        this.showToast('Subdomain deleted', 'success');
+                    } catch (error) {
+                        this.taxonomyManagerModal.errorMessage = error && error.message
+                            ? error.message
+                            : 'Failed to delete taxonomy subdomain';
+                    } finally {
+                        this.taxonomyManagerModal.saving = false;
+                    }
+                },
+
+                resetTaxonomyTagForm() {
+                    this.taxonomyManagerModal.forms.tag = {
+                        editingID: '',
+                        tagID: '',
+                        key: '',
+                        name: '',
+                        description: '',
+                        color: '',
+                        active: true
+                    };
+                },
+
+                editTaxonomyTag(tag) {
+                    this.taxonomyManagerModal.forms.tag = {
+                        editingID: tag.tag_id,
+                        tagID: tag.tag_id,
+                        key: tag.key || '',
+                        name: tag.name || '',
+                        description: tag.description || '',
+                        color: tag.color || '',
+                        active: tag.active !== false
+                    };
+                    this.taxonomyManagerModal.errorMessage = '';
+                },
+
+                async saveTaxonomyTag() {
+                    const form = this.taxonomyManagerModal.forms.tag;
+                    const isEditing = form.editingID !== '';
+                    const tagID = this.normalizeTaxonomyObjectID(isEditing ? form.editingID : form.tagID);
+                    const key = this.normalizeTaxonomyObjectID(form.key);
+                    const name = String(form.name || '').trim();
+                    if (!tagID || !key || !name) {
+                        this.taxonomyManagerModal.errorMessage = 'Tag ID, key, and name are required.';
+                        return;
+                    }
+
+                    this.taxonomyManagerModal.saving = true;
+                    this.taxonomyManagerModal.errorMessage = '';
+                    try {
+                        const target = isEditing
+                            ? this.taxonomyTagsEndpoint(tagID)
+                            : this.taxonomyTagsEndpoint();
+                        const method = isEditing ? 'PATCH' : 'POST';
+                        const body = isEditing
+                            ? {
+                                key,
+                                name,
+                                description: String(form.description || '').trim(),
+                                color: String(form.color || '').trim(),
+                                active: !!form.active
+                            }
+                            : {
+                                tag_id: tagID,
+                                key,
+                                name,
+                                description: String(form.description || '').trim(),
+                                color: String(form.color || '').trim(),
+                                active: !!form.active
+                            };
+
+                        const response = await fetch(target, {
+                            method,
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body)
+                        });
+                        if (!response.ok) {
+                            this.taxonomyManagerModal.errorMessage = await this.responseErrorMessage(response, 'Failed to save taxonomy tag');
+                            return;
+                        }
+
+                        await this.refreshTaxonomyCatalog();
+                        this.resetTaxonomyTagForm();
+                        this.showToast(isEditing ? 'Tag updated' : 'Tag created', 'success');
+                    } catch (error) {
+                        this.taxonomyManagerModal.errorMessage = error && error.message
+                            ? error.message
+                            : 'Failed to save taxonomy tag';
+                    } finally {
+                        this.taxonomyManagerModal.saving = false;
+                    }
+                },
+
+                async deleteTaxonomyTag(tag) {
+                    if (!tag || !tag.tag_id) {
+                        return;
+                    }
+                    const confirmed = await this.showConfirm(`Delete tag "${tag.name || tag.tag_id}"?`);
+                    if (!confirmed) {
+                        return;
+                    }
+
+                    this.taxonomyManagerModal.saving = true;
+                    this.taxonomyManagerModal.errorMessage = '';
+                    try {
+                        const response = await fetch(this.taxonomyTagsEndpoint(tag.tag_id), {
+                            method: 'DELETE'
+                        });
+                        if (!response.ok) {
+                            this.taxonomyManagerModal.errorMessage = await this.responseErrorMessage(response, 'Failed to delete taxonomy tag');
+                            return;
+                        }
+                        await this.refreshTaxonomyCatalog();
+                        if (this.taxonomyManagerModal.forms.tag.editingID === tag.tag_id) {
+                            this.resetTaxonomyTagForm();
+                        }
+                        this.showToast('Tag deleted', 'success');
+                    } catch (error) {
+                        this.taxonomyManagerModal.errorMessage = error && error.message
+                            ? error.message
+                            : 'Failed to delete taxonomy tag';
+                    } finally {
+                        this.taxonomyManagerModal.saving = false;
+                    }
                 },
 
                 normalizeMetadataLabels(labelsText) {
@@ -1325,12 +2871,19 @@
                             displayName: '',
                             description: '',
                             labelsText: '',
+                            primaryDomainID: '',
+                            primarySubdomainID: '',
+                            secondaryDomainID: '',
+                            secondarySubdomainID: '',
+                            tagIDs: [],
                             customMetadataJSON: '{}'
                         },
+                        taxonomyErrorMessage: '',
                         errorMessage: ''
                     };
 
                     try {
+                        await this.loadTaxonomyCatalog();
                         const response = await fetch(this.catalogMetadataEndpoint(itemID));
                         if (!response.ok) {
                             const errorPayload = await response.json().catch(() => null);
@@ -1378,8 +2931,30 @@
                                     ? effective.description
                                     : (item.description || '')),
                             labelsText: resolvedLabels.join(', '),
+                            primaryDomainID: effective && effective.primary_domain && typeof effective.primary_domain.id === 'string'
+                                ? effective.primary_domain.id
+                                : '',
+                            primarySubdomainID: effective && effective.primary_subdomain && typeof effective.primary_subdomain.id === 'string'
+                                ? effective.primary_subdomain.id
+                                : '',
+                            secondaryDomainID: effective && effective.secondary_domain && typeof effective.secondary_domain.id === 'string'
+                                ? effective.secondary_domain.id
+                                : '',
+                            secondarySubdomainID: effective && effective.secondary_subdomain && typeof effective.secondary_subdomain.id === 'string'
+                                ? effective.secondary_subdomain.id
+                                : '',
+                            tagIDs: this.normalizeTaxonomyTagIDs(
+                                Array.isArray(effective && effective.tags)
+                                    ? effective.tags.map((tag) => tag && tag.id)
+                                    : []
+                            ),
                             customMetadataJSON: JSON.stringify(resolvedCustomMetadata || {}, null, 2)
                         };
+                        this.handleMetadataDomainChange('primary');
+                        this.handleMetadataDomainChange('secondary');
+                        this.metadataEditorModal.taxonomyErrorMessage = this.taxonomyCatalog.available
+                            ? ''
+                            : this.taxonomyCatalog.errorMessage;
                     } catch (error) {
                         console.error('Failed to load catalog metadata:', error);
                         this.metadataEditorModal.show = false;
@@ -1406,6 +2981,21 @@
                         }
                         if (Array.isArray(effective.labels)) {
                             updated.labels = [...effective.labels];
+                        }
+                        if (effective.primary_domain && typeof effective.primary_domain === 'object') {
+                            updated.primary_domain = { ...effective.primary_domain };
+                        }
+                        if (effective.primary_subdomain && typeof effective.primary_subdomain === 'object') {
+                            updated.primary_subdomain = { ...effective.primary_subdomain };
+                        }
+                        if (effective.secondary_domain && typeof effective.secondary_domain === 'object') {
+                            updated.secondary_domain = { ...effective.secondary_domain };
+                        }
+                        if (effective.secondary_subdomain && typeof effective.secondary_subdomain === 'object') {
+                            updated.secondary_subdomain = { ...effective.secondary_subdomain };
+                        }
+                        if (Array.isArray(effective.tags)) {
+                            updated.tags = effective.tags.map((tag) => ({ ...tag }));
                         }
                         if (effective.custom_metadata && typeof effective.custom_metadata === 'object' && !Array.isArray(effective.custom_metadata)) {
                             updated.custom_metadata = { ...effective.custom_metadata };
@@ -1444,10 +3034,42 @@
                         return;
                     }
 
+                    const taxonomyValidationError = this.validateMetadataTaxonomySelection();
+                    if (taxonomyValidationError) {
+                        this.metadataEditorModal.taxonomyErrorMessage = taxonomyValidationError;
+                        return;
+                    }
+
                     this.metadataEditorModal.errorMessage = '';
+                    this.metadataEditorModal.taxonomyErrorMessage = '';
                     this.metadataEditorModal.saving = true;
 
                     try {
+                        if (this.taxonomyCatalog.available) {
+                            const taxonomyResponse = await fetch(this.catalogTaxonomyEndpoint(itemID), {
+                                method: 'PATCH',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({
+                                    primary_domain_id: this.normalizeTaxonomyObjectID(this.metadataEditorModal.form.primaryDomainID),
+                                    primary_subdomain_id: this.normalizeTaxonomyObjectID(this.metadataEditorModal.form.primarySubdomainID),
+                                    secondary_domain_id: this.normalizeTaxonomyObjectID(this.metadataEditorModal.form.secondaryDomainID),
+                                    secondary_subdomain_id: this.normalizeTaxonomyObjectID(this.metadataEditorModal.form.secondarySubdomainID),
+                                    tag_ids: this.normalizeTaxonomyTagIDs(this.metadataEditorModal.form.tagIDs),
+                                    updated_by: 'web-ui'
+                                }),
+                            });
+
+                            if (!taxonomyResponse.ok) {
+                                this.metadataEditorModal.taxonomyErrorMessage = await this.responseErrorMessage(
+                                    taxonomyResponse,
+                                    'Failed to save taxonomy assignment'
+                                );
+                                return;
+                            }
+                        }
+
                         const response = await fetch(this.catalogMetadataEndpoint(itemID), {
                             method: 'PATCH',
                             headers: {
@@ -1475,7 +3097,12 @@
                         this.applyEffectiveMetadataToCatalogItem(itemID, payload.effective);
                         this.metadataEditorModal.show = false;
                         await this.loadSkills();
-                        this.showToast('Metadata saved successfully', 'success');
+                        this.showToast(
+                            this.taxonomyCatalog.available
+                                ? 'Metadata and taxonomy saved successfully'
+                                : 'Metadata saved successfully',
+                            'success'
+                        );
                     } catch (error) {
                         console.error('Failed to save catalog metadata:', error);
                         this.metadataEditorModal.errorMessage = 'Failed to save metadata';
@@ -1554,6 +3181,7 @@
                         : '/api/skills';
                     
                     const method = this.editingSkill ? 'PUT' : 'POST';
+                    const requestedSkillName = this.skillName;
                     const body = JSON.stringify({
                         name: this.skillName,
                         description: this.skillDescription,
@@ -1573,13 +3201,34 @@
 
                         if (response.ok) {
                             await this.loadSkills();
+                            if (!this.editingSkill) {
+                                const existsInCatalog = this.skills.some(
+                                    (item) => this.catalogSkillIdentifier(item) === requestedSkillName
+                                );
+                                if (!existsInCatalog) {
+                                    this.skills = [
+                                        ...this.skills,
+                                        {
+                                            id: `skill:${requestedSkillName}`,
+                                            classifier: 'skill',
+                                            name: requestedSkillName,
+                                            description: this.skillDescription || '',
+                                            content_writable: true,
+                                            metadata_writable: true,
+                                            read_only: false,
+                                            labels: []
+                                        }
+                                    ];
+                                    this.filteredSkills = this.filterCatalogItems(this.skills, this.searchQuery.trim());
+                                }
+                            }
                             this.showToast('Skill saved successfully', 'success');
                             
                             // Update editingSkill with fresh data from server
                             if (this.editingSkill) {
                                 // Reload the skill data to get updated info
                                 try {
-                                    const skillResponse = await fetch(this.buildSkillApiPath(this.skillName));
+                                    const skillResponse = await fetch(this.buildSkillApiPath(requestedSkillName));
                                     if (skillResponse.ok) {
                                         const updatedSkill = await skillResponse.json();
                                         this.editingSkill = updatedSkill;
@@ -1596,7 +3245,7 @@
                             } else {
                                 // For new skills, switch to edit mode with the saved skill
                                 try {
-                                    const skillResponse = await fetch(this.buildSkillApiPath(this.skillName));
+                                    const skillResponse = await fetch(this.buildSkillApiPath(requestedSkillName));
                                     if (skillResponse.ok) {
                                         const newSkill = await skillResponse.json();
                                         this.editSkill(newSkill);
@@ -1822,8 +3471,14 @@
                             displayName: '',
                             description: '',
                             labelsText: '',
+                            primaryDomainID: '',
+                            primarySubdomainID: '',
+                            secondaryDomainID: '',
+                            secondarySubdomainID: '',
+                            tagIDs: [],
                             customMetadataJSON: '{}'
                         },
+                        taxonomyErrorMessage: '',
                         errorMessage: ''
                     };
                 },

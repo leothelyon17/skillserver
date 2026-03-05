@@ -51,6 +51,7 @@ SkillServer supports both **environment variables** and **command-line flags** w
 | `SKILLSERVER_MCP_HTTP_PATH` | (none) | `/mcp` | Absolute HTTP route path for MCP Streamable HTTP |
 | `SKILLSERVER_MCP_SESSION_TIMEOUT` | (none) | `30m` | Session timeout for MCP HTTP mode (`time.ParseDuration` format) |
 | `SKILLSERVER_MCP_STATELESS` | (none) | `false` | Enable stateless MCP HTTP mode |
+| `SKILLSERVER_MCP_ENABLE_WRITES` | (none) | `false` | Enable MCP taxonomy write tools (kept disabled by default) |
 | `SKILLSERVER_MCP_ENABLE_EVENT_STORE` | (none) | `true` | Enable in-memory MCP event store for replay support |
 | `SKILLSERVER_MCP_EVENT_STORE_MAX_BYTES` | (none) | `10485760` | Max bytes for MCP in-memory event store (10 MiB) |
 | `SKILLSERVER_CATALOG_ENABLE_PROMPTS` | (none) | `true` | Enable prompt catalog classification/indexing in unified catalog APIs/tools |
@@ -72,6 +73,7 @@ SkillServer supports both **environment variables** and **command-line flags** w
 | `--mcp-http-path` | `/mcp` | Absolute HTTP route path for MCP Streamable HTTP |
 | `--mcp-session-timeout` | `30m` | Session timeout for MCP HTTP mode |
 | `--mcp-stateless` | `false` | Enable stateless MCP HTTP mode |
+| `--mcp-enable-writes` | `false` | Enable MCP taxonomy write tools (kept disabled by default) |
 | `--mcp-enable-event-store` | `true` | Enable in-memory MCP event store |
 | `--mcp-event-store-max-bytes` | `10485760` | Max bytes for in-memory MCP event store |
 | `--catalog-enable-prompts` | `true` | Enable prompt catalog classification/indexing |
@@ -156,6 +158,7 @@ export SKILLSERVER_PERSISTENCE_DATA=false
   --mcp-transport both \
   --mcp-http-path /mcp \
   --mcp-session-timeout 45m \
+  --mcp-enable-writes false \
   --mcp-enable-event-store true \
   --mcp-event-store-max-bytes 2097152
 ```
@@ -523,11 +526,34 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 #### Catalog (ADR-003, additive)
 - `GET /api/catalog` - List unified catalog items (`skill` + `prompt`) with fields `id`, `classifier`, `name`, `description`, `content`, `parent_skill_id`, `resource_path`, `custom_metadata`, `labels`, `content_writable`, `metadata_writable`, `read_only`
 - `GET /api/catalog/search?q=query&classifier=skill|prompt` - Search unified catalog items with optional classifier filter
+- Optional taxonomy filters for both list/search:
+  - `primary_domain_id`
+  - `secondary_domain_id`
+  - `subdomain_id` (matches primary or secondary subdomain)
+  - `tag_ids` (comma-separated IDs)
+  - `tag_match=any|all` (defaults to `any`)
 - `classifier` is case-insensitive at input and normalized to `skill` or `prompt` in responses
 - Invalid classifier values return `400` (`invalid catalog classifier ...`)
 - Empty or missing `q` for `/api/catalog/search` returns `400` (`query parameter 'q' is required`)
 - `GET /api/catalog/:id/metadata` - Return source + overlay + effective metadata projections for one catalog item
 - `PATCH /api/catalog/:id/metadata` - Update metadata overlays for one catalog item (`display_name`, `description`, `labels`, `custom_metadata`, optional `updated_by`)
+
+#### Taxonomy (ADR-005, additive; persistence mode required)
+- `GET /api/catalog/:id/taxonomy` - Get taxonomy assignment metadata for one catalog item
+- `PATCH /api/catalog/:id/taxonomy` - Patch taxonomy assignment metadata for one catalog item
+- `GET /api/catalog/taxonomy/domains` - List taxonomy domains (`domain_id`, `domain_ids`, `key`, `keys`, `active` filters)
+- `POST /api/catalog/taxonomy/domains` - Create taxonomy domain
+- `PATCH /api/catalog/taxonomy/domains/:id` - Update taxonomy domain
+- `DELETE /api/catalog/taxonomy/domains/:id` - Delete taxonomy domain
+- `GET /api/catalog/taxonomy/subdomains` - List taxonomy subdomains (`subdomain_id`, `subdomain_ids`, `domain_id`, `domain_ids`, `key`, `keys`, `active` filters)
+- `POST /api/catalog/taxonomy/subdomains` - Create taxonomy subdomain
+- `PATCH /api/catalog/taxonomy/subdomains/:id` - Update taxonomy subdomain
+- `DELETE /api/catalog/taxonomy/subdomains/:id` - Delete taxonomy subdomain
+- `GET /api/catalog/taxonomy/tags` - List taxonomy tags (`tag_id`, `tag_ids`, `key`, `keys`, `active` filters)
+- `POST /api/catalog/taxonomy/tags` - Create taxonomy tag
+- `PATCH /api/catalog/taxonomy/tags/:id` - Update taxonomy tag
+- `DELETE /api/catalog/taxonomy/tags/:id` - Delete taxonomy tag
+- Taxonomy endpoints return `503` when persistence runtime is disabled/unavailable.
 
 #### Resources
 - `GET /api/skills/:name/resources` - List resources with legacy buckets (`scripts`, `references`, `assets`) plus additive groups (`prompts`, `imported`, `groups`) when present; each resource includes `origin` and `writable`
@@ -544,8 +570,18 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 - `search_skills` - Search for skills by query string
 
 #### Catalog (ADR-003, additive)
-- `list_catalog` - List unified catalog items with optional `classifier` filter (`skill` or `prompt`)
-- `search_catalog` - Search unified catalog items by `query`, with optional `classifier` filter (`skill` or `prompt`)
+- `list_catalog` - List unified catalog items with optional `classifier` filter (`skill` or `prompt`) and optional taxonomy filters (`primary_domain_id`, `secondary_domain_id`, `subdomain_id`, `tag_ids`, `tag_match`)
+- `search_catalog` - Search unified catalog items by `query`, with optional `classifier` + taxonomy filters
+- Taxonomy read tools (always registered):
+  - `list_taxonomy_domains`
+  - `list_taxonomy_subdomains`
+  - `list_taxonomy_tags`
+  - `get_catalog_item_taxonomy`
+- Taxonomy write tools (registered only when `--mcp-enable-writes=true` or `SKILLSERVER_MCP_ENABLE_WRITES=true`):
+  - `create_taxonomy_domain`, `update_taxonomy_domain`, `delete_taxonomy_domain`
+  - `create_taxonomy_subdomain`, `update_taxonomy_subdomain`, `delete_taxonomy_subdomain`
+  - `create_taxonomy_tag`, `update_taxonomy_tag`, `delete_taxonomy_tag`
+  - `patch_catalog_item_taxonomy`
 - Optional migration strategy:
   - Existing clients can keep using `list_skills`/`search_skills`
   - New mixed-item clients should adopt `list_catalog`/`search_catalog` for classifier-aware behavior
@@ -599,6 +635,30 @@ export SKILLSERVER_PERSISTENCE_DATA=false
 ```
 
 Detailed rollout/rollback runbook: [`docs/operations/persistence-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/persistence-rollout-rollback.md)
+
+## Domain/Subdomain/Tag Taxonomy Rollout and Rollback (ADR-005)
+
+Runtime controls:
+- Flag: `--mcp-enable-writes=true|false`
+- Env: `SKILLSERVER_MCP_ENABLE_WRITES=true|false`
+- Persistence controls from ADR-004 remain required for durable taxonomy APIs.
+
+Behavior notes:
+- MCP taxonomy write tools are disabled by default and require explicit enablement.
+- Taxonomy REST endpoints and taxonomy-filtered catalog list/search require persistence runtime.
+
+Quick rollback:
+
+```bash
+# Immediate MCP write-gate rollback
+./skillserver --mcp-enable-writes=false
+
+# Equivalent env override
+export SKILLSERVER_MCP_ENABLE_WRITES=false
+./skillserver
+```
+
+Detailed rollout/rollback runbook: [`docs/operations/domain-taxonomy-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/domain-taxonomy-rollout-rollback.md)
 
 ## Dynamic Resource Discovery and Rollout Control
 

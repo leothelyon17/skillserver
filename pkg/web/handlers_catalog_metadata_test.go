@@ -290,7 +290,35 @@ func newCatalogMetadataFixtureServer(t *testing.T) (*Server, *persistence.Catalo
 	if err != nil {
 		t.Fatalf("expected overlay repository creation to succeed, got %v", err)
 	}
-	effectiveService, err := domain.NewCatalogEffectiveService(sourceRepo, overlayRepo)
+	taxonomyAssignmentRepo, err := persistence.NewCatalogItemTaxonomyAssignmentRepository(db)
+	if err != nil {
+		t.Fatalf("expected taxonomy assignment repository creation to succeed, got %v", err)
+	}
+	tagAssignmentRepo, err := persistence.NewCatalogItemTagAssignmentRepository(db)
+	if err != nil {
+		t.Fatalf("expected tag assignment repository creation to succeed, got %v", err)
+	}
+	domainRepo, err := persistence.NewCatalogDomainRepository(db)
+	if err != nil {
+		t.Fatalf("expected domain repository creation to succeed, got %v", err)
+	}
+	subdomainRepo, err := persistence.NewCatalogSubdomainRepository(db)
+	if err != nil {
+		t.Fatalf("expected subdomain repository creation to succeed, got %v", err)
+	}
+	tagRepo, err := persistence.NewCatalogTagRepository(db)
+	if err != nil {
+		t.Fatalf("expected tag repository creation to succeed, got %v", err)
+	}
+	effectiveService, err := domain.NewCatalogEffectiveService(
+		sourceRepo,
+		overlayRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+	)
 	if err != nil {
 		t.Fatalf("expected effective catalog service creation to succeed, got %v", err)
 	}
@@ -307,9 +335,34 @@ func newCatalogMetadataFixtureServer(t *testing.T) (*Server, *persistence.Catalo
 	if err != nil {
 		t.Fatalf("expected catalog metadata service creation to succeed, got %v", err)
 	}
+	taxonomyRegistry, err := domain.NewCatalogTaxonomyRegistryService(
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+		domain.CatalogTaxonomyRegistryServiceOptions{},
+	)
+	if err != nil {
+		t.Fatalf("expected taxonomy registry service creation to succeed, got %v", err)
+	}
+	taxonomyAssignmentService, err := domain.NewCatalogTaxonomyAssignmentService(
+		sourceRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+		domain.CatalogTaxonomyAssignmentServiceOptions{},
+	)
+	if err != nil {
+		t.Fatalf("expected taxonomy assignment service creation to succeed, got %v", err)
+	}
 
 	seedCatalogMetadataSourceRows(t, sourceRepo)
 	server.SetCatalogMetadataService(metadataService)
+	server.SetCatalogTaxonomyRegistryService(taxonomyRegistry)
+	server.SetCatalogTaxonomyAssignmentService(taxonomyAssignmentService)
 
 	return server, sourceRepo
 }
