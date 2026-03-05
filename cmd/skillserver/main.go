@@ -264,7 +264,9 @@ func main() {
 	}
 
 	// Create MCP server and optional HTTP transport handler.
-	mcpServer := mcp.NewServer(skillManager)
+	mcpServer := mcp.NewServer(skillManager, mcp.ServerOptions{
+		EnableTaxonomyWriteTools: mcpRuntimeConfig.EnableWrites,
+	})
 
 	var mcpHandler http.Handler
 	mcpPath := ""
@@ -299,6 +301,11 @@ func main() {
 			log.Fatalf("Failed to initialize catalog metadata service: %v", metadataErr)
 		}
 		webServer.SetCatalogMetadataService(metadataService)
+		webServer.SetCatalogTaxonomyAssignmentService(persistenceRuntime.taxonomyAssignment)
+		webServer.SetCatalogTaxonomyRegistryService(persistenceRuntime.taxonomyRegistryService)
+		mcpServer.SetCatalogMetadataService(metadataService)
+		mcpServer.SetCatalogTaxonomyAssignmentService(persistenceRuntime.taxonomyAssignment)
+		mcpServer.SetCatalogTaxonomyRegistryService(persistenceRuntime.taxonomyRegistryService)
 
 		webServer.SetManualGitRepoSyncHook(func(repo git.GitRepoConfig) error {
 			repoName := strings.TrimSpace(repo.Name)

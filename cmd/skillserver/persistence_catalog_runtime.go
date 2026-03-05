@@ -13,16 +13,20 @@ import (
 )
 
 type catalogPersistenceRuntime struct {
-	db          *sql.DB
-	sourceRepo  *persistence.CatalogSourceRepository
-	overlayRepo *persistence.CatalogMetadataOverlayRepository
-	coordinator *catalogPersistenceCoordinator
+	db                      *sql.DB
+	sourceRepo              *persistence.CatalogSourceRepository
+	overlayRepo             *persistence.CatalogMetadataOverlayRepository
+	taxonomyAssignment      *domain.CatalogTaxonomyAssignmentService
+	taxonomyRegistryService *domain.CatalogTaxonomyRegistryService
+	coordinator             *catalogPersistenceCoordinator
 }
 
 type catalogPersistenceCoordinator struct {
 	fsManager        *domain.FileSystemManager
 	syncService      *domain.CatalogSyncService
+	backfillService  *domain.CatalogTaxonomyLegacyLabelBackfillService
 	effectiveService *domain.CatalogEffectiveService
+	logger           *log.Logger
 }
 
 func bootstrapCatalogPersistenceRuntime(
@@ -56,18 +60,82 @@ func bootstrapCatalogPersistenceRuntime(
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize catalog overlay repository: %w", err)
 	}
+	taxonomyAssignmentRepo, err := persistence.NewCatalogItemTaxonomyAssignmentRepository(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize catalog taxonomy assignment repository: %w", err)
+	}
+	tagAssignmentRepo, err := persistence.NewCatalogItemTagAssignmentRepository(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize catalog tag assignment repository: %w", err)
+	}
+	domainRepo, err := persistence.NewCatalogDomainRepository(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize catalog domain repository: %w", err)
+	}
+	subdomainRepo, err := persistence.NewCatalogSubdomainRepository(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize catalog subdomain repository: %w", err)
+	}
+	tagRepo, err := persistence.NewCatalogTagRepository(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize catalog tag repository: %w", err)
+	}
 
-	coordinator, err := newCatalogPersistenceCoordinator(fsManager, sourceRepo, overlayRepo, logger)
+	coordinator, err := newCatalogPersistenceCoordinator(
+		fsManager,
+		sourceRepo,
+		overlayRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+		logger,
+	)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 
+	taxonomyRegistryService, err := domain.NewCatalogTaxonomyRegistryService(
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+		domain.CatalogTaxonomyRegistryServiceOptions{},
+	)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize catalog taxonomy registry service: %w", err)
+	}
+
+	taxonomyAssignmentService, err := domain.NewCatalogTaxonomyAssignmentService(
+		sourceRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+		domain.CatalogTaxonomyAssignmentServiceOptions{},
+	)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize catalog taxonomy assignment service: %w", err)
+	}
+
 	return &catalogPersistenceRuntime{
-		db:          db,
-		sourceRepo:  sourceRepo,
-		overlayRepo: overlayRepo,
-		coordinator: coordinator,
+		db:                      db,
+		sourceRepo:              sourceRepo,
+		overlayRepo:             overlayRepo,
+		taxonomyAssignment:      taxonomyAssignmentService,
+		taxonomyRegistryService: taxonomyRegistryService,
+		coordinator:             coordinator,
 	}, nil
 }
 
@@ -75,6 +143,11 @@ func newCatalogPersistenceCoordinator(
 	fsManager *domain.FileSystemManager,
 	sourceRepo *persistence.CatalogSourceRepository,
 	overlayRepo *persistence.CatalogMetadataOverlayRepository,
+	taxonomyAssignmentRepo *persistence.CatalogItemTaxonomyAssignmentRepository,
+	tagAssignmentRepo *persistence.CatalogItemTagAssignmentRepository,
+	domainRepo *persistence.CatalogDomainRepository,
+	subdomainRepo *persistence.CatalogSubdomainRepository,
+	tagRepo *persistence.CatalogTagRepository,
 	logger *log.Logger,
 ) (*catalogPersistenceCoordinator, error) {
 	if fsManager == nil {
@@ -85,6 +158,21 @@ func newCatalogPersistenceCoordinator(
 	}
 	if overlayRepo == nil {
 		return nil, fmt.Errorf("catalog overlay repository is required for persistence synchronization")
+	}
+	if taxonomyAssignmentRepo == nil {
+		return nil, fmt.Errorf("catalog taxonomy assignment repository is required for persistence synchronization")
+	}
+	if tagAssignmentRepo == nil {
+		return nil, fmt.Errorf("catalog tag assignment repository is required for persistence synchronization")
+	}
+	if domainRepo == nil {
+		return nil, fmt.Errorf("catalog domain repository is required for persistence synchronization")
+	}
+	if subdomainRepo == nil {
+		return nil, fmt.Errorf("catalog subdomain repository is required for persistence synchronization")
+	}
+	if tagRepo == nil {
+		return nil, fmt.Errorf("catalog tag repository is required for persistence synchronization")
 	}
 
 	resolvedLogger := logger
@@ -98,15 +186,35 @@ func newCatalogPersistenceCoordinator(
 	if err != nil {
 		return nil, fmt.Errorf("initialize catalog sync service: %w", err)
 	}
-	effectiveService, err := domain.NewCatalogEffectiveService(sourceRepo, overlayRepo)
+	effectiveService, err := domain.NewCatalogEffectiveService(
+		sourceRepo,
+		overlayRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("initialize catalog effective service: %w", err)
+	}
+	backfillService, err := domain.NewCatalogTaxonomyLegacyLabelBackfillService(
+		sourceRepo,
+		overlayRepo,
+		tagRepo,
+		tagAssignmentRepo,
+		domain.CatalogTaxonomyLegacyLabelBackfillServiceOptions{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initialize catalog taxonomy legacy label backfill service: %w", err)
 	}
 
 	return &catalogPersistenceCoordinator{
 		fsManager:        fsManager,
 		syncService:      syncService,
+		backfillService:  backfillService,
 		effectiveService: effectiveService,
+		logger:           resolvedLogger,
 	}, nil
 }
 
@@ -143,6 +251,20 @@ func (c *catalogPersistenceCoordinator) syncAndRebuild(
 
 	if err := syncFn(discovered); err != nil {
 		return fmt.Errorf("persist synchronized catalog snapshot: %w", err)
+	}
+	backfillReport, err := c.backfillService.BackfillFromLegacyLabels(ctx)
+	if err != nil {
+		return fmt.Errorf("backfill legacy labels into taxonomy tags: %w", err)
+	}
+	if c.logger != nil && backfillReport.ItemsWithLegacyLabels > 0 {
+		c.logger.Printf(
+			"Catalog taxonomy legacy label backfill completed: items_scanned=%d items_with_legacy_labels=%d tags_created=%d item_assignments_updated=%d normalization_collisions=%d",
+			backfillReport.ItemsScanned,
+			backfillReport.ItemsWithLegacyLabels,
+			backfillReport.TagsCreated,
+			backfillReport.ItemAssignmentsUpdated,
+			len(backfillReport.NormalizationCollisions),
+		)
 	}
 
 	effectiveItems, err := c.effectiveService.List(ctx, domain.CatalogEffectiveListFilter{})

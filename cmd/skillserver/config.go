@@ -16,6 +16,7 @@ const (
 	envMCPHTTPPath           = "SKILLSERVER_MCP_HTTP_PATH"
 	envMCPSessionTimeout     = "SKILLSERVER_MCP_SESSION_TIMEOUT"
 	envMCPStateless          = "SKILLSERVER_MCP_STATELESS"
+	envMCPEnableWrites       = "SKILLSERVER_MCP_ENABLE_WRITES"
 	envMCPEnableEventStore   = "SKILLSERVER_MCP_ENABLE_EVENT_STORE"
 	envMCPEventStoreMaxBytes = "SKILLSERVER_MCP_EVENT_STORE_MAX_BYTES"
 	envCatalogEnablePrompts  = "SKILLSERVER_CATALOG_ENABLE_PROMPTS"
@@ -28,6 +29,7 @@ const (
 	defaultMCPSessionTimeout           = 30 * time.Minute
 	defaultMCPSessionTimeoutString     = "30m"
 	defaultMCPStateless                = false
+	defaultMCPEnableWrites             = false
 	defaultMCPEnableEventStore         = true
 	defaultMCPEventStoreMaxBytes   int = 10 * 1024 * 1024
 	defaultCatalogEnablePrompts        = true
@@ -56,6 +58,7 @@ type MCPRuntimeConfig struct {
 	HTTPPath           string
 	SessionTimeout     time.Duration
 	Stateless          bool
+	EnableWrites       bool
 	EnableEventStore   bool
 	EventStoreMaxBytes int
 }
@@ -65,6 +68,7 @@ type mcpRuntimeFlagValues struct {
 	httpPath           string
 	sessionTimeout     string
 	stateless          bool
+	enableWrites       bool
 	enableEventStore   bool
 	eventStoreMaxBytes int
 }
@@ -107,6 +111,12 @@ func registerMCPRuntimeFlags(fs *flag.FlagSet) *mcpRuntimeFlagValues {
 		"mcp-stateless",
 		defaultMCPStateless,
 		"Enable stateless MCP HTTP mode (env: SKILLSERVER_MCP_STATELESS)",
+	)
+	fs.BoolVar(
+		&values.enableWrites,
+		"mcp-enable-writes",
+		defaultMCPEnableWrites,
+		"Enable MCP taxonomy write tools (env: SKILLSERVER_MCP_ENABLE_WRITES)",
 	)
 	fs.BoolVar(
 		&values.enableEventStore,
@@ -209,6 +219,18 @@ func parseMCPRuntimeConfig(
 		return MCPRuntimeConfig{}, err
 	}
 
+	enableWrites, err := resolveBoolConfigValue(
+		fs,
+		"mcp-enable-writes",
+		flagValues.enableWrites,
+		envMCPEnableWrites,
+		defaultMCPEnableWrites,
+		lookupEnv,
+	)
+	if err != nil {
+		return MCPRuntimeConfig{}, err
+	}
+
 	enableEventStore, err := resolveBoolConfigValue(
 		fs,
 		"mcp-enable-event-store",
@@ -238,6 +260,7 @@ func parseMCPRuntimeConfig(
 		HTTPPath:           httpPath,
 		SessionTimeout:     sessionTimeout,
 		Stateless:          stateless,
+		EnableWrites:       enableWrites,
 		EnableEventStore:   enableEventStore,
 		EventStoreMaxBytes: eventStoreMaxBytes,
 	}, nil

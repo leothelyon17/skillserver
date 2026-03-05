@@ -23,18 +23,30 @@ var defaultPromptDirectoryAllowlist = []string{"agent", "agents", "prompt", "pro
 
 // CatalogItem represents a first-class searchable catalog object.
 type CatalogItem struct {
-	ID               string            `json:"id"`
-	Classifier       CatalogClassifier `json:"classifier"`
-	Name             string            `json:"name"`
-	Description      string            `json:"description,omitempty"`
-	Content          string            `json:"content,omitempty"`
-	ParentSkillID    string            `json:"parent_skill_id,omitempty"`
-	ResourcePath     string            `json:"resource_path,omitempty"`
-	ContentWritable  bool              `json:"content_writable"`
-	MetadataWritable bool              `json:"metadata_writable"`
-	CustomMetadata   map[string]any    `json:"custom_metadata,omitempty"`
-	Labels           []string          `json:"labels,omitempty"`
-	ReadOnly         bool              `json:"read_only"`
+	ID                 string                     `json:"id"`
+	Classifier         CatalogClassifier          `json:"classifier"`
+	Name               string                     `json:"name"`
+	Description        string                     `json:"description,omitempty"`
+	Content            string                     `json:"content,omitempty"`
+	ParentSkillID      string                     `json:"parent_skill_id,omitempty"`
+	ResourcePath       string                     `json:"resource_path,omitempty"`
+	PrimaryDomain      *CatalogTaxonomyReference  `json:"primary_domain,omitempty"`
+	PrimarySubdomain   *CatalogTaxonomyReference  `json:"primary_subdomain,omitempty"`
+	SecondaryDomain    *CatalogTaxonomyReference  `json:"secondary_domain,omitempty"`
+	SecondarySubdomain *CatalogTaxonomyReference  `json:"secondary_subdomain,omitempty"`
+	Tags               []CatalogTaxonomyReference `json:"tags,omitempty"`
+	ContentWritable    bool                       `json:"content_writable"`
+	MetadataWritable   bool                       `json:"metadata_writable"`
+	CustomMetadata     map[string]any             `json:"custom_metadata,omitempty"`
+	Labels             []string                   `json:"labels,omitempty"`
+	ReadOnly           bool                       `json:"read_only"`
+}
+
+// CatalogTaxonomyReference is a lightweight domain/subdomain/tag reference on effective catalog items.
+type CatalogTaxonomyReference struct {
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Name string `json:"name"`
 }
 
 func normalizeCatalogItemMutability(item CatalogItem) (contentWritable bool, metadataWritable bool, readOnly bool) {

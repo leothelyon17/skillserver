@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -11,12 +12,44 @@ func TestNewCatalogEffectiveService_WithNilRepositories_ReturnsError(t *testing.
 	db, _ := openCatalogSyncServiceTestDB(t)
 	sourceRepo := newCatalogSourceRepositoryForDomainTest(t, db)
 	overlayRepo := newCatalogOverlayRepositoryForDomainTest(t, db)
+	taxonomyAssignmentRepo := newCatalogItemTaxonomyAssignmentRepositoryForDomainTest(t, db)
+	tagAssignmentRepo := newCatalogItemTagAssignmentRepositoryForDomainTest(t, db)
+	domainRepo := newCatalogDomainRepositoryForDomainTest(t, db)
+	subdomainRepo := newCatalogSubdomainRepositoryForDomainTest(t, db)
+	tagRepo := newCatalogTagRepositoryForDomainTest(t, db)
 
-	if _, err := NewCatalogEffectiveService(nil, overlayRepo); err == nil {
+	if _, err := NewCatalogEffectiveService(
+		nil,
+		overlayRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+	); err == nil {
 		t.Fatalf("expected nil source repository error, got nil")
 	}
-	if _, err := NewCatalogEffectiveService(sourceRepo, nil); err == nil {
+	if _, err := NewCatalogEffectiveService(
+		sourceRepo,
+		nil,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+	); err == nil {
 		t.Fatalf("expected nil overlay repository error, got nil")
+	}
+	if _, err := NewCatalogEffectiveService(
+		sourceRepo,
+		overlayRepo,
+		nil,
+		tagAssignmentRepo,
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+	); err == nil {
+		t.Fatalf("expected nil taxonomy assignment repository error, got nil")
 	}
 }
 
@@ -25,6 +58,21 @@ func TestCatalogEffectiveService_List_NilReceiver_ReturnsError(t *testing.T) {
 	_, err := service.List(nil, CatalogEffectiveListFilter{})
 	if err == nil {
 		t.Fatalf("expected nil service receiver error, got nil")
+	}
+}
+
+func TestCatalogEffectiveService_List_InvalidTagMatchFilter_ReturnsError(t *testing.T) {
+	db, ctx := openCatalogSyncServiceTestDB(t)
+	sourceRepo := newCatalogSourceRepositoryForDomainTest(t, db)
+	overlayRepo := newCatalogOverlayRepositoryForDomainTest(t, db)
+
+	service := newCatalogEffectiveServiceForDomainTest(t, db, sourceRepo, overlayRepo)
+	_, err := service.List(ctx, CatalogEffectiveListFilter{
+		TagIDs:   []string{"tag-a"},
+		TagMatch: CatalogTagMatchMode("invalid"),
+	})
+	if err == nil {
+		t.Fatalf("expected invalid tag match error, got nil")
 	}
 }
 
@@ -89,7 +137,7 @@ func TestCatalogEffectiveService_List_AppliesOverlayPrecedenceAndNullFallback(t 
 		t.Fatalf("expected git prompt overlay upsert to succeed, got %v", err)
 	}
 
-	service := newCatalogEffectiveServiceForDomainTest(t, sourceRepo, overlayRepo)
+	service := newCatalogEffectiveServiceForDomainTest(t, db, sourceRepo, overlayRepo)
 
 	items, err := service.List(ctx, CatalogEffectiveListFilter{})
 	if err != nil {
@@ -181,7 +229,7 @@ func TestCatalogEffectiveService_List_EnforcesMutabilityMatrixAndReadOnlyCompati
 		mustUpsertCatalogSourceRowForDomainTest(t, ctx, sourceRepo, row)
 	}
 
-	service := newCatalogEffectiveServiceForDomainTest(t, sourceRepo, overlayRepo)
+	service := newCatalogEffectiveServiceForDomainTest(t, db, sourceRepo, overlayRepo)
 
 	items, err := service.List(ctx, CatalogEffectiveListFilter{})
 	if err != nil {
@@ -272,7 +320,7 @@ func TestCatalogEffectiveService_List_UsesDeterministicOrderingFiltersAndExclude
 		DeletedAt:        &deletedAt,
 	})
 
-	service := newCatalogEffectiveServiceForDomainTest(t, sourceRepo, overlayRepo)
+	service := newCatalogEffectiveServiceForDomainTest(t, db, sourceRepo, overlayRepo)
 
 	items, err := service.List(ctx, CatalogEffectiveListFilter{})
 	if err != nil {
@@ -318,14 +366,268 @@ func TestCatalogEffectiveService_List_UsesDeterministicOrderingFiltersAndExclude
 	}
 }
 
+func TestCatalogEffectiveService_List_MergesTaxonomyReferencesAndAppliesTaxonomyFilters(t *testing.T) {
+	db, ctx := openCatalogSyncServiceTestDB(t)
+	sourceRepo := newCatalogSourceRepositoryForDomainTest(t, db)
+	overlayRepo := newCatalogOverlayRepositoryForDomainTest(t, db)
+	domainRepo := newCatalogDomainRepositoryForDomainTest(t, db)
+	subdomainRepo := newCatalogSubdomainRepositoryForDomainTest(t, db)
+	tagRepo := newCatalogTagRepositoryForDomainTest(t, db)
+	taxonomyAssignmentRepo := newCatalogItemTaxonomyAssignmentRepositoryForDomainTest(t, db)
+	tagAssignmentRepo := newCatalogItemTagAssignmentRepositoryForDomainTest(t, db)
+
+	if err := domainRepo.Create(ctx, persistence.CatalogDomainRow{
+		DomainID: "domain-platform",
+		Key:      "platform",
+		Name:     "Platform",
+		Active:   true,
+	}); err != nil {
+		t.Fatalf("expected create domain-platform to succeed, got %v", err)
+	}
+	if err := domainRepo.Create(ctx, persistence.CatalogDomainRow{
+		DomainID: "domain-observability",
+		Key:      "observability",
+		Name:     "Observability",
+		Active:   true,
+	}); err != nil {
+		t.Fatalf("expected create domain-observability to succeed, got %v", err)
+	}
+
+	if err := subdomainRepo.Create(ctx, persistence.CatalogSubdomainRow{
+		SubdomainID: "subdomain-platform-api",
+		DomainID:    "domain-platform",
+		Key:         "api",
+		Name:        "API",
+		Active:      true,
+	}); err != nil {
+		t.Fatalf("expected create subdomain-platform-api to succeed, got %v", err)
+	}
+	if err := subdomainRepo.Create(ctx, persistence.CatalogSubdomainRow{
+		SubdomainID: "subdomain-observability-metrics",
+		DomainID:    "domain-observability",
+		Key:         "metrics",
+		Name:        "Metrics",
+		Active:      true,
+	}); err != nil {
+		t.Fatalf("expected create subdomain-observability-metrics to succeed, got %v", err)
+	}
+
+	if err := tagRepo.Create(ctx, persistence.CatalogTagRow{
+		TagID:  "tag-backend",
+		Key:    "backend",
+		Name:   "Backend",
+		Active: true,
+		Color:  "#0055aa",
+	}); err != nil {
+		t.Fatalf("expected create tag-backend to succeed, got %v", err)
+	}
+	if err := tagRepo.Create(ctx, persistence.CatalogTagRow{
+		TagID:  "tag-metrics",
+		Key:    "metrics",
+		Name:   "Metrics",
+		Active: true,
+		Color:  "#11aa55",
+	}); err != nil {
+		t.Fatalf("expected create tag-metrics to succeed, got %v", err)
+	}
+
+	syncedAt := time.Date(2026, time.March, 5, 1, 0, 0, 0, time.UTC)
+	itemAID := BuildSkillCatalogItemID("alpha")
+	itemBID := BuildSkillCatalogItemID("beta")
+	itemCID := BuildPromptCatalogItemID("repo-a/charlie", "imports/prompts/system.md")
+	repoName := "repo-a"
+	parentSkillID := "repo-a/charlie"
+	resourcePath := "imports/prompts/system.md"
+
+	mustUpsertCatalogSourceRowForDomainTest(t, ctx, sourceRepo, persistence.CatalogSourceRow{
+		ItemID:           itemAID,
+		Classifier:       persistence.CatalogClassifierSkill,
+		SourceType:       persistence.CatalogSourceTypeLocal,
+		Name:             "alpha",
+		Description:      "alpha",
+		Content:          "alpha content",
+		ContentHash:      buildCatalogContentHash("alpha content"),
+		ContentWritable:  true,
+		MetadataWritable: true,
+		LastSyncedAt:     syncedAt,
+	})
+	mustUpsertCatalogSourceRowForDomainTest(t, ctx, sourceRepo, persistence.CatalogSourceRow{
+		ItemID:           itemBID,
+		Classifier:       persistence.CatalogClassifierSkill,
+		SourceType:       persistence.CatalogSourceTypeLocal,
+		Name:             "beta",
+		Description:      "beta",
+		Content:          "beta content",
+		ContentHash:      buildCatalogContentHash("beta content"),
+		ContentWritable:  true,
+		MetadataWritable: true,
+		LastSyncedAt:     syncedAt,
+	})
+	mustUpsertCatalogSourceRowForDomainTest(t, ctx, sourceRepo, persistence.CatalogSourceRow{
+		ItemID:           itemCID,
+		Classifier:       persistence.CatalogClassifierPrompt,
+		SourceType:       persistence.CatalogSourceTypeGit,
+		SourceRepo:       &repoName,
+		ParentSkillID:    &parentSkillID,
+		ResourcePath:     &resourcePath,
+		Name:             "system.md",
+		Description:      "system",
+		Content:          "system content",
+		ContentHash:      buildCatalogContentHash("system content"),
+		ContentWritable:  false,
+		MetadataWritable: true,
+		LastSyncedAt:     syncedAt,
+	})
+	if err := overlayRepo.Upsert(ctx, persistence.CatalogMetadataOverlayRow{
+		ItemID:    itemAID,
+		Labels:    []string{"legacy-overlay-a"},
+		UpdatedAt: syncedAt,
+	}); err != nil {
+		t.Fatalf("expected itemA overlay upsert to succeed, got %v", err)
+	}
+	if err := overlayRepo.Upsert(ctx, persistence.CatalogMetadataOverlayRow{
+		ItemID:    itemCID,
+		Labels:    []string{"legacy-overlay-c"},
+		UpdatedAt: syncedAt,
+	}); err != nil {
+		t.Fatalf("expected itemC overlay upsert to succeed, got %v", err)
+	}
+
+	if err := taxonomyAssignmentRepo.Upsert(ctx, persistence.CatalogItemTaxonomyAssignmentRow{
+		ItemID:               itemAID,
+		PrimaryDomainID:      stringPointer("domain-platform"),
+		PrimarySubdomainID:   stringPointer("subdomain-platform-api"),
+		SecondaryDomainID:    stringPointer("domain-observability"),
+		SecondarySubdomainID: stringPointer("subdomain-observability-metrics"),
+		UpdatedAt:            syncedAt,
+		UpdatedBy:            stringPointer("tester"),
+	}); err != nil {
+		t.Fatalf("expected upsert itemA taxonomy assignment to succeed, got %v", err)
+	}
+	if err := taxonomyAssignmentRepo.Upsert(ctx, persistence.CatalogItemTaxonomyAssignmentRow{
+		ItemID:          itemBID,
+		PrimaryDomainID: stringPointer("domain-observability"),
+		UpdatedAt:       syncedAt,
+	}); err != nil {
+		t.Fatalf("expected upsert itemB taxonomy assignment to succeed, got %v", err)
+	}
+
+	if err := tagAssignmentRepo.ReplaceForItemID(
+		ctx,
+		itemAID,
+		[]string{"tag-backend", "tag-metrics"},
+		syncedAt,
+	); err != nil {
+		t.Fatalf("expected replace tags for itemA to succeed, got %v", err)
+	}
+	if err := tagAssignmentRepo.ReplaceForItemID(ctx, itemBID, []string{"tag-metrics"}, syncedAt); err != nil {
+		t.Fatalf("expected replace tags for itemB to succeed, got %v", err)
+	}
+
+	service := newCatalogEffectiveServiceForDomainTest(t, db, sourceRepo, overlayRepo)
+
+	items, err := service.List(ctx, CatalogEffectiveListFilter{})
+	if err != nil {
+		t.Fatalf("expected taxonomy-aware effective list to succeed, got %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected 3 effective rows, got %d", len(items))
+	}
+
+	itemsByID := make(map[string]CatalogItem, len(items))
+	for _, item := range items {
+		itemsByID[item.ID] = item
+	}
+
+	itemA := itemsByID[itemAID]
+	if itemA.PrimaryDomain == nil || itemA.PrimaryDomain.ID != "domain-platform" {
+		t.Fatalf("expected itemA primary domain to round-trip, got %+v", itemA.PrimaryDomain)
+	}
+	if itemA.PrimarySubdomain == nil || itemA.PrimarySubdomain.ID != "subdomain-platform-api" {
+		t.Fatalf("expected itemA primary subdomain to round-trip, got %+v", itemA.PrimarySubdomain)
+	}
+	if itemA.SecondaryDomain == nil || itemA.SecondaryDomain.ID != "domain-observability" {
+		t.Fatalf("expected itemA secondary domain to round-trip, got %+v", itemA.SecondaryDomain)
+	}
+	if itemA.SecondarySubdomain == nil || itemA.SecondarySubdomain.ID != "subdomain-observability-metrics" {
+		t.Fatalf("expected itemA secondary subdomain to round-trip, got %+v", itemA.SecondarySubdomain)
+	}
+	if len(itemA.Tags) != 2 || itemA.Tags[0].ID != "tag-backend" || itemA.Tags[1].ID != "tag-metrics" {
+		t.Fatalf("expected itemA tag references [tag-backend, tag-metrics], got %+v", itemA.Tags)
+	}
+	if len(itemA.Labels) != 2 || itemA.Labels[0] != "Backend" || itemA.Labels[1] != "Metrics" {
+		t.Fatalf("expected taxonomy-derived labels [Backend, Metrics] for itemA, got %+v", itemA.Labels)
+	}
+
+	itemB := itemsByID[itemBID]
+	if len(itemB.Labels) != 1 || itemB.Labels[0] != "Metrics" {
+		t.Fatalf("expected taxonomy-derived labels [Metrics] for itemB, got %+v", itemB.Labels)
+	}
+
+	itemC := itemsByID[itemCID]
+	if len(itemC.Labels) != 1 || itemC.Labels[0] != "legacy-overlay-c" {
+		t.Fatalf("expected legacy overlay label fallback for itemC, got %+v", itemC.Labels)
+	}
+
+	platformItems, err := service.List(ctx, CatalogEffectiveListFilter{DomainID: "domain-platform"})
+	if err != nil {
+		t.Fatalf("expected domain filter list to succeed, got %v", err)
+	}
+	if len(platformItems) != 1 || platformItems[0].ID != itemAID {
+		t.Fatalf("expected only itemA for domain-platform filter, got %+v", platformItems)
+	}
+
+	subdomainItems, err := service.List(ctx, CatalogEffectiveListFilter{SubdomainID: "subdomain-observability-metrics"})
+	if err != nil {
+		t.Fatalf("expected subdomain filter list to succeed, got %v", err)
+	}
+	if len(subdomainItems) != 1 || subdomainItems[0].ID != itemAID {
+		t.Fatalf("expected only itemA for subdomain filter, got %+v", subdomainItems)
+	}
+
+	tagAnyItems, err := service.List(ctx, CatalogEffectiveListFilter{TagIDs: []string{"tag-metrics"}})
+	if err != nil {
+		t.Fatalf("expected tag any filter list to succeed, got %v", err)
+	}
+	if len(tagAnyItems) != 2 || tagAnyItems[0].ID != itemAID || tagAnyItems[1].ID != itemBID {
+		t.Fatalf("expected itemA/itemB for tag any filter, got %+v", tagAnyItems)
+	}
+
+	tagAllItems, err := service.List(ctx, CatalogEffectiveListFilter{
+		TagIDs:   []string{"tag-backend", "tag-metrics"},
+		TagMatch: CatalogTagMatchAll,
+	})
+	if err != nil {
+		t.Fatalf("expected tag all filter list to succeed, got %v", err)
+	}
+	if len(tagAllItems) != 1 || tagAllItems[0].ID != itemAID {
+		t.Fatalf("expected only itemA for tag all filter, got %+v", tagAllItems)
+	}
+}
+
 func newCatalogEffectiveServiceForDomainTest(
 	t *testing.T,
+	db *sql.DB,
 	sourceRepo *persistence.CatalogSourceRepository,
 	overlayRepo *persistence.CatalogMetadataOverlayRepository,
 ) *CatalogEffectiveService {
 	t.Helper()
 
-	service, err := NewCatalogEffectiveService(sourceRepo, overlayRepo)
+	taxonomyAssignmentRepo := newCatalogItemTaxonomyAssignmentRepositoryForDomainTest(t, db)
+	tagAssignmentRepo := newCatalogItemTagAssignmentRepositoryForDomainTest(t, db)
+	domainRepo := newCatalogDomainRepositoryForDomainTest(t, db)
+	subdomainRepo := newCatalogSubdomainRepositoryForDomainTest(t, db)
+	tagRepo := newCatalogTagRepositoryForDomainTest(t, db)
+
+	service, err := NewCatalogEffectiveService(
+		sourceRepo,
+		overlayRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+	)
 	if err != nil {
 		t.Fatalf("expected effective catalog service creation to succeed, got %v", err)
 	}

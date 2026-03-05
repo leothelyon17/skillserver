@@ -8,23 +8,109 @@ import (
 	"github.com/mudler/skillserver/pkg/domain"
 )
 
+// ServerOptions configures MCP server behavior.
+type ServerOptions struct {
+	EnableTaxonomyWriteTools bool
+}
+
+// CatalogMetadataReader exposes effective catalog item listing for MCP read tools.
+type CatalogMetadataReader interface {
+	List(ctx context.Context, filter domain.CatalogEffectiveListFilter) ([]domain.CatalogItem, error)
+}
+
+// CatalogTaxonomyAssignmentReader exposes catalog-item taxonomy assignment reads for MCP tools.
+type CatalogTaxonomyAssignmentReader interface {
+	Get(ctx context.Context, itemID string) (domain.CatalogItemTaxonomyAssignment, error)
+}
+
+// CatalogTaxonomyAssignmentWriter exposes catalog-item taxonomy assignment writes for MCP tools.
+type CatalogTaxonomyAssignmentWriter interface {
+	Patch(
+		ctx context.Context,
+		input domain.CatalogItemTaxonomyAssignmentPatchInput,
+	) (domain.CatalogItemTaxonomyAssignment, error)
+}
+
+// CatalogTaxonomyRegistryReader exposes taxonomy registry reads for MCP tools.
+type CatalogTaxonomyRegistryReader interface {
+	ListDomains(ctx context.Context, filter domain.CatalogTaxonomyDomainListFilter) ([]domain.CatalogTaxonomyDomain, error)
+	ListSubdomains(ctx context.Context, filter domain.CatalogTaxonomySubdomainListFilter) ([]domain.CatalogTaxonomySubdomain, error)
+	ListTags(ctx context.Context, filter domain.CatalogTaxonomyTagListFilter) ([]domain.CatalogTaxonomyTag, error)
+}
+
+// CatalogTaxonomyRegistryWriter exposes taxonomy registry writes for MCP tools.
+type CatalogTaxonomyRegistryWriter interface {
+	CreateDomain(
+		ctx context.Context,
+		input domain.CatalogTaxonomyDomainCreateInput,
+	) (domain.CatalogTaxonomyDomain, error)
+	UpdateDomain(
+		ctx context.Context,
+		input domain.CatalogTaxonomyDomainUpdateInput,
+	) (domain.CatalogTaxonomyDomain, error)
+	DeleteDomain(ctx context.Context, domainID string) error
+	CreateSubdomain(
+		ctx context.Context,
+		input domain.CatalogTaxonomySubdomainCreateInput,
+	) (domain.CatalogTaxonomySubdomain, error)
+	UpdateSubdomain(
+		ctx context.Context,
+		input domain.CatalogTaxonomySubdomainUpdateInput,
+	) (domain.CatalogTaxonomySubdomain, error)
+	DeleteSubdomain(ctx context.Context, subdomainID string) error
+	CreateTag(
+		ctx context.Context,
+		input domain.CatalogTaxonomyTagCreateInput,
+	) (domain.CatalogTaxonomyTag, error)
+	UpdateTag(
+		ctx context.Context,
+		input domain.CatalogTaxonomyTagUpdateInput,
+	) (domain.CatalogTaxonomyTag, error)
+	DeleteTag(ctx context.Context, tagID string) error
+}
+
 // Server wraps the MCP server and provides access to the skill manager
 type Server struct {
-	mcpServer        *mcp.Server
-	skillManager     domain.SkillManager
-	runWithTransport func(context.Context, mcp.Transport) error
+	mcpServer                *mcp.Server
+	skillManager             domain.SkillManager
+	catalogMetadata          CatalogMetadataReader
+	taxonomyAssign           CatalogTaxonomyAssignmentReader
+	taxonomyAssignWrite      CatalogTaxonomyAssignmentWriter
+	taxonomyRegistry         CatalogTaxonomyRegistryReader
+	taxonomyRegistryWrite    CatalogTaxonomyRegistryWriter
+	enableTaxonomyWriteTools bool
+	runWithTransport         func(context.Context, mcp.Transport) error
 }
 
 // NewServer creates a new MCP server for skills
-func NewServer(skillManager domain.SkillManager) *Server {
+func NewServer(skillManager domain.SkillManager, options ...ServerOptions) *Server {
+	opts := ServerOptions{}
+	if len(options) > 0 {
+		opts = options[0]
+	}
+
 	impl := &mcp.Implementation{
 		Name:    "skillserver",
 		Version: "v1.0.0",
 	}
 
 	mcpServer := mcp.NewServer(impl, nil)
+	server := &Server{
+		mcpServer:                mcpServer,
+		skillManager:             skillManager,
+		enableTaxonomyWriteTools: opts.EnableTaxonomyWriteTools,
+	}
 
-	// Register tools with closures that capture the skill manager
+	registerReadTools(mcpServer, server)
+	if server.enableTaxonomyWriteTools {
+		registerTaxonomyWriteTools(mcpServer, server)
+	}
+
+	server.runWithTransport = mcpServer.Run
+	return server
+}
+
+func registerReadTools(mcpServer *mcp.Server, server *Server) {
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list_skills",
 		Description: "List all available skills",
@@ -33,7 +119,7 @@ func NewServer(skillManager domain.SkillManager) *Server {
 		ListSkillsOutput,
 		error,
 	) {
-		return listSkills(ctx, req, input, skillManager)
+		return listSkills(ctx, req, input, server.skillManager)
 	})
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
@@ -44,7 +130,7 @@ func NewServer(skillManager domain.SkillManager) *Server {
 		ReadSkillOutput,
 		error,
 	) {
-		return readSkill(ctx, req, input, skillManager)
+		return readSkill(ctx, req, input, server.skillManager)
 	})
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
@@ -55,29 +141,73 @@ func NewServer(skillManager domain.SkillManager) *Server {
 		SearchSkillsOutput,
 		error,
 	) {
-		return searchSkills(ctx, req, input, skillManager)
+		return searchSkills(ctx, req, input, server.skillManager)
 	})
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list_catalog",
-		Description: "List unified catalog items (skills and prompts) with an optional classifier filter ('skill' or 'prompt')",
+		Description: "List unified catalog items (skills and prompts) with optional classifier and taxonomy filters",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input ListCatalogInput) (
 		*mcp.CallToolResult,
 		ListCatalogOutput,
 		error,
 	) {
-		return listCatalog(ctx, req, input, skillManager)
+		return listCatalog(ctx, req, input, server.skillManager, server.catalogMetadata)
 	})
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "search_catalog",
-		Description: "Search unified catalog items by query string with an optional classifier filter ('skill' or 'prompt')",
+		Description: "Search unified catalog items by query with optional classifier and taxonomy filters",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input SearchCatalogInput) (
 		*mcp.CallToolResult,
 		SearchCatalogOutput,
 		error,
 	) {
-		return searchCatalog(ctx, req, input, skillManager)
+		return searchCatalog(ctx, req, input, server.skillManager, server.catalogMetadata)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "list_taxonomy_domains",
+		Description: "List catalog taxonomy domain objects with optional domain_id/domain_ids/key/keys/active filters",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input ListTaxonomyDomainsInput) (
+		*mcp.CallToolResult,
+		ListTaxonomyDomainsOutput,
+		error,
+	) {
+		return listTaxonomyDomains(ctx, req, input, server.taxonomyRegistry)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "list_taxonomy_subdomains",
+		Description: "List catalog taxonomy subdomain objects with optional subdomain/domain/key/active filters",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input ListTaxonomySubdomainsInput) (
+		*mcp.CallToolResult,
+		ListTaxonomySubdomainsOutput,
+		error,
+	) {
+		return listTaxonomySubdomains(ctx, req, input, server.taxonomyRegistry)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "list_taxonomy_tags",
+		Description: "List catalog taxonomy tag objects with optional tag_id/tag_ids/key/keys/active filters",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input ListTaxonomyTagsInput) (
+		*mcp.CallToolResult,
+		ListTaxonomyTagsOutput,
+		error,
+	) {
+		return listTaxonomyTags(ctx, req, input, server.taxonomyRegistry)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "get_catalog_item_taxonomy",
+		Description: "Get taxonomy assignment metadata for one catalog item by item_id",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input GetCatalogItemTaxonomyInput) (
+		*mcp.CallToolResult,
+		GetCatalogItemTaxonomyOutput,
+		error,
+	) {
+		return getCatalogItemTaxonomy(ctx, req, input, server.taxonomyAssign)
 	})
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
@@ -88,7 +218,7 @@ func NewServer(skillManager domain.SkillManager) *Server {
 		ListSkillResourcesOutput,
 		error,
 	) {
-		return listSkillResources(ctx, req, input, skillManager)
+		return listSkillResources(ctx, req, input, server.skillManager)
 	})
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
@@ -99,7 +229,7 @@ func NewServer(skillManager domain.SkillManager) *Server {
 		ReadSkillResourceOutput,
 		error,
 	) {
-		return readSkillResource(ctx, req, input, skillManager)
+		return readSkillResource(ctx, req, input, server.skillManager)
 	})
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
@@ -110,19 +240,150 @@ func NewServer(skillManager domain.SkillManager) *Server {
 		GetSkillResourceInfoOutput,
 		error,
 	) {
-		return getSkillResourceInfo(ctx, req, input, skillManager)
+		return getSkillResourceInfo(ctx, req, input, server.skillManager)
+	})
+}
+
+func registerTaxonomyWriteTools(mcpServer *mcp.Server, server *Server) {
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "create_taxonomy_domain",
+		Description: "Create one catalog taxonomy domain object",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input CreateTaxonomyDomainInput) (
+		*mcp.CallToolResult,
+		CreateTaxonomyDomainOutput,
+		error,
+	) {
+		return createTaxonomyDomain(ctx, req, input, server.taxonomyRegistryWrite)
 	})
 
-	return &Server{
-		mcpServer:        mcpServer,
-		skillManager:     skillManager,
-		runWithTransport: mcpServer.Run,
-	}
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "update_taxonomy_domain",
+		Description: "Patch one catalog taxonomy domain object by domain_id",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input UpdateTaxonomyDomainInput) (
+		*mcp.CallToolResult,
+		UpdateTaxonomyDomainOutput,
+		error,
+	) {
+		return updateTaxonomyDomain(ctx, req, input, server.taxonomyRegistryWrite)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "delete_taxonomy_domain",
+		Description: "Delete one catalog taxonomy domain object by domain_id",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input DeleteTaxonomyDomainInput) (
+		*mcp.CallToolResult,
+		DeleteTaxonomyDomainOutput,
+		error,
+	) {
+		return deleteTaxonomyDomain(ctx, req, input, server.taxonomyRegistryWrite)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "create_taxonomy_subdomain",
+		Description: "Create one catalog taxonomy subdomain object",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input CreateTaxonomySubdomainInput) (
+		*mcp.CallToolResult,
+		CreateTaxonomySubdomainOutput,
+		error,
+	) {
+		return createTaxonomySubdomain(ctx, req, input, server.taxonomyRegistryWrite)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "update_taxonomy_subdomain",
+		Description: "Patch one catalog taxonomy subdomain object by subdomain_id",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input UpdateTaxonomySubdomainInput) (
+		*mcp.CallToolResult,
+		UpdateTaxonomySubdomainOutput,
+		error,
+	) {
+		return updateTaxonomySubdomain(ctx, req, input, server.taxonomyRegistryWrite)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "delete_taxonomy_subdomain",
+		Description: "Delete one catalog taxonomy subdomain object by subdomain_id",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input DeleteTaxonomySubdomainInput) (
+		*mcp.CallToolResult,
+		DeleteTaxonomySubdomainOutput,
+		error,
+	) {
+		return deleteTaxonomySubdomain(ctx, req, input, server.taxonomyRegistryWrite)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "create_taxonomy_tag",
+		Description: "Create one catalog taxonomy tag object",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input CreateTaxonomyTagInput) (
+		*mcp.CallToolResult,
+		CreateTaxonomyTagOutput,
+		error,
+	) {
+		return createTaxonomyTag(ctx, req, input, server.taxonomyRegistryWrite)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "update_taxonomy_tag",
+		Description: "Patch one catalog taxonomy tag object by tag_id",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input UpdateTaxonomyTagInput) (
+		*mcp.CallToolResult,
+		UpdateTaxonomyTagOutput,
+		error,
+	) {
+		return updateTaxonomyTag(ctx, req, input, server.taxonomyRegistryWrite)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "delete_taxonomy_tag",
+		Description: "Delete one catalog taxonomy tag object by tag_id",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input DeleteTaxonomyTagInput) (
+		*mcp.CallToolResult,
+		DeleteTaxonomyTagOutput,
+		error,
+	) {
+		return deleteTaxonomyTag(ctx, req, input, server.taxonomyRegistryWrite)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "patch_catalog_item_taxonomy",
+		Description: "Patch taxonomy assignment metadata for one catalog item by item_id",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input PatchCatalogItemTaxonomyInput) (
+		*mcp.CallToolResult,
+		PatchCatalogItemTaxonomyOutput,
+		error,
+	) {
+		return patchCatalogItemTaxonomy(ctx, req, input, server.taxonomyAssignWrite)
+	})
 }
 
 // Run starts the MCP server with stdio transport
 func (s *Server) Run(ctx context.Context) error {
 	return s.RunWithTransport(ctx, &mcp.StdioTransport{})
+}
+
+// SetCatalogMetadataService configures effective catalog item reads for taxonomy-aware MCP filters.
+func (s *Server) SetCatalogMetadataService(service CatalogMetadataReader) {
+	s.catalogMetadata = service
+}
+
+// SetCatalogTaxonomyAssignmentService configures item taxonomy assignment reads for MCP tools.
+func (s *Server) SetCatalogTaxonomyAssignmentService(service CatalogTaxonomyAssignmentReader) {
+	s.taxonomyAssign = service
+	if writer, ok := service.(CatalogTaxonomyAssignmentWriter); ok {
+		s.taxonomyAssignWrite = writer
+		return
+	}
+	s.taxonomyAssignWrite = nil
+}
+
+// SetCatalogTaxonomyRegistryService configures taxonomy registry reads for MCP tools.
+func (s *Server) SetCatalogTaxonomyRegistryService(service CatalogTaxonomyRegistryReader) {
+	s.taxonomyRegistry = service
+	if writer, ok := service.(CatalogTaxonomyRegistryWriter); ok {
+		s.taxonomyRegistryWrite = writer
+		return
+	}
+	s.taxonomyRegistryWrite = nil
 }
 
 // RunWithTransport starts the MCP server with the given transport (e.g. in-memory for in-process embedding).

@@ -58,11 +58,12 @@ func runRuntime(ctx context.Context, deps runtimeDependencies) error {
 
 	if deps.enableLogging {
 		logger.Printf(
-			"Resolved MCP runtime options: transport=%s http_path=%s session_timeout=%s stateless=%t event_store_enabled=%t event_store_max_bytes=%d",
+			"Resolved MCP runtime options: transport=%s http_path=%s session_timeout=%s stateless=%t writes_enabled=%t event_store_enabled=%t event_store_max_bytes=%d",
 			deps.mcpConfig.Transport,
 			deps.mcpConfig.HTTPPath,
 			deps.mcpConfig.SessionTimeout,
 			deps.mcpConfig.Stateless,
+			deps.mcpConfig.EnableWrites,
 			deps.mcpConfig.EnableEventStore,
 			deps.mcpConfig.EventStoreMaxBytes,
 		)

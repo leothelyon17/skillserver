@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +111,11 @@ func TestRunMigrations_WithEmptyDatabase_AppliesCurrentSchema(t *testing.T) {
 		"catalog_source_items",
 		"catalog_metadata_overlays",
 		"system_state",
+		"catalog_domains",
+		"catalog_subdomains",
+		"catalog_tags",
+		"catalog_item_taxonomy_assignments",
+		"catalog_item_tag_assignments",
 	}
 	for _, table := range requiredTables {
 		exists, err := sqliteObjectExists(ctx, db, "table", table)
@@ -126,6 +132,12 @@ func TestRunMigrations_WithEmptyDatabase_AppliesCurrentSchema(t *testing.T) {
 		"idx_catalog_source_source_filters",
 		"idx_catalog_source_lookup_paths",
 		"idx_catalog_source_resource_path",
+		"idx_catalog_subdomains_domain_id",
+		"idx_catalog_item_taxonomy_primary_domain",
+		"idx_catalog_item_taxonomy_secondary_domain",
+		"idx_catalog_item_taxonomy_primary_subdomain",
+		"idx_catalog_item_taxonomy_secondary_subdomain",
+		"idx_catalog_item_tag_assignments_tag",
 	}
 	for _, index := range requiredIndexes {
 		exists, err := sqliteObjectExists(ctx, db, "index", index)
@@ -143,6 +155,11 @@ func TestRunMigrations_WithEmptyDatabase_AppliesCurrentSchema(t *testing.T) {
 		{table: "catalog_metadata_overlays", column: "display_name_override"},
 		{table: "catalog_metadata_overlays", column: "custom_metadata_json"},
 		{table: "system_state", column: "state_key"},
+		{table: "catalog_domains", column: "key"},
+		{table: "catalog_subdomains", column: "domain_id"},
+		{table: "catalog_tags", column: "color"},
+		{table: "catalog_item_taxonomy_assignments", column: "secondary_subdomain_id"},
+		{table: "catalog_item_tag_assignments", column: "created_at"},
 	}
 	for _, expectation := range requiredColumns {
 		exists, err := sqliteColumnExists(ctx, db, expectation.table, expectation.column)
@@ -185,8 +202,65 @@ func TestRunMigrations_RepeatedExecution_IsIdempotent(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT state_value FROM system_state WHERE state_key = 'schema_version';`).Scan(&systemStateVersion); err != nil {
 		t.Fatalf("expected system_state schema version query to succeed, got %v", err)
 	}
-	if systemStateVersion != "1" {
-		t.Fatalf("expected system_state schema version %q, got %q", "1", systemStateVersion)
+	expectedVersion := strconv.Itoa(LatestSchemaVersion())
+	if systemStateVersion != expectedVersion {
+		t.Fatalf("expected system_state schema version %q, got %q", expectedVersion, systemStateVersion)
+	}
+}
+
+func TestRunMigrations_UpgradeFromVersionOneToLatest_AppliesTaxonomySchema(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	db := openSQLiteTestDB(t, ctx)
+
+	if len(schemaMigrations) < 2 {
+		t.Fatalf("expected at least two schema migrations, got %d", len(schemaMigrations))
+	}
+
+	v1Runner := &MigrationRunner{
+		db:         db,
+		migrations: []migration{schemaMigrations[0]},
+	}
+	if err := v1Runner.Run(ctx); err != nil {
+		t.Fatalf("expected v1 migration run to succeed, got %v", err)
+	}
+
+	v1Version, err := v1Runner.CurrentVersion(ctx)
+	if err != nil {
+		t.Fatalf("expected v1 schema version query to succeed, got %v", err)
+	}
+	if v1Version != 1 {
+		t.Fatalf("expected schema version %d after v1 run, got %d", 1, v1Version)
+	}
+
+	if err := RunMigrations(ctx, db); err != nil {
+		t.Fatalf("expected upgrade migration run to succeed, got %v", err)
+	}
+
+	upgradedVersion, err := NewMigrationRunner(db).CurrentVersion(ctx)
+	if err != nil {
+		t.Fatalf("expected upgraded schema version query to succeed, got %v", err)
+	}
+	if upgradedVersion != LatestSchemaVersion() {
+		t.Fatalf("expected schema version %d after upgrade, got %d", LatestSchemaVersion(), upgradedVersion)
+	}
+
+	requiredV2Tables := []string{
+		"catalog_domains",
+		"catalog_subdomains",
+		"catalog_tags",
+		"catalog_item_taxonomy_assignments",
+		"catalog_item_tag_assignments",
+	}
+	for _, table := range requiredV2Tables {
+		exists, err := sqliteObjectExists(ctx, db, "table", table)
+		if err != nil {
+			t.Fatalf("expected table existence query to succeed for %q, got %v", table, err)
+		}
+		if !exists {
+			t.Fatalf("expected v2 table %q to exist", table)
+		}
 	}
 }
 
@@ -255,6 +329,173 @@ func TestRunMigrations_EnforcesCriticalConstraints(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "foreign key") {
 		t.Fatalf("expected foreign key failure for overlay insert, got %v", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	_, err = db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_source_items (
+			item_id,
+			classifier,
+			source_type,
+			name,
+			description,
+			content,
+			content_hash,
+			content_writable,
+			metadata_writable,
+			last_synced_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+		"skill:taxonomy-item",
+		"skill",
+		"local",
+		"taxonomy-item",
+		"taxonomy item",
+		"content",
+		"hash-taxonomy",
+		1,
+		1,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("expected source insert for taxonomy fixture to succeed, got %v", err)
+	}
+
+	_, err = db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_domains (domain_id, key, name, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?);`,
+		"domain-1",
+		"platform",
+		"Platform",
+		now,
+		now,
+		"domain-2",
+		"operations",
+		"Operations",
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("expected taxonomy domain inserts to succeed, got %v", err)
+	}
+
+	_, err = db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_subdomains (subdomain_id, domain_id, key, name, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?);`,
+		"subdomain-1",
+		"domain-1",
+		"orchestration",
+		"Orchestration",
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("expected taxonomy subdomain insert to succeed, got %v", err)
+	}
+
+	_, err = db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_tags (tag_id, key, name, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?);`,
+		"tag-1",
+		"python",
+		"Python",
+		now,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("expected taxonomy tag insert to succeed, got %v", err)
+	}
+
+	_, err = db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_item_taxonomy_assignments (
+			item_id,
+			primary_domain_id,
+			primary_subdomain_id,
+			secondary_domain_id,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?);`,
+		"skill:taxonomy-item",
+		"domain-1",
+		"subdomain-1",
+		"domain-2",
+		now,
+	)
+	if err != nil {
+		t.Fatalf("expected taxonomy assignment insert to succeed, got %v", err)
+	}
+
+	_, err = db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_item_tag_assignments (item_id, tag_id, created_at)
+		VALUES (?, ?, ?);`,
+		"skill:taxonomy-item",
+		"tag-1",
+		now,
+	)
+	if err != nil {
+		t.Fatalf("expected taxonomy tag assignment insert to succeed, got %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, `DELETE FROM catalog_domains WHERE domain_id = ?;`, "domain-2")
+	if err == nil {
+		t.Fatalf("expected delete of assigned secondary domain to fail, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "foreign key") {
+		t.Fatalf("expected foreign key failure for assigned secondary domain delete, got %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, `DELETE FROM catalog_subdomains WHERE subdomain_id = ?;`, "subdomain-1")
+	if err == nil {
+		t.Fatalf("expected delete of assigned subdomain to fail, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "foreign key") {
+		t.Fatalf("expected foreign key failure for assigned subdomain delete, got %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, `DELETE FROM catalog_tags WHERE tag_id = ?;`, "tag-1")
+	if err == nil {
+		t.Fatalf("expected delete of assigned tag to fail, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "foreign key") {
+		t.Fatalf("expected foreign key failure for assigned tag delete, got %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `DELETE FROM catalog_source_items WHERE item_id = ?;`, "skill:taxonomy-item"); err != nil {
+		t.Fatalf("expected source delete to succeed, got %v", err)
+	}
+
+	var taxonomyAssignmentCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_item_taxonomy_assignments WHERE item_id = ?;`, "skill:taxonomy-item").Scan(&taxonomyAssignmentCount); err != nil {
+		t.Fatalf("expected taxonomy assignment count query to succeed, got %v", err)
+	}
+	if taxonomyAssignmentCount != 0 {
+		t.Fatalf("expected taxonomy assignments to cascade-delete with source item, got %d", taxonomyAssignmentCount)
+	}
+
+	var tagAssignmentCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_item_tag_assignments WHERE item_id = ?;`, "skill:taxonomy-item").Scan(&tagAssignmentCount); err != nil {
+		t.Fatalf("expected tag assignment count query to succeed, got %v", err)
+	}
+	if tagAssignmentCount != 0 {
+		t.Fatalf("expected tag assignments to cascade-delete with source item, got %d", tagAssignmentCount)
+	}
+
+	if _, err := db.ExecContext(ctx, `DELETE FROM catalog_subdomains WHERE subdomain_id = ?;`, "subdomain-1"); err != nil {
+		t.Fatalf("expected subdomain delete after unassignment to succeed, got %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM catalog_domains WHERE domain_id = ?;`, "domain-1"); err != nil {
+		t.Fatalf("expected primary domain delete after unassignment to succeed, got %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM catalog_domains WHERE domain_id = ?;`, "domain-2"); err != nil {
+		t.Fatalf("expected secondary domain delete after unassignment to succeed, got %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM catalog_tags WHERE tag_id = ?;`, "tag-1"); err != nil {
+		t.Fatalf("expected tag delete after unassignment to succeed, got %v", err)
 	}
 }
 
