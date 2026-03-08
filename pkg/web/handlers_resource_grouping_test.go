@@ -227,6 +227,9 @@ description: Fixture git-backed skill
 	if err != nil {
 		t.Fatalf("failed to create file system manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = manager.Close()
+	})
 
 	server := NewServer(manager, manager, nil, nil, nil, false, nil, "")
 
@@ -307,6 +310,9 @@ Use [Shared Context](shared/context.md).
 	if err != nil {
 		t.Fatalf("failed to create file system manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = manager.Close()
+	})
 
 	return NewServer(manager, manager, nil, nil, nil, false, nil, "")
 }

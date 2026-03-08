@@ -112,6 +112,9 @@ func TestAddGitRepo_UpdatesFileSystemManagerBeforeSyncerAddRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to initialize file system manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = fsManager.Close()
+	})
 
 	configManager := git.NewConfigManager(skillsDir)
 	skillManager := &fakeGitSyncSkillManager{}
