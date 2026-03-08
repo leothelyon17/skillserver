@@ -15,6 +15,9 @@ func TestGetRuntimeCapabilities_ReturnsGitCapabilityState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create file system manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = skillManager.Close()
+	})
 
 	server := NewServer(skillManager, skillManager, nil, nil, nil, false, nil, "")
 	server.SetGitRuntimeCapabilities(GitRuntimeCapabilities{
@@ -64,6 +67,9 @@ func TestGetRuntimeCapabilities_DefaultMaterializationCapabilityDisabled(t *test
 	if err != nil {
 		t.Fatalf("failed to create file system manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = skillManager.Close()
+	})
 
 	server := NewServer(skillManager, skillManager, nil, nil, nil, false, nil, "")
 
@@ -93,6 +99,9 @@ func TestListGitRepos_IncludesStoredCredentialCapabilityField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create file system manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = skillManager.Close()
+	})
 
 	configManager := git.NewConfigManager(skillDir)
 	repoURL := "https://example.com/acme/repo-one.git"

@@ -16,6 +16,9 @@ func newTestWebServer(t *testing.T, mcpHandler http.Handler, mcpPath string) *Se
 	if err != nil {
 		t.Fatalf("failed to create file system manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = skillManager.Close()
+	})
 
 	return NewServer(skillManager, skillManager, nil, nil, nil, false, mcpHandler, mcpPath)
 }

@@ -365,6 +365,9 @@ func newMCPIntegrationServer(t *testing.T, enableEventStore bool) *httptest.Serv
 	if err != nil {
 		t.Fatalf("failed to create file system manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = skillManager.Close()
+	})
 
 	mcpServer := skillmcp.NewServer(skillManager)
 	mcpHandler := mcpServer.NewStreamableHTTPHandler(skillmcp.StreamableHTTPConfig{

@@ -522,6 +522,17 @@ func (m *FileSystemManager) ListSkillResources(skillID string) ([]SkillResource,
 	if m.enableImportDiscovery {
 		resources = append(resources, m.listImportedSkillResources(skillPath, allowedRoot)...)
 		resources = append(resources, m.listImplicitGitPromptResources(skillPath, allowedRoot)...)
+		if m.enableRuleCatalog {
+			resources = append(
+				resources,
+				m.listImplicitGitRuleResources(
+					skillPath,
+					allowedRoot,
+					m.RuleCatalogDirectoryAllowlist(),
+					m.RuleCatalogFilenameAllowlist(),
+				)...,
+			)
+		}
 	}
 	resources = dedupeSkillResourcesByCanonicalTarget(resources, skillPath, allowedRoot)
 	sortSkillResources(resources)
@@ -660,6 +671,86 @@ func (m *FileSystemManager) listImplicitGitPromptResources(skillPath, allowedRoo
 	return resources
 }
 
+// listImplicitGitRuleResources discovers shared rule resources in git repositories even
+// when SKILL.md does not explicitly import them. This mirrors prompt discovery for plugin
+// and repo-level rule directories plus allowlisted repo-root rule filenames.
+func (m *FileSystemManager) listImplicitGitRuleResources(
+	skillPath string,
+	allowedRoot string,
+	ruleDirAllowlist []string,
+	ruleFilenameAllowlist []string,
+) []SkillResource {
+	if !m.isGitRepoPath(skillPath) {
+		return nil
+	}
+
+	canonicalAllowedRoot, err := canonicalizeExistingPath(allowedRoot)
+	if err != nil {
+		return nil
+	}
+
+	normalizedRuleDirs := NormalizeRuleDirectoryAllowlist(ruleDirAllowlist)
+	if len(normalizedRuleDirs) == 0 {
+		normalizedRuleDirs = DefaultRuleDirectoryAllowlist()
+	}
+
+	normalizedRuleFilenames := NormalizeRuleFilenameAllowlist(ruleFilenameAllowlist)
+	if len(normalizedRuleFilenames) == 0 {
+		normalizedRuleFilenames = DefaultRuleFilenameAllowlist()
+	}
+
+	candidateRoots := m.sharedRuleCandidateRoots(skillPath, canonicalAllowedRoot, normalizedRuleDirs)
+	resourceByPath := make(map[string]SkillResource)
+
+	addCandidateFile := func(candidatePath string) {
+		virtualPath, err := BuildImportedVirtualPath(canonicalAllowedRoot, candidatePath)
+		if err != nil {
+			return
+		}
+		if !IsRuleCatalogCandidate(virtualPath, normalizedRuleDirs, normalizedRuleFilenames) {
+			return
+		}
+
+		resource, err := buildSkillResource(candidatePath, virtualPath, ResourceOriginImported, false)
+		if err != nil {
+			return
+		}
+		resourceByPath[resource.Path] = *resource
+	}
+
+	for _, candidateRoot := range candidateRoots {
+		rootInfo, err := os.Stat(candidateRoot)
+		if err != nil || !rootInfo.IsDir() {
+			continue
+		}
+
+		_ = filepath.WalkDir(candidateRoot, func(currentPath string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			addCandidateFile(currentPath)
+			return nil
+		})
+	}
+
+	for _, filename := range normalizedRuleFilenames {
+		if strings.TrimSpace(filename) == "" {
+			continue
+		}
+		addCandidateFile(filepath.Join(canonicalAllowedRoot, filepath.FromSlash(filename)))
+	}
+
+	resources := make([]SkillResource, 0, len(resourceByPath))
+	for _, resource := range resourceByPath {
+		resources = append(resources, resource)
+	}
+	sortSkillResources(resources)
+	return resources
+}
+
 func (m *FileSystemManager) sharedPromptCandidateRoots(skillPath, allowedRoot string) []string {
 	canonicalAllowedRoot, err := canonicalizeExistingPath(allowedRoot)
 	if err != nil {
@@ -709,6 +800,69 @@ func (m *FileSystemManager) sharedPromptCandidateRoots(skillPath, allowedRoot st
 	// Repo-level prompt directories.
 	addCandidateRoot(filepath.Join(canonicalAllowedRoot, "agents"))
 	addCandidateRoot(filepath.Join(canonicalAllowedRoot, "prompts"))
+
+	sort.Strings(candidateRoots)
+	return candidateRoots
+}
+
+func (m *FileSystemManager) sharedRuleCandidateRoots(
+	skillPath string,
+	allowedRoot string,
+	ruleDirs []string,
+) []string {
+	canonicalAllowedRoot, err := canonicalizeExistingPath(allowedRoot)
+	if err != nil {
+		return nil
+	}
+
+	relativeSkillPath, err := filepath.Rel(canonicalAllowedRoot, skillPath)
+	if err != nil {
+		return nil
+	}
+	normalizedRelativeSkillPath := filepath.ToSlash(filepath.Clean(relativeSkillPath))
+	if normalizedRelativeSkillPath == "." || strings.HasPrefix(normalizedRelativeSkillPath, "../") {
+		return nil
+	}
+
+	normalizedRuleDirs := NormalizeRuleDirectoryAllowlist(ruleDirs)
+	if len(normalizedRuleDirs) == 0 {
+		normalizedRuleDirs = DefaultRuleDirectoryAllowlist()
+	}
+
+	segments := strings.Split(normalizedRelativeSkillPath, "/")
+	candidateRoots := make([]string, 0)
+	seenRoots := make(map[string]struct{})
+	addCandidateRoot := func(candidateRoot string) {
+		if strings.TrimSpace(candidateRoot) == "" {
+			return
+		}
+		canonicalCandidateRoot, err := canonicalizeExistingPath(candidateRoot)
+		if err != nil {
+			return
+		}
+		if !isWithinRoot(canonicalCandidateRoot, canonicalAllowedRoot) {
+			return
+		}
+		if _, seen := seenRoots[canonicalCandidateRoot]; seen {
+			return
+		}
+		seenRoots[canonicalCandidateRoot] = struct{}{}
+		candidateRoots = append(candidateRoots, canonicalCandidateRoot)
+	}
+
+	for idx, segment := range segments {
+		if !strings.EqualFold(segment, "skills") || idx == 0 {
+			continue
+		}
+		pluginRoot := filepath.Join(canonicalAllowedRoot, filepath.FromSlash(strings.Join(segments[:idx], "/")))
+		for _, directory := range normalizedRuleDirs {
+			addCandidateRoot(filepath.Join(pluginRoot, filepath.FromSlash(directory)))
+		}
+	}
+
+	for _, directory := range normalizedRuleDirs {
+		addCandidateRoot(filepath.Join(canonicalAllowedRoot, filepath.FromSlash(directory)))
+	}
 
 	sort.Strings(candidateRoots)
 	return candidateRoots

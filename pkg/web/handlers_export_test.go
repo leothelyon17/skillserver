@@ -436,6 +436,9 @@ description: Fixture git-backed export skill
 	if err != nil {
 		t.Fatalf("failed to create file system manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = manager.Close()
+	})
 
 	return NewServer(manager, manager, nil, nil, nil, false, nil, "")
 }
@@ -479,6 +482,9 @@ description: Fixture skill
 	if err != nil {
 		t.Fatalf("failed to create file system manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = manager.Close()
+	})
 
 	return NewServer(manager, manager, nil, nil, nil, false, nil, "")
 }
