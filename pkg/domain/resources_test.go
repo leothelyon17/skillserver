@@ -596,5 +596,34 @@ No explicit imports in this skill.
 			Expect(resource.Origin).To(Equal(domain.ResourceOriginImported))
 			Expect(resource.Writable).To(BeFalse())
 		})
+
+		It("should discover shared repo rules without explicit SKILL imports", func() {
+			repoName := "demo-repo"
+			skillPath := filepath.Join(tempDir, repoName, "skills", "k8s-manifest-generator")
+			sharedRulesDir := filepath.Join(tempDir, repoName, "rules")
+
+			Expect(os.MkdirAll(skillPath, 0755)).To(Succeed())
+			Expect(os.MkdirAll(sharedRulesDir, 0755)).To(Succeed())
+
+			skillMdContent := `---
+name: k8s-manifest-generator
+description: Plugin skill with repo-level rules
+---
+# Kubernetes Manifest Generator
+No explicit imports in this skill.
+`
+			Expect(os.WriteFile(filepath.Join(skillPath, "SKILL.md"), []byte(skillMdContent), 0644)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(sharedRulesDir, "coding-standards.md"), []byte("# Coding Standards"), 0644)).To(Succeed())
+
+			manager.UpdateGitRepos([]string{repoName})
+			resources, err := manager.ListSkillResources(repoName + "/k8s-manifest-generator")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resources).To(HaveLen(1))
+
+			resource := resources[0]
+			Expect(resource.Path).To(Equal("imports/rules/coding-standards.md"))
+			Expect(resource.Origin).To(Equal(domain.ResourceOriginImported))
+			Expect(resource.Writable).To(BeFalse())
+		})
 	})
 })

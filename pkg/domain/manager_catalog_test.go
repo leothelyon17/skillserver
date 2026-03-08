@@ -399,6 +399,52 @@ description: Planner skill
 		})))
 	})
 
+	It("should discover shared repo rules as rule catalog items without explicit imports", func() {
+		repoName := "demo-repo"
+		skillPath := filepath.Join(tempDir, repoName, "skills", "planner")
+		sharedRulesPath := filepath.Join(tempDir, repoName, "rules")
+
+		Expect(os.MkdirAll(skillPath, 0755)).To(Succeed())
+		Expect(os.MkdirAll(sharedRulesPath, 0755)).To(Succeed())
+
+		skillMarkdown := `---
+name: planner
+description: Planner skill
+---
+# Planner
+No explicit rule imports.
+`
+		Expect(os.WriteFile(filepath.Join(skillPath, "SKILL.md"), []byte(skillMarkdown), 0644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(sharedRulesPath, "coding-standards.md"), []byte("# Coding Standards\nRepository policy for contributors."), 0644)).To(Succeed())
+
+		manager.UpdateGitRepos([]string{repoName})
+
+		catalogItems, err := manager.ListCatalogItems()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(catalogItems).To(HaveLen(2))
+
+		skillID := "demo-repo/planner"
+		skillCatalogID := domain.BuildSkillCatalogItemID(skillID)
+		importedRuleID := domain.BuildRuleCatalogItemID(skillID, "imports/rules/coding-standards.md")
+
+		byID := catalogItemsByID(catalogItems)
+		Expect(byID).To(HaveKey(skillCatalogID))
+		Expect(byID).To(HaveKey(importedRuleID))
+
+		importedRule := byID[importedRuleID]
+		Expect(importedRule.Classifier).To(Equal(domain.CatalogClassifierRule))
+		Expect(importedRule.ParentSkillID).To(Equal(skillID))
+		Expect(importedRule.ResourcePath).To(Equal("imports/rules/coding-standards.md"))
+		Expect(importedRule.ReadOnly).To(BeTrue())
+
+		Expect(manager.RebuildIndex()).To(Succeed())
+		ruleClassifier := domain.CatalogClassifierRule
+		ruleResults, err := manager.SearchCatalogItems("repository policy", &ruleClassifier)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ruleResults).To(HaveLen(1))
+		Expect(ruleResults[0].ID).To(Equal(importedRuleID))
+	})
+
 	It("should honor runtime rule catalog enablement and allowlists", func() {
 		skillPath := filepath.Join(tempDir, "planner")
 		Expect(os.MkdirAll(filepath.Join(skillPath, "rules"), 0755)).To(Succeed())
