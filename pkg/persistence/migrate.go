@@ -139,6 +139,23 @@ var schemaMigrations = []migration{
 			ON catalog_item_tag_assignments (tag_id);`,
 		},
 	},
+	{
+		version: 3,
+		name:    "git_repo_credential_store",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS git_repo_credentials (
+				repo_id TEXT PRIMARY KEY,
+				key_id TEXT NOT NULL,
+				key_version INTEGER NOT NULL CHECK (key_version > 0),
+				ciphertext BLOB NOT NULL CHECK (length(ciphertext) > 0),
+				nonce BLOB NOT NULL CHECK (length(nonce) > 0),
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_git_repo_credentials_key_metadata
+			ON git_repo_credentials (key_id, key_version);`,
+		},
+	},
 }
 
 // NewMigrationRunner creates a migration runner for the provided sqlite handle.

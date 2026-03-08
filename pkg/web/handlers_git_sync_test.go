@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mudler/skillserver/pkg/domain"
 	"github.com/mudler/skillserver/pkg/git"
@@ -50,8 +51,8 @@ func TestSyncGitRepo_UsesManualRepoSyncHookWhenConfigured(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
 	}
-	if len(syncer.syncedURLs()) != 1 || syncer.syncedURLs()[0] != repoURL {
-		t.Fatalf("expected manual syncer call for %q, got %+v", repoURL, syncer.syncedURLs())
+	if len(syncer.syncedRepoIDs()) != 1 || syncer.syncedRepoIDs()[0] != repoID {
+		t.Fatalf("expected manual syncer call for repo id %q, got %+v", repoID, syncer.syncedRepoIDs())
 	}
 	if hookCalls != 1 {
 		t.Fatalf("expected manual hook to be called once, got %d", hookCalls)
@@ -92,8 +93,8 @@ func TestSyncGitRepo_WithoutManualHook_RebuildsIndexForCompatibility(t *testing.
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
 	}
-	if len(syncer.syncedURLs()) != 1 || syncer.syncedURLs()[0] != repoURL {
-		t.Fatalf("expected manual syncer call for %q, got %+v", repoURL, syncer.syncedURLs())
+	if len(syncer.syncedRepoIDs()) != 1 || syncer.syncedRepoIDs()[0] != repoID {
+		t.Fatalf("expected manual syncer call for repo id %q, got %+v", repoID, syncer.syncedRepoIDs())
 	}
 	if skillManager.rebuildIndexCallCount() != 1 {
 		t.Fatalf("expected legacy rebuild fallback to run once, got %d", skillManager.rebuildIndexCallCount())
@@ -152,59 +153,130 @@ func (m *fakeGitSyncSkillManager) rebuildIndexCallCount() int {
 }
 
 type fakeGitSyncer struct {
-	mu        sync.Mutex
-	repos     []string
-	skillsDir string
-	syncErr   error
-	synced    []string
+	mu         sync.Mutex
+	repos      []git.GitRepoConfig
+	statusByID map[string]git.RepoSyncStatus
+	skillsDir  string
+	syncErr    error
+	synced     []string
 }
 
-func (s *fakeGitSyncer) GetRepos() []string {
+func (s *fakeGitSyncer) GetRepos() []git.GitRepoConfig {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result := make([]string, len(s.repos))
+	result := make([]git.GitRepoConfig, len(s.repos))
 	copy(result, s.repos)
 	return result
 }
 
-func (s *fakeGitSyncer) AddRepo(repoURL string) error {
+func (s *fakeGitSyncer) AddRepo(repo git.GitRepoConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.repos = append(s.repos, repoURL)
+	s.repos = append(s.repos, repo)
+	if s.statusByID == nil {
+		s.statusByID = map[string]git.RepoSyncStatus{}
+	}
+	s.statusByID[repo.ID] = git.RepoSyncStatus{
+		RepoID:       repo.ID,
+		RepoURL:      repo.URL,
+		CheckoutName: git.ResolveRepoCheckoutName(repo),
+		State:        git.RepoSyncStateNever,
+	}
 	return nil
 }
 
-func (s *fakeGitSyncer) RemoveRepo(repoURL string) error {
+func (s *fakeGitSyncer) RemoveRepo(repoID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	filtered := make([]string, 0, len(s.repos))
+	filtered := make([]git.GitRepoConfig, 0, len(s.repos))
 	for _, existing := range s.repos {
-		if existing != repoURL {
+		if existing.ID != repoID {
 			filtered = append(filtered, existing)
 		}
 	}
 	s.repos = filtered
+	if s.statusByID != nil {
+		delete(s.statusByID, repoID)
+	}
 	return nil
 }
 
-func (s *fakeGitSyncer) UpdateRepos(repos []string) error {
+func (s *fakeGitSyncer) UpdateRepos(repos []git.GitRepoConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.repos = append([]string(nil), repos...)
+	s.repos = append([]git.GitRepoConfig(nil), repos...)
+	statuses := make(map[string]git.RepoSyncStatus, len(repos))
+	for _, repo := range repos {
+		existing := git.RepoSyncStatus{
+			RepoID:       repo.ID,
+			RepoURL:      repo.URL,
+			CheckoutName: git.ResolveRepoCheckoutName(repo),
+			State:        git.RepoSyncStateNever,
+		}
+		if s.statusByID != nil {
+			if current, ok := s.statusByID[repo.ID]; ok {
+				existing = current
+			}
+		}
+		existing.RepoID = repo.ID
+		existing.RepoURL = repo.URL
+		existing.CheckoutName = git.ResolveRepoCheckoutName(repo)
+		if existing.State == "" {
+			existing.State = git.RepoSyncStateNever
+		}
+		statuses[repo.ID] = existing
+	}
+	s.statusByID = statuses
 	return nil
 }
 
-func (s *fakeGitSyncer) SyncRepo(repoURL string) error {
+func (s *fakeGitSyncer) SyncRepo(repoID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.statusByID == nil {
+		s.statusByID = map[string]git.RepoSyncStatus{}
+	}
 
 	if s.syncErr != nil {
+		s.statusByID[repoID] = git.RepoSyncStatus{
+			RepoID:      repoID,
+			State:       git.RepoSyncStateFailed,
+			LastError:   git.RedactGitAuthError(s.syncErr),
+			LastAttempt: time.Now().UTC(),
+		}
 		return s.syncErr
 	}
-	s.synced = append(s.synced, repoURL)
+	s.synced = append(s.synced, repoID)
+	s.statusByID[repoID] = git.RepoSyncStatus{
+		RepoID:      repoID,
+		State:       git.RepoSyncStateSuccess,
+		LastAttempt: time.Now().UTC(),
+		LastSuccess: time.Now().UTC(),
+	}
 	return nil
+}
+
+func (s *fakeGitSyncer) GetRepoSyncStatus(repoID string) (git.RepoSyncStatus, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.statusByID == nil {
+		return git.RepoSyncStatus{}, false
+	}
+	status, ok := s.statusByID[repoID]
+	return status, ok
+}
+
+func (s *fakeGitSyncer) GetRepoSyncStatuses() map[string]git.RepoSyncStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make(map[string]git.RepoSyncStatus, len(s.statusByID))
+	for repoID, status := range s.statusByID {
+		result[repoID] = status
+	}
+	return result
 }
 
 func (s *fakeGitSyncer) GetSkillsDir() string {
@@ -213,7 +285,7 @@ func (s *fakeGitSyncer) GetSkillsDir() string {
 	return s.skillsDir
 }
 
-func (s *fakeGitSyncer) syncedURLs() []string {
+func (s *fakeGitSyncer) syncedRepoIDs() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := make([]string, len(s.synced))

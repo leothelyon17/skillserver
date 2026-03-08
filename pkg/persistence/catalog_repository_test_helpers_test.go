@@ -107,6 +107,32 @@ func newCatalogItemTagAssignmentRepositoryForTest(
 	return repo
 }
 
+func newGitRepoCredentialCipherForTest(t *testing.T, masterKey string) *GitRepoCredentialCipher {
+	t.Helper()
+
+	cipher, err := NewGitRepoCredentialCipher(masterKey, GitRepoCredentialCipherOptions{})
+	if err != nil {
+		t.Fatalf("expected git repo credential cipher creation to succeed, got %v", err)
+	}
+
+	return cipher
+}
+
+func newGitRepoCredentialRepositoryForTest(
+	t *testing.T,
+	db *sql.DB,
+	cipher *GitRepoCredentialCipher,
+) *GitRepoCredentialRepository {
+	t.Helper()
+
+	repo, err := NewGitRepoCredentialRepository(db, cipher)
+	if err != nil {
+		t.Fatalf("expected git repo credential repository creation to succeed, got %v", err)
+	}
+
+	return repo
+}
+
 func stringPointer(value string) *string {
 	return &value
 }

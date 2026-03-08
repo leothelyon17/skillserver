@@ -54,31 +54,6 @@ func setupLogger(enable bool) *log.Logger {
 	return log.New(writer, "", log.LstdFlags)
 }
 
-// extractRepoName extracts a repository name from a URL (same logic as GitSyncer)
-func extractRepoName(repoURL string) string {
-	// Remove protocol and .git suffix
-	name := strings.TrimSuffix(repoURL, ".git")
-
-	// Extract last part of path
-	parts := strings.Split(name, "/")
-	if len(parts) > 0 {
-		name = parts[len(parts)-1]
-	}
-
-	// Remove protocol prefix if present
-	if strings.Contains(name, "://") {
-		parts = strings.Split(name, "://")
-		if len(parts) > 1 {
-			parts = strings.Split(parts[1], "/")
-			if len(parts) > 0 {
-				name = parts[len(parts)-1]
-			}
-		}
-	}
-
-	return name
-}
-
 func main() {
 	// Get default values from environment variables
 	defaultDir := getEnvOrDefault("SKILLSERVER_DIR", getEnvOrDefault("SKILLS_DIR", "./skills"))
@@ -100,6 +75,7 @@ func main() {
 	mcpFlagValues := registerMCPRuntimeFlags(flag.CommandLine)
 	catalogFlagValues := registerCatalogRuntimeFlags(flag.CommandLine)
 	persistenceFlagValues := registerPersistenceRuntimeFlags(flag.CommandLine)
+	gitCredentialFlagValues := registerGitCredentialRuntimeFlags(flag.CommandLine)
 	flag.Parse()
 
 	// Parse and validate MCP runtime config (flags > env > defaults).
@@ -128,6 +104,25 @@ func main() {
 		os.Exit(2)
 	}
 
+	gitCredentialRuntimeConfig, err := parseGitCredentialRuntimeConfig(
+		flag.CommandLine,
+		gitCredentialFlagValues,
+		os.LookupEnv,
+		os.ReadFile,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid git credential runtime configuration: %v\n", err)
+		os.Exit(2)
+	}
+	if err := validateGitCredentialStartupConfig(gitCredentialRuntimeConfig, persistenceRuntimeConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid git credential runtime configuration: %v\n", err)
+		os.Exit(2)
+	}
+	gitStoredCredentialsEnabled := gitStoredCredentialCapabilityEnabled(
+		gitCredentialRuntimeConfig,
+		persistenceRuntimeConfig,
+	)
+
 	// Setup logger based on flag
 	logger := setupLogger(*enableLogging)
 	log.SetOutput(logger.Writer())
@@ -141,8 +136,8 @@ func main() {
 	// Initialize config manager
 	configManager := git.NewConfigManager(finalDir)
 
-	// Load git repos from config file or use command line/env repos
-	var gitRepos []string
+	// Load git repos from config file or use command line/env repos.
+	var gitRepoConfigs []git.GitRepoConfig
 	configRepos, err := configManager.LoadConfig()
 	if err != nil && *enableLogging {
 		log.Printf("Warning: Failed to load git repo config: %v", err)
@@ -152,40 +147,50 @@ func main() {
 	if len(configRepos) > 0 {
 		for _, repo := range configRepos {
 			if repo.Enabled {
-				gitRepos = append(gitRepos, repo.URL)
+				gitRepoConfigs = append(gitRepoConfigs, repo)
 			}
 		}
 	} else {
 		// Parse git repos from command line/env
 		if finalGitRepos != "" {
 			parsedRepos := strings.Split(finalGitRepos, ",")
-			for i := range parsedRepos {
-				parsedRepos[i] = strings.TrimSpace(parsedRepos[i])
+			seenCanonicalURLs := make(map[string]struct{}, len(parsedRepos))
+			for _, rawRepoURL := range parsedRepos {
+				trimmedRepoURL := strings.TrimSpace(rawRepoURL)
+				if trimmedRepoURL == "" {
+					continue
+				}
+
+				canonicalRepoURL, canonicalizeErr := git.CanonicalizeRepoURL(trimmedRepoURL)
+				if canonicalizeErr != nil {
+					fmt.Fprintf(os.Stderr, "Invalid git repository URL %q: %v\n", trimmedRepoURL, canonicalizeErr)
+					os.Exit(2)
+				}
+				if _, seen := seenCanonicalURLs[canonicalRepoURL]; seen {
+					continue
+				}
+				seenCanonicalURLs[canonicalRepoURL] = struct{}{}
+				gitRepoConfigs = append(gitRepoConfigs, git.GitRepoConfig{
+					ID:      git.GenerateID(canonicalRepoURL),
+					URL:     canonicalRepoURL,
+					Name:    git.ResolveCheckoutName(canonicalRepoURL),
+					Enabled: true,
+				})
 			}
-			gitRepos = parsedRepos
 
 			// Save to config file if we have repos from command line/env
-			if len(gitRepos) > 0 {
-				configs := make([]git.GitRepoConfig, len(gitRepos))
-				for i, url := range gitRepos {
-					configs[i] = git.GitRepoConfig{
-						ID:      git.GenerateID(url),
-						URL:     url,
-						Name:    git.ExtractRepoName(url),
-						Enabled: true,
-					}
-				}
-				if err := configManager.SaveConfig(configs); err != nil && *enableLogging {
+			if len(gitRepoConfigs) > 0 {
+				if err := configManager.SaveConfig(gitRepoConfigs); err != nil && *enableLogging {
 					log.Printf("Warning: Failed to save git repo config: %v", err)
 				}
 			}
 		}
 	}
 
-	// Extract git repo names from URLs for read-only detection
+	// Extract git repo checkout names for read-only detection.
 	var gitRepoNames []string
-	for _, repoURL := range gitRepos {
-		repoName := git.ExtractRepoName(repoURL)
+	for _, repoConfig := range gitRepoConfigs {
+		repoName := git.ResolveRepoCheckoutName(repoConfig)
 		if repoName != "" {
 			gitRepoNames = append(gitRepoNames, repoName)
 		}
@@ -244,11 +249,27 @@ func main() {
 		} else {
 			log.Printf("Resolved persistence runtime options: enabled=false")
 		}
+		log.Printf(
+			"Resolved git credential runtime options: stored_credentials_enabled=%t master_key_source=%s",
+			gitStoredCredentialsEnabled,
+			gitCredentialRuntimeConfig.MasterKeySource,
+		)
 	}
 
-	// Initialize Git syncer if repos are provided
+	storedCredentialProvider, gitCredentialStore, err := newStoredGitCredentialProvider(
+		gitCredentialRuntimeConfig,
+		persistenceRuntime,
+	)
+	if err != nil {
+		log.Fatalf("Failed to initialize stored git credential provider: %v", err)
+	}
+
+	// Initialize Git syncer.
 	var gitSyncer *git.GitSyncer
-	gitSyncer = git.NewGitSyncer(finalDir, gitRepos, catalogOnUpdate)
+	gitSyncer = git.NewGitSyncer(finalDir, gitRepoConfigs, catalogOnUpdate)
+	if storedCredentialProvider != nil {
+		gitSyncer.SetStoredCredentialProvider(storedCredentialProvider)
+	}
 	// Configure git syncer output based on logging flag
 	if *enableLogging {
 		gitSyncer.SetProgressWriter(os.Stderr) // Use stderr for git progress
@@ -280,16 +301,25 @@ func main() {
 		})
 	}
 
+	gitRepoURLs := make([]string, len(gitRepoConfigs))
+	for i, repo := range gitRepoConfigs {
+		gitRepoURLs[i] = repo.URL
+	}
+
 	webServer := web.NewServer(
 		skillManager,
 		fsManager,
-		gitRepos,
+		gitRepoURLs,
 		gitSyncer,
 		configManager,
 		*enableLogging,
 		mcpHandler,
 		mcpPath,
 	)
+	webServer.SetGitRuntimeCapabilities(web.GitRuntimeCapabilities{
+		StoredCredentialsEnabled: gitStoredCredentialsEnabled,
+	})
+	webServer.SetGitCredentialStore(gitCredentialStore)
 	if persistenceRuntime != nil {
 		metadataService, metadataErr := domain.NewCatalogMetadataService(
 			persistenceRuntime.sourceRepo,
@@ -308,10 +338,7 @@ func main() {
 		mcpServer.SetCatalogTaxonomyRegistryService(persistenceRuntime.taxonomyRegistryService)
 
 		webServer.SetManualGitRepoSyncHook(func(repo git.GitRepoConfig) error {
-			repoName := strings.TrimSpace(repo.Name)
-			if repoName == "" {
-				repoName = git.ExtractRepoName(repo.URL)
-			}
+			repoName := git.ResolveRepoCheckoutName(repo)
 			return persistenceRuntime.coordinator.RepoSyncAndRebuild(context.Background(), repoName)
 		})
 	}

@@ -46,6 +46,9 @@ SkillServer supports both **environment variables** and **command-line flags** w
 | `SKILLSERVER_DIR` | `SKILLS_DIR` | `./skills` | Directory to store skills |
 | `SKILLSERVER_PORT` | `PORT` | `8080` | Port for the web server |
 | `SKILLSERVER_GIT_REPOS` | `GIT_REPOS` | (empty) | Comma-separated Git repository URLs |
+| `SKILLSERVER_GIT_ENABLE_STORED_CREDENTIALS` | (none) | `false` | Enable encrypted stored credentials for private Git repositories (requires persistence + master key) |
+| `SKILLSERVER_GIT_CREDENTIAL_MASTER_KEY` | (none) | (empty) | Inline master key for stored Git credentials (mutually exclusive with `SKILLSERVER_GIT_CREDENTIAL_MASTER_KEY_FILE`) |
+| `SKILLSERVER_GIT_CREDENTIAL_MASTER_KEY_FILE` | (none) | (empty) | File path containing the stored-credential master key (mutually exclusive with `SKILLSERVER_GIT_CREDENTIAL_MASTER_KEY`) |
 | `SKILLSERVER_ENABLE_LOGGING` | (none) | `false` | Enable logging to stderr (default: false to avoid interfering with MCP stdio) |
 | `SKILLSERVER_MCP_TRANSPORT` | (none) | `both` | MCP transport mode: `stdio`, `http`, or `both` |
 | `SKILLSERVER_MCP_HTTP_PATH` | (none) | `/mcp` | Absolute HTTP route path for MCP Streamable HTTP |
@@ -68,6 +71,9 @@ SkillServer supports both **environment variables** and **command-line flags** w
 | `--dir` | `./skills` | Directory to store skills (overrides `SKILLSERVER_DIR` or `SKILLS_DIR`) |
 | `--port` | `8080` | Port for the web server (overrides `SKILLSERVER_PORT` or `PORT`) |
 | `--git-repos` | (empty) | Comma-separated list of Git repository URLs (overrides `SKILLSERVER_GIT_REPOS` or `GIT_REPOS`) |
+| `--git-enable-stored-credentials` | `false` | Enable encrypted stored credentials for private Git repositories |
+| `--git-credential-master-key` | (empty) | Inline master key for stored credentials (mutually exclusive with `--git-credential-master-key-file`) |
+| `--git-credential-master-key-file` | (empty) | File path containing stored-credential master key (mutually exclusive with `--git-credential-master-key`) |
 | `--enable-logging` | `false` | Enable logging to stderr (overrides `SKILLSERVER_ENABLE_LOGGING`) |
 | `--mcp-transport` | `both` | MCP transport mode: `stdio`, `http`, or `both` |
 | `--mcp-http-path` | `/mcp` | Absolute HTTP route path for MCP Streamable HTTP |
@@ -134,10 +140,24 @@ mkdir -p ./data/skillserver
   --persistence-dir ./data/skillserver \
   --persistence-db-path state/catalog.sqlite
 
+# Enable stored credentials mode (trusted deployments only)
+# Requires persistence plus one master key source.
+./skillserver \
+  --persistence-data \
+  --persistence-dir ./data/skillserver \
+  --git-enable-stored-credentials \
+  --git-credential-master-key-file ./secrets/git-master-key.txt
+
 # Roll back to filesystem-only mode (non-destructive)
 ./skillserver --persistence-data=false
 # Or using environment variable
 export SKILLSERVER_PERSISTENCE_DATA=false
+./skillserver
+
+# Disable stored credentials while keeping env/file private-repo flows available
+./skillserver --git-enable-stored-credentials=false
+# Or using environment variable
+export SKILLSERVER_GIT_ENABLE_STORED_CREDENTIALS=false
 ./skillserver
 ```
 
@@ -258,6 +278,166 @@ spec:
           persistentVolumeClaim:
             claimName: skillserver-persistence-pvc
 ```
+
+## Private Git Credentials (ADR-006)
+
+Canonical ADR: [`docs/adrs/006-private-git-repository-credential-sources.md`](/home/jeff/skillserver/docs/adrs/006-private-git-repository-credential-sources.md)
+
+Production guidance:
+- Prefer `auth.source=env` or `auth.source=file`.
+- Use `auth.source=stored` only in trusted deployments where UI/API access is protected by external auth + TLS.
+- Treat master-key rotation as a planned operation: stored credentials encrypted with a previous key require coordinated re-encryption/migration before old key retirement.
+- Stored credentials require all of:
+  - `SKILLSERVER_PERSISTENCE_DATA=true`
+  - `SKILLSERVER_PERSISTENCE_DIR=<writable path>`
+  - `SKILLSERVER_GIT_ENABLE_STORED_CREDENTIALS=true`
+  - one master key source: `SKILLSERVER_GIT_CREDENTIAL_MASTER_KEY` or `SKILLSERVER_GIT_CREDENTIAL_MASTER_KEY_FILE`
+
+### Git Repo API Contract (Secret-Safe)
+
+Add/update request fields:
+- `url`
+- `enabled` (optional)
+- `auth` (optional):
+  - `mode`: `none` | `https_token` | `https_basic` | `ssh_key`
+  - `source`: `none` | `env` | `file` | `stored`
+  - `reference_id` (stored only, optional)
+  - `username_ref`, `password_ref`, `token_ref`, `key_ref`, `known_hosts_ref` (env/file only)
+- `stored_credential` (write-only, stored source only):
+  - `username`, `password`, `token`, `private_key`, `passphrase`, `known_hosts`
+
+Secret-safe response fields:
+- `id`, `url`, `name`, `enabled`
+- `auth_mode`, `credential_source`, `has_credentials`
+- `stored_credentials_enabled`
+- `last_sync_status`, `last_sync_error`
+
+### Local Setup Examples
+
+Public repository (no auth):
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/api/git-repos" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "url": "https://github.com/mudler/skillserver.git"
+  }'
+```
+
+Private HTTPS token via environment variable reference:
+
+```bash
+export REPO_ACME_PAT="***"
+
+curl -sS -X POST "http://127.0.0.1:8080/api/git-repos" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "url": "https://github.com/acme/private-skills.git",
+    "auth": {
+      "mode": "https_token",
+      "source": "env",
+      "token_ref": "REPO_ACME_PAT"
+    }
+  }'
+```
+
+Private SSH key via mounted files:
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/api/git-repos" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "url": "git@github.com:acme/private-skills.git",
+    "auth": {
+      "mode": "ssh_key",
+      "source": "file",
+      "key_ref": "/run/secrets/git/private_key",
+      "known_hosts_ref": "/run/secrets/git/known_hosts"
+    }
+  }'
+```
+
+Stored credential mode (write-only submission):
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/api/git-repos" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "url": "https://github.com/acme/private-skills.git",
+    "auth": {
+      "mode": "https_basic",
+      "source": "stored",
+      "reference_id": "acme/private-skills"
+    },
+    "stored_credential": {
+      "username": "git-bot",
+      "password": "***"
+    }
+  }'
+```
+
+### Docker: Env/File Secret Injection
+
+```bash
+docker run -p 8080:8080 \
+  -v $(pwd)/skills:/app/skills \
+  -v $(pwd)/secrets/git:/run/secrets/git:ro \
+  -e SKILLSERVER_GIT_REPOS="git@github.com:acme/private-skills.git" \
+  -e REPO_ACME_PAT="***" \
+  ghcr.io/mudler/skillserver:latest
+```
+
+Use API `auth.source=env` with `token_ref=REPO_ACME_PAT`, or `auth.source=file` with file paths under `/run/secrets/git`.
+
+### Kubernetes Secret Patterns (Env + File)
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skillserver
+spec:
+  template:
+    spec:
+      containers:
+        - name: skillserver
+          image: ghcr.io/mudler/skillserver:latest
+          env:
+            - name: REPO_ACME_PAT
+              valueFrom:
+                secretKeyRef:
+                  name: private-git-credentials
+                  key: token
+          volumeMounts:
+            - name: git-ssh
+              mountPath: /var/run/secrets/git
+              readOnly: true
+      volumes:
+        - name: git-ssh
+          secret:
+            secretName: private-git-ssh
+```
+
+Use API `auth.source=env` for env vars and `auth.source=file` for mounted file paths.
+
+### Vault-Projected Env/File Patterns
+
+SkillServer does not need direct Vault API access for ADR-006. Use projected env vars or files from Vault Agent Injector / External Secrets / CSI, then configure `auth.source=env` or `auth.source=file` in repo metadata.
+
+### Rollback Guidance (Stored -> Env/File/Public)
+
+1. Disable stored mode at runtime:
+
+```bash
+export SKILLSERVER_GIT_ENABLE_STORED_CREDENTIALS=false
+./skillserver
+```
+
+2. Convert repos from `stored` to `env`/`file` references or public mode via `PUT /api/git-repos/:id`.
+3. Re-run manual sync with `POST /api/git-repos/:id/sync`.
+4. Keep encrypted rows in SQLite for recovery unless policy requires deletion.
+
+Detailed runbook: [`docs/operations/private-git-credential-sources-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/private-git-credential-sources-rollout-rollback.md)
 
 ### Remote MCP (Streamable HTTP) Usage
 
@@ -523,6 +703,18 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 - `DELETE /api/skills/:name` - Delete skill (blocks read-only skills)
 - `GET /api/skills/search?q=query` - Search skills
 
+#### Git Repositories (ADR-006, additive)
+- `GET /api/git-repos` - List configured repositories with secret-safe auth summary
+- `POST /api/git-repos` - Add repository (`url`, optional `enabled`, optional `auth`, optional write-only `stored_credential`)
+- `PUT /api/git-repos/:id` - Update repository using canonical URL + stable ID behavior
+- `DELETE /api/git-repos/:id` - Delete repository config and checkout
+- `POST /api/git-repos/:id/toggle` - Toggle repository enabled state
+- `POST /api/git-repos/:id/sync` - Trigger manual sync for one enabled repository
+- Response auth/sync fields: `auth_mode`, `credential_source`, `has_credentials`, `stored_credentials_enabled`, `last_sync_status`, `last_sync_error`
+
+#### Runtime Capabilities (ADR-006 support)
+- `GET /api/runtime/capabilities` - Return runtime capability gates (for example `git.stored_credentials_enabled`)
+
 #### Catalog (ADR-003, additive)
 - `GET /api/catalog` - List unified catalog items (`skill` + `prompt`) with fields `id`, `classifier`, `name`, `description`, `content`, `parent_skill_id`, `resource_path`, `custom_metadata`, `labels`, `content_writable`, `metadata_writable`, `read_only`
 - `GET /api/catalog/search?q=query&classifier=skill|prompt` - Search unified catalog items with optional classifier filter
@@ -659,6 +851,35 @@ export SKILLSERVER_MCP_ENABLE_WRITES=false
 ```
 
 Detailed rollout/rollback runbook: [`docs/operations/domain-taxonomy-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/domain-taxonomy-rollout-rollback.md)
+
+## Private Git Credential Sources Rollout and Rollback (ADR-006)
+
+Runtime controls:
+- Flag: `--git-enable-stored-credentials=true|false`
+- Env: `SKILLSERVER_GIT_ENABLE_STORED_CREDENTIALS=true|false`
+- Flag: `--git-credential-master-key=<key>`
+- Env: `SKILLSERVER_GIT_CREDENTIAL_MASTER_KEY=<key>`
+- Flag: `--git-credential-master-key-file=/path/to/key`
+- Env: `SKILLSERVER_GIT_CREDENTIAL_MASTER_KEY_FILE=/path/to/key`
+- Persistence controls from ADR-004 remain required when stored credentials are enabled.
+
+Behavior notes:
+- `env` and `file` credential sources are the preferred production path.
+- Stored credentials are disabled by default and require persistence + master key + trusted auth/TLS boundary.
+- Disabling stored mode does not disable public or env/file-backed repositories.
+
+Quick rollback:
+
+```bash
+# Disable stored-credential mode
+./skillserver --git-enable-stored-credentials=false
+
+# Equivalent env override
+export SKILLSERVER_GIT_ENABLE_STORED_CREDENTIALS=false
+./skillserver
+```
+
+Detailed rollout/rollback runbook: [`docs/operations/private-git-credential-sources-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/private-git-credential-sources-rollout-rollback.md)
 
 ## Dynamic Resource Discovery and Rollout Control
 

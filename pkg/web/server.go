@@ -14,12 +14,18 @@ import (
 
 	"github.com/mudler/skillserver/pkg/domain"
 	"github.com/mudler/skillserver/pkg/git"
+	"github.com/mudler/skillserver/pkg/persistence"
 )
 
 //go:embed ui
 var uiFiles embed.FS
 
 const defaultMCPRoutePath = "/mcp"
+
+// GitRuntimeCapabilities describes server-side git capability gates exposed to API/UI consumers.
+type GitRuntimeCapabilities struct {
+	StoredCredentialsEnabled bool `json:"stored_credentials_enabled"`
+}
 
 // Server wraps the Echo server
 type Server struct {
@@ -32,17 +38,32 @@ type Server struct {
 	taxonomyRegistry       *domain.CatalogTaxonomyRegistryService
 	gitRepos               []string
 	gitSyncer              gitSyncer
+	gitCredentialStore     gitCredentialStore
 	configManager          *git.ConfigManager
 	manualRepoSyncHook     func(repo git.GitRepoConfig) error
+	gitRuntimeCapabilities GitRuntimeCapabilities
 }
 
 type gitSyncer interface {
-	GetRepos() []string
-	AddRepo(repoURL string) error
-	RemoveRepo(repoURL string) error
-	UpdateRepos(repos []string) error
-	SyncRepo(repoURL string) error
+	GetRepos() []git.GitRepoConfig
+	GetRepoSyncStatus(repoID string) (git.RepoSyncStatus, bool)
+	GetRepoSyncStatuses() map[string]git.RepoSyncStatus
+	AddRepo(repo git.GitRepoConfig) error
+	RemoveRepo(repoID string) error
+	UpdateRepos(repos []git.GitRepoConfig) error
+	SyncRepo(repoID string) error
 	GetSkillsDir() string
+}
+
+type gitCredentialStore interface {
+	ReplaceCredential(
+		ctx context.Context,
+		repoID string,
+		payload persistence.GitRepoCredentialSecretPayload,
+		updatedAt time.Time,
+	) error
+	DeleteByRepoID(ctx context.Context, repoID string) (bool, error)
+	GetEncryptedByRepoID(ctx context.Context, repoID string) (persistence.GitRepoCredentialRow, error)
 }
 
 // NewServer creates a new web server.
@@ -132,6 +153,7 @@ func NewServer(
 	api.DELETE("/git-repos/:id", server.deleteGitRepo)
 	api.POST("/git-repos/:id/sync", server.syncGitRepo)
 	api.POST("/git-repos/:id/toggle", server.toggleGitRepo)
+	api.GET("/runtime/capabilities", server.getRuntimeCapabilities)
 
 	// Register MCP routes before the UI catch-all route so /mcp is not intercepted.
 	if mcpHandler != nil {
@@ -175,6 +197,16 @@ func (s *Server) SetCatalogTaxonomyRegistryService(service *domain.CatalogTaxono
 // SetManualGitRepoSyncHook configures post-sync behavior for POST /api/git-repos/:id/sync.
 func (s *Server) SetManualGitRepoSyncHook(hook func(repo git.GitRepoConfig) error) {
 	s.manualRepoSyncHook = hook
+}
+
+// SetGitRuntimeCapabilities configures git runtime capability visibility for API/UI consumers.
+func (s *Server) SetGitRuntimeCapabilities(capabilities GitRuntimeCapabilities) {
+	s.gitRuntimeCapabilities = capabilities
+}
+
+// SetGitCredentialStore configures optional persisted stored-credential writes/lookups for repo APIs.
+func (s *Server) SetGitCredentialStore(store gitCredentialStore) {
+	s.gitCredentialStore = store
 }
 
 // Start starts the web server
