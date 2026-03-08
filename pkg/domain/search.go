@@ -85,6 +85,11 @@ func (s *Searcher) IndexCatalogItems(items []CatalogItem) error {
 					return fmt.Errorf("failed to index prompt catalog item with empty parent skill and resource path")
 				}
 				id = BuildPromptCatalogItemID(item.ParentSkillID, item.ResourcePath)
+			case CatalogClassifierRule:
+				if CanonicalRuleCatalogKey(item.ParentSkillID, item.ResourcePath) == "" {
+					return fmt.Errorf("failed to index rule catalog item with empty parent skill and resource path")
+				}
+				id = BuildRuleCatalogItemID(item.ParentSkillID, item.ResourcePath)
 			}
 		}
 		if id == "" {

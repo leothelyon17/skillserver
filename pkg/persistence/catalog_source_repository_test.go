@@ -224,6 +224,171 @@ func TestCatalogSourceRepository_List_WithDeterministicOrderingAndFilters(t *tes
 	}
 }
 
+func TestCatalogSourceRepository_UpsertAndList_WithRuleClassifier_RoundTripsAndFilters(t *testing.T) {
+	db, ctx := openMigratedSQLiteRepositoryDB(t)
+	repo := newCatalogSourceRepositoryForTest(t, db)
+
+	sourceRepo := "repo-a"
+	lastSyncedAt := time.Date(2026, time.March, 8, 1, 0, 0, 0, time.UTC)
+
+	rows := []CatalogSourceRow{
+		{
+			ItemID:           "skill:repo-a/planner",
+			Classifier:       CatalogClassifierSkill,
+			SourceType:       CatalogSourceTypeGit,
+			SourceRepo:       &sourceRepo,
+			Name:             "planner",
+			Description:      "planner skill",
+			Content:          "skill content",
+			ContentHash:      "sha256:skill",
+			ContentWritable:  false,
+			MetadataWritable: true,
+			LastSyncedAt:     lastSyncedAt,
+		},
+		{
+			ItemID:           "prompt:repo-a/planner:prompts/system.md",
+			Classifier:       CatalogClassifierPrompt,
+			SourceType:       CatalogSourceTypeGit,
+			SourceRepo:       &sourceRepo,
+			ParentSkillID:    stringPointer("repo-a/planner"),
+			ResourcePath:     stringPointer("prompts/system.md"),
+			Name:             "system.md",
+			Description:      "planner system prompt",
+			Content:          "prompt content",
+			ContentHash:      "sha256:prompt",
+			ContentWritable:  false,
+			MetadataWritable: true,
+			LastSyncedAt:     lastSyncedAt,
+		},
+		{
+			ItemID:           "rule:repo-a/planner:rules/agents.md",
+			Classifier:       CatalogClassifierRule,
+			SourceType:       CatalogSourceTypeGit,
+			SourceRepo:       &sourceRepo,
+			ParentSkillID:    stringPointer("repo-a/planner"),
+			ResourcePath:     stringPointer("rules/agents.md"),
+			Name:             "agents.md",
+			Description:      "planner rule file",
+			Content:          "rule content",
+			ContentHash:      "sha256:rule",
+			ContentWritable:  false,
+			MetadataWritable: true,
+			LastSyncedAt:     lastSyncedAt,
+		},
+	}
+
+	for _, row := range rows {
+		mustUpsertCatalogSourceRow(t, ctx, repo, row)
+	}
+
+	ruleItem, err := repo.GetByItemID(ctx, "rule:repo-a/planner:rules/agents.md")
+	if err != nil {
+		t.Fatalf("expected rule source row lookup to succeed, got %v", err)
+	}
+	assertCatalogSourceRowEqual(t, rows[2], ruleItem)
+
+	ruleClassifier := CatalogClassifierRule
+	ruleRows, err := repo.List(ctx, CatalogSourceListFilter{Classifier: &ruleClassifier})
+	if err != nil {
+		t.Fatalf("expected rule classifier list query to succeed, got %v", err)
+	}
+	if len(ruleRows) != 1 {
+		t.Fatalf("expected exactly one rule-classified row, got %d", len(ruleRows))
+	}
+	if ruleRows[0].ItemID != "rule:repo-a/planner:rules/agents.md" {
+		t.Fatalf("expected rule-classified row item_id to match, got %q", ruleRows[0].ItemID)
+	}
+	if ruleRows[0].Classifier != CatalogClassifierRule {
+		t.Fatalf("expected rule-classified row classifier %q, got %q", CatalogClassifierRule, ruleRows[0].Classifier)
+	}
+}
+
+func TestCatalogSourceRepository_RuleRowLifecycle_SoftDeleteAndRestorePreservesClassifierFiltering(t *testing.T) {
+	db, ctx := openMigratedSQLiteRepositoryDB(t)
+	repo := newCatalogSourceRepositoryForTest(t, db)
+
+	sourceRepo := "repo-a"
+	parentSkillID := "repo-a/planner"
+	resourcePath := "rules/agents.md"
+	itemID := "rule:repo-a/planner:rules/agents.md"
+	lastSyncedAt := time.Date(2026, time.March, 8, 1, 15, 0, 0, time.UTC)
+
+	mustUpsertCatalogSourceRow(t, ctx, repo, CatalogSourceRow{
+		ItemID:           itemID,
+		Classifier:       CatalogClassifierRule,
+		SourceType:       CatalogSourceTypeGit,
+		SourceRepo:       &sourceRepo,
+		ParentSkillID:    &parentSkillID,
+		ResourcePath:     &resourcePath,
+		Name:             "agents.md",
+		Description:      "project contributor rules",
+		Content:          "follow contributor guardrails",
+		ContentHash:      "sha256:rule-lifecycle",
+		ContentWritable:  false,
+		MetadataWritable: true,
+		LastSyncedAt:     lastSyncedAt,
+	})
+
+	ruleClassifier := CatalogClassifierRule
+	initialRows, err := repo.List(ctx, CatalogSourceListFilter{Classifier: &ruleClassifier})
+	if err != nil {
+		t.Fatalf("expected initial rule classifier list query to succeed, got %v", err)
+	}
+	if len(initialRows) != 1 || initialRows[0].ItemID != itemID {
+		t.Fatalf("expected one visible rule row before delete, got %+v", initialRows)
+	}
+
+	tombstoneAt := time.Date(2026, time.March, 8, 1, 30, 0, 0, time.UTC)
+	deleted, err := repo.DeleteByItemID(ctx, itemID, tombstoneAt)
+	if err != nil {
+		t.Fatalf("expected rule row soft-delete to succeed, got %v", err)
+	}
+	if !deleted {
+		t.Fatalf("expected rule row soft-delete to affect one row")
+	}
+
+	visibleAfterDelete, err := repo.List(ctx, CatalogSourceListFilter{Classifier: &ruleClassifier})
+	if err != nil {
+		t.Fatalf("expected visible rule list query after delete to succeed, got %v", err)
+	}
+	if len(visibleAfterDelete) != 0 {
+		t.Fatalf("expected no visible rule rows after soft-delete, got %+v", visibleAfterDelete)
+	}
+
+	includingDeleted, err := repo.List(ctx, CatalogSourceListFilter{
+		Classifier:     &ruleClassifier,
+		IncludeDeleted: true,
+	})
+	if err != nil {
+		t.Fatalf("expected include-deleted rule list query to succeed, got %v", err)
+	}
+	if len(includingDeleted) != 1 || includingDeleted[0].ItemID != itemID {
+		t.Fatalf("expected one include-deleted rule row, got %+v", includingDeleted)
+	}
+	if includingDeleted[0].DeletedAt == nil || !includingDeleted[0].DeletedAt.Equal(tombstoneAt) {
+		t.Fatalf("expected include-deleted row tombstone %s, got %+v", tombstoneAt, includingDeleted[0].DeletedAt)
+	}
+
+	restored, err := repo.RestoreByItemID(ctx, itemID)
+	if err != nil {
+		t.Fatalf("expected rule row restore to succeed, got %v", err)
+	}
+	if !restored {
+		t.Fatalf("expected rule row restore to affect one row")
+	}
+
+	visibleAfterRestore, err := repo.List(ctx, CatalogSourceListFilter{Classifier: &ruleClassifier})
+	if err != nil {
+		t.Fatalf("expected visible rule list query after restore to succeed, got %v", err)
+	}
+	if len(visibleAfterRestore) != 1 || visibleAfterRestore[0].ItemID != itemID {
+		t.Fatalf("expected one visible rule row after restore, got %+v", visibleAfterRestore)
+	}
+	if visibleAfterRestore[0].DeletedAt != nil {
+		t.Fatalf("expected restored rule row deleted_at=nil, got %+v", visibleAfterRestore[0].DeletedAt)
+	}
+}
+
 func TestCatalogSourceRepository_SoftDeleteAndRestoreByItemID(t *testing.T) {
 	db, ctx := openMigratedSQLiteRepositoryDB(t)
 	repo := newCatalogSourceRepositoryForTest(t, db)

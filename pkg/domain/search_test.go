@@ -51,6 +51,16 @@ var _ = Describe("Searcher", func() {
 				ResourcePath:  "prompts/assistant.md",
 				ReadOnly:      true,
 			},
+			{
+				ID:            domain.BuildRuleCatalogItemID("docker", "rules/agents.md"),
+				Classifier:    domain.CatalogClassifierRule,
+				Name:          "agents.md",
+				Description:   "Contributor guardrails",
+				Content:       "Kubernetes orchestration contributor guardrails",
+				ParentSkillID: "docker",
+				ResourcePath:  "rules/agents.md",
+				ReadOnly:      false,
+			},
 		}
 
 		Expect(searcher.IndexCatalogItems(items)).To(Succeed())
@@ -62,21 +72,25 @@ var _ = Describe("Searcher", func() {
 
 			results, err := searcher.SearchCatalog("orchestration", nil)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(results).To(HaveLen(2))
+			Expect(results).To(HaveLen(3))
 
 			foundSkill := false
 			foundPrompt := false
+			foundRule := false
 			for _, result := range results {
 				switch result.Classifier {
 				case domain.CatalogClassifierSkill:
 					foundSkill = true
 				case domain.CatalogClassifierPrompt:
 					foundPrompt = true
+				case domain.CatalogClassifierRule:
+					foundRule = true
 				}
 			}
 
 			Expect(foundSkill).To(BeTrue())
 			Expect(foundPrompt).To(BeTrue())
+			Expect(foundRule).To(BeTrue())
 		})
 
 		It("should return only skill docs when classifier is skill", func() {
@@ -99,6 +113,17 @@ var _ = Describe("Searcher", func() {
 			Expect(results).To(HaveLen(1))
 			Expect(results[0].Classifier).To(Equal(domain.CatalogClassifierPrompt))
 			Expect(results[0].ID).To(Equal(domain.BuildPromptCatalogItemID("docker", "prompts/assistant.md")))
+		})
+
+		It("should return only rule docs when classifier is rule", func() {
+			seedMixedCatalog()
+
+			classifier := domain.CatalogClassifierRule
+			results, err := searcher.SearchCatalog("orchestration", &classifier)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].Classifier).To(Equal(domain.CatalogClassifierRule))
+			Expect(results[0].ID).To(Equal(domain.BuildRuleCatalogItemID("docker", "rules/agents.md")))
 		})
 
 		It("should return empty results for empty query", func() {

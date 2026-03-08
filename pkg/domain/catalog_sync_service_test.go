@@ -447,6 +447,52 @@ func TestCatalogSyncService_SyncRepo_UpdatesOnlyTargetRepoAndPreservesOverlays(t
 	})
 }
 
+func TestCatalogSyncService_SyncAll_PersistsRuleRows(t *testing.T) {
+	db, ctx := openCatalogSyncServiceTestDB(t)
+	sourceRepo := newCatalogSourceRepositoryForDomainTest(t, db)
+
+	syncAt := time.Date(2026, time.March, 4, 14, 30, 0, 0, time.UTC)
+	ruleItemID := BuildRuleCatalogItemID("repo-a/planner", "imports/rules/agents.md")
+
+	discovered := []CatalogItem{
+		{
+			ID:            ruleItemID,
+			Classifier:    CatalogClassifierRule,
+			Name:          "agents.md",
+			Description:   "project contributor rules",
+			Content:       "Follow contributor guardrails.",
+			ParentSkillID: "repo-a/planner",
+			ResourcePath:  "imports/rules/agents.md",
+			ReadOnly:      true,
+		},
+	}
+
+	service := newCatalogSyncServiceForDomainTest(t, sourceRepo, nil, syncAt)
+	if err := service.SyncAll(discovered); err != nil {
+		t.Fatalf("expected rule sync to succeed, got %v", err)
+	}
+
+	row := mustGetCatalogSourceRowForDomainTest(t, ctx, sourceRepo, ruleItemID)
+	if row.Classifier != persistence.CatalogClassifierRule {
+		t.Fatalf("expected persisted rule classifier, got %q", row.Classifier)
+	}
+	if row.ParentSkillID == nil || *row.ParentSkillID != "repo-a/planner" {
+		t.Fatalf("expected persisted parent skill id repo-a/planner, got %+v", row.ParentSkillID)
+	}
+	if row.ResourcePath == nil || *row.ResourcePath != "imports/rules/agents.md" {
+		t.Fatalf("expected persisted resource path imports/rules/agents.md, got %+v", row.ResourcePath)
+	}
+	if row.SourceType != persistence.CatalogSourceTypeGit {
+		t.Fatalf("expected persisted source type git, got %q", row.SourceType)
+	}
+	if row.SourceRepo == nil || *row.SourceRepo != "repo-a" {
+		t.Fatalf("expected persisted source repo repo-a, got %+v", row.SourceRepo)
+	}
+	if row.ContentHash != buildCatalogContentHash("Follow contributor guardrails.") {
+		t.Fatalf("expected persisted content hash to match rule content, got %q", row.ContentHash)
+	}
+}
+
 func TestCatalogSyncService_SyncRepo_EmptyRepoNameReturnsError(t *testing.T) {
 	db, _ := openCatalogSyncServiceTestDB(t)
 	sourceRepo := newCatalogSourceRepositoryForDomainTest(t, db)
@@ -544,6 +590,43 @@ func TestMapCatalogItemToSourceRow_DetectsFileImportSourceType(t *testing.T) {
 	}
 }
 
+func TestMapCatalogItemToSourceRow_DerivesRuleFieldsFromCatalogID(t *testing.T) {
+	syncedAt := time.Date(2026, time.March, 4, 16, 45, 0, 0, time.UTC)
+	item := CatalogItem{
+		ID:           BuildRuleCatalogItemID("repo-a/planner", "imports/rules/agents.md"),
+		Classifier:   "",
+		Name:         "",
+		Description:  "  rule description  ",
+		Content:      "rule content",
+		ResourcePath: "imports/rules/agents.md",
+		ReadOnly:     true,
+	}
+
+	row, err := mapCatalogItemToSourceRow(item, syncedAt)
+	if err != nil {
+		t.Fatalf("expected rule row mapping to succeed, got %v", err)
+	}
+
+	if row.Classifier != persistence.CatalogClassifierRule {
+		t.Fatalf("expected rule classifier, got %q", row.Classifier)
+	}
+	if row.SourceType != persistence.CatalogSourceTypeGit {
+		t.Fatalf("expected git source type, got %q", row.SourceType)
+	}
+	if row.SourceRepo == nil || *row.SourceRepo != "repo-a" {
+		t.Fatalf("expected source repo repo-a, got %+v", row.SourceRepo)
+	}
+	if row.ParentSkillID == nil || *row.ParentSkillID != "repo-a/planner" {
+		t.Fatalf("expected parent skill id repo-a/planner, got %+v", row.ParentSkillID)
+	}
+	if row.Name != "agents.md" {
+		t.Fatalf("expected derived rule name agents.md, got %q", row.Name)
+	}
+	if row.Description != "rule description" {
+		t.Fatalf("expected trimmed description, got %q", row.Description)
+	}
+}
+
 func TestMapCatalogClassifier_WithInvalidInput_ReturnsError(t *testing.T) {
 	_, err := mapCatalogClassifier(CatalogClassifier("unknown"), "invalid-id")
 	if err == nil {
@@ -558,6 +641,16 @@ func TestMapCatalogClassifier_InfersSkillFromIDPrefix(t *testing.T) {
 	}
 	if classifier != persistence.CatalogClassifierSkill {
 		t.Fatalf("expected inferred skill classifier, got %q", classifier)
+	}
+}
+
+func TestMapCatalogClassifier_InfersRuleFromIDPrefix(t *testing.T) {
+	classifier, err := mapCatalogClassifier(CatalogClassifier(""), BuildRuleCatalogItemID("repo-a/planner", "rules/agents.md"))
+	if err != nil {
+		t.Fatalf("expected rule classifier inference to succeed, got %v", err)
+	}
+	if classifier != persistence.CatalogClassifierRule {
+		t.Fatalf("expected inferred rule classifier, got %q", classifier)
 	}
 }
 
@@ -623,6 +716,13 @@ func TestResolveCatalogSkillID_HandlesParentSkillAndCatalogPrefixes(t *testing.T
 				ID: BuildPromptCatalogItemID("repo-b/coach", "prompts/system.md"),
 			},
 			expected: "repo-b/coach",
+		},
+		{
+			name: "parses rule catalog id",
+			item: CatalogItem{
+				ID: BuildRuleCatalogItemID("repo-c/governance", "rules/agents.md"),
+			},
+			expected: "repo-c/governance",
 		},
 		{
 			name: "returns empty for unknown id",

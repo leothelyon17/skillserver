@@ -133,6 +133,13 @@ func TestIndexCatalogItemsDerivesDeterministicIDs(t *testing.T) {
 			ParentSkillID: "docker",
 			ResourcePath:  "prompts/assistant.md",
 		},
+		{
+			Classifier:    CatalogClassifierRule,
+			Name:          "agents.md",
+			Content:       "Contributor guardrails",
+			ParentSkillID: "docker",
+			ResourcePath:  "rules/agents.md",
+		},
 	}
 
 	if err := searcher.IndexCatalogItems(items); err != nil {
@@ -161,6 +168,18 @@ func TestIndexCatalogItemsDerivesDeterministicIDs(t *testing.T) {
 	}
 	if promptResults[0].ID != BuildPromptCatalogItemID("docker", "prompts/assistant.md") {
 		t.Fatalf("unexpected prompt ID %q", promptResults[0].ID)
+	}
+
+	ruleClassifier := CatalogClassifierRule
+	ruleResults, err := searcher.SearchCatalog("guardrails", &ruleClassifier)
+	if err != nil {
+		t.Fatalf("failed to search rule catalog items: %v", err)
+	}
+	if len(ruleResults) != 1 {
+		t.Fatalf("expected 1 rule result, got %d", len(ruleResults))
+	}
+	if ruleResults[0].ID != BuildRuleCatalogItemID("docker", "rules/agents.md") {
+		t.Fatalf("unexpected rule ID %q", ruleResults[0].ID)
 	}
 }
 

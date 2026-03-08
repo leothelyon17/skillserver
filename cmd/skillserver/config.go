@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -12,32 +13,43 @@ import (
 )
 
 const (
-	envMCPTransport          = "SKILLSERVER_MCP_TRANSPORT"
-	envMCPHTTPPath           = "SKILLSERVER_MCP_HTTP_PATH"
-	envMCPSessionTimeout     = "SKILLSERVER_MCP_SESSION_TIMEOUT"
-	envMCPStateless          = "SKILLSERVER_MCP_STATELESS"
-	envMCPEnableWrites       = "SKILLSERVER_MCP_ENABLE_WRITES"
-	envMCPEnableEventStore   = "SKILLSERVER_MCP_ENABLE_EVENT_STORE"
-	envMCPEventStoreMaxBytes = "SKILLSERVER_MCP_EVENT_STORE_MAX_BYTES"
-	envCatalogEnablePrompts  = "SKILLSERVER_CATALOG_ENABLE_PROMPTS"
-	envCatalogPromptDirs     = "SKILLSERVER_CATALOG_PROMPT_DIRS"
+	envMCPTransport               = "SKILLSERVER_MCP_TRANSPORT"
+	envMCPHTTPPath                = "SKILLSERVER_MCP_HTTP_PATH"
+	envMCPSessionTimeout          = "SKILLSERVER_MCP_SESSION_TIMEOUT"
+	envMCPStateless               = "SKILLSERVER_MCP_STATELESS"
+	envMCPEnableWrites            = "SKILLSERVER_MCP_ENABLE_WRITES"
+	envMCPEnableMaterialization   = "SKILLSERVER_MCP_ENABLE_MATERIALIZATION"
+	envMCPAllowedDestinationRoots = "SKILLSERVER_MCP_ALLOWED_DESTINATION_ROOTS"
+	envMCPEnableEventStore        = "SKILLSERVER_MCP_ENABLE_EVENT_STORE"
+	envMCPEventStoreMaxBytes      = "SKILLSERVER_MCP_EVENT_STORE_MAX_BYTES"
+	envCatalogEnablePrompts       = "SKILLSERVER_CATALOG_ENABLE_PROMPTS"
+	envCatalogEnableRules         = "SKILLSERVER_CATALOG_ENABLE_RULES"
+	envCatalogPromptDirs          = "SKILLSERVER_CATALOG_PROMPT_DIRS"
+	envCatalogRuleDirs            = "SKILLSERVER_CATALOG_RULE_DIRS"
+	envCatalogRuleFilenames       = "SKILLSERVER_CATALOG_RULE_FILENAMES"
 )
 
 const (
-	defaultMCPTransportMode            = MCPTransportBoth
-	defaultMCPHTTPPath                 = "/mcp"
-	defaultMCPSessionTimeout           = 30 * time.Minute
-	defaultMCPSessionTimeoutString     = "30m"
-	defaultMCPStateless                = false
-	defaultMCPEnableWrites             = false
-	defaultMCPEnableEventStore         = true
-	defaultMCPEventStoreMaxBytes   int = 10 * 1024 * 1024
-	defaultCatalogEnablePrompts        = true
+	defaultMCPTransportMode             = MCPTransportBoth
+	defaultMCPHTTPPath                  = "/mcp"
+	defaultMCPSessionTimeout            = 30 * time.Minute
+	defaultMCPSessionTimeoutString      = "30m"
+	defaultMCPStateless                 = false
+	defaultMCPEnableWrites              = false
+	defaultMCPEnableMaterialization     = false
+	defaultMCPEnableEventStore          = true
+	defaultMCPEventStoreMaxBytes    int = 10 * 1024 * 1024
+	defaultCatalogEnablePrompts         = true
+	defaultCatalogEnableRules           = true
 )
 
 var (
 	defaultCatalogPromptDirectoryAllowlist = domain.DefaultPromptDirectoryAllowlist()
 	defaultCatalogPromptDirectoryCSV       = strings.Join(defaultCatalogPromptDirectoryAllowlist, ",")
+	defaultCatalogRuleDirectoryAllowlist   = domain.DefaultRuleDirectoryAllowlist()
+	defaultCatalogRuleDirectoryCSV         = strings.Join(defaultCatalogRuleDirectoryAllowlist, ",")
+	defaultCatalogRuleFilenameAllowlist    = domain.DefaultRuleFilenameAllowlist()
+	defaultCatalogRuleFilenameCSV          = strings.Join(defaultCatalogRuleFilenameAllowlist, ",")
 )
 
 // MCPTransportMode controls which MCP transports are enabled at runtime.
@@ -54,34 +66,44 @@ const (
 
 // MCPRuntimeConfig defines runtime configuration for MCP transports.
 type MCPRuntimeConfig struct {
-	Transport          MCPTransportMode
-	HTTPPath           string
-	SessionTimeout     time.Duration
-	Stateless          bool
-	EnableWrites       bool
-	EnableEventStore   bool
-	EventStoreMaxBytes int
+	Transport               MCPTransportMode
+	HTTPPath                string
+	SessionTimeout          time.Duration
+	Stateless               bool
+	EnableWrites            bool
+	EnableMaterialization   bool
+	AllowedDestinationRoots []string
+	EnableEventStore        bool
+	EventStoreMaxBytes      int
 }
 
 type mcpRuntimeFlagValues struct {
-	transport          string
-	httpPath           string
-	sessionTimeout     string
-	stateless          bool
-	enableWrites       bool
-	enableEventStore   bool
-	eventStoreMaxBytes int
+	transport               string
+	httpPath                string
+	sessionTimeout          string
+	stateless               bool
+	enableWrites            bool
+	enableMaterialization   bool
+	allowedDestinationRoots string
+	enableEventStore        bool
+	eventStoreMaxBytes      int
 }
 
 // CatalogRuntimeConfig defines runtime configuration for prompt catalog behavior.
 type CatalogRuntimeConfig struct {
 	EnablePrompts            bool
 	PromptDirectoryAllowlist []string
+	EnableRules              bool
+	RuleDirectoryAllowlist   []string
+	RuleFilenameAllowlist    []string
 }
 
 type catalogRuntimeFlagValues struct {
 	enablePrompts bool
 	promptDirs    string
+	enableRules   bool
+	ruleDirs      string
+	ruleFilenames string
 }
 
 // registerMCPRuntimeFlags adds MCP runtime flags to a flag set.
@@ -119,6 +141,18 @@ func registerMCPRuntimeFlags(fs *flag.FlagSet) *mcpRuntimeFlagValues {
 		"Enable MCP taxonomy write tools (env: SKILLSERVER_MCP_ENABLE_WRITES)",
 	)
 	fs.BoolVar(
+		&values.enableMaterialization,
+		"mcp-enable-materialization",
+		defaultMCPEnableMaterialization,
+		"Enable MCP materialization write tools (env: SKILLSERVER_MCP_ENABLE_MATERIALIZATION)",
+	)
+	fs.StringVar(
+		&values.allowedDestinationRoots,
+		"mcp-allowed-destination-roots",
+		"",
+		"Comma-separated absolute destination roots allowed for MCP materialization writes (env: SKILLSERVER_MCP_ALLOWED_DESTINATION_ROOTS)",
+	)
+	fs.BoolVar(
 		&values.enableEventStore,
 		"mcp-enable-event-store",
 		defaultMCPEnableEventStore,
@@ -149,6 +183,24 @@ func registerCatalogRuntimeFlags(fs *flag.FlagSet) *catalogRuntimeFlagValues {
 		"catalog-prompt-dirs",
 		defaultCatalogPromptDirectoryCSV,
 		"Comma-separated prompt directory names used for prompt catalog detection (env: SKILLSERVER_CATALOG_PROMPT_DIRS)",
+	)
+	fs.BoolVar(
+		&values.enableRules,
+		"catalog-enable-rules",
+		defaultCatalogEnableRules,
+		"Enable rule catalog classification/indexing (env: SKILLSERVER_CATALOG_ENABLE_RULES)",
+	)
+	fs.StringVar(
+		&values.ruleDirs,
+		"catalog-rule-dirs",
+		defaultCatalogRuleDirectoryCSV,
+		"Comma-separated rule directory names used for rule catalog detection (env: SKILLSERVER_CATALOG_RULE_DIRS)",
+	)
+	fs.StringVar(
+		&values.ruleFilenames,
+		"catalog-rule-filenames",
+		defaultCatalogRuleFilenameCSV,
+		"Comma-separated markdown filenames treated as project-root rules (env: SKILLSERVER_CATALOG_RULE_FILENAMES)",
 	)
 
 	return values
@@ -231,6 +283,36 @@ func parseMCPRuntimeConfig(
 		return MCPRuntimeConfig{}, err
 	}
 
+	enableMaterialization, err := resolveBoolConfigValue(
+		fs,
+		"mcp-enable-materialization",
+		flagValues.enableMaterialization,
+		envMCPEnableMaterialization,
+		defaultMCPEnableMaterialization,
+		lookupEnv,
+	)
+	if err != nil {
+		return MCPRuntimeConfig{}, err
+	}
+
+	allowedDestinationRootsRaw, allowedDestinationRootsSource := resolveStringConfigValue(
+		fs,
+		"mcp-allowed-destination-roots",
+		flagValues.allowedDestinationRoots,
+		envMCPAllowedDestinationRoots,
+		"",
+		lookupEnv,
+	)
+	allowedDestinationRoots, err := parseMCPAllowedDestinationRoots(allowedDestinationRootsRaw)
+	if err != nil {
+		return MCPRuntimeConfig{}, fmt.Errorf("%s: %w", allowedDestinationRootsSource, err)
+	}
+	if enableMaterialization && len(allowedDestinationRoots) == 0 {
+		return MCPRuntimeConfig{}, fmt.Errorf(
+			"mcp materialization requires at least one allowed destination root when enabled",
+		)
+	}
+
 	enableEventStore, err := resolveBoolConfigValue(
 		fs,
 		"mcp-enable-event-store",
@@ -256,13 +338,15 @@ func parseMCPRuntimeConfig(
 	}
 
 	return MCPRuntimeConfig{
-		Transport:          transport,
-		HTTPPath:           httpPath,
-		SessionTimeout:     sessionTimeout,
-		Stateless:          stateless,
-		EnableWrites:       enableWrites,
-		EnableEventStore:   enableEventStore,
-		EventStoreMaxBytes: eventStoreMaxBytes,
+		Transport:               transport,
+		HTTPPath:                httpPath,
+		SessionTimeout:          sessionTimeout,
+		Stateless:               stateless,
+		EnableWrites:            enableWrites,
+		EnableMaterialization:   enableMaterialization,
+		AllowedDestinationRoots: allowedDestinationRoots,
+		EnableEventStore:        enableEventStore,
+		EventStoreMaxBytes:      eventStoreMaxBytes,
 	}, nil
 }
 
@@ -305,13 +389,62 @@ func parseCatalogRuntimeConfig(
 		return CatalogRuntimeConfig{}, fmt.Errorf("%s: %w", promptDirsSource, err)
 	}
 
+	enableRules, err := resolveBoolConfigValue(
+		fs,
+		"catalog-enable-rules",
+		flagValues.enableRules,
+		envCatalogEnableRules,
+		defaultCatalogEnableRules,
+		lookupEnv,
+	)
+	if err != nil {
+		return CatalogRuntimeConfig{}, err
+	}
+
+	ruleDirsRaw, ruleDirsSource := resolveStringConfigValue(
+		fs,
+		"catalog-rule-dirs",
+		flagValues.ruleDirs,
+		envCatalogRuleDirs,
+		defaultCatalogRuleDirectoryCSV,
+		lookupEnv,
+	)
+	ruleDirs, err := parseCatalogRuleDirectoryAllowlist(ruleDirsRaw)
+	if err != nil {
+		return CatalogRuntimeConfig{}, fmt.Errorf("%s: %w", ruleDirsSource, err)
+	}
+
+	ruleFilenamesRaw, ruleFilenamesSource := resolveStringConfigValue(
+		fs,
+		"catalog-rule-filenames",
+		flagValues.ruleFilenames,
+		envCatalogRuleFilenames,
+		defaultCatalogRuleFilenameCSV,
+		lookupEnv,
+	)
+	ruleFilenames, err := parseCatalogRuleFilenameAllowlist(ruleFilenamesRaw)
+	if err != nil {
+		return CatalogRuntimeConfig{}, fmt.Errorf("%s: %w", ruleFilenamesSource, err)
+	}
+
 	return CatalogRuntimeConfig{
 		EnablePrompts:            enablePrompts,
 		PromptDirectoryAllowlist: promptDirs,
+		EnableRules:              enableRules,
+		RuleDirectoryAllowlist:   ruleDirs,
+		RuleFilenameAllowlist:    ruleFilenames,
 	}, nil
 }
 
 func parseCatalogPromptDirectoryAllowlist(raw string) ([]string, error) {
+	return parseCatalogDirectoryAllowlist(raw, "catalog prompt directories", "catalog prompt directory")
+}
+
+func parseCatalogRuleDirectoryAllowlist(raw string) ([]string, error) {
+	return parseCatalogDirectoryAllowlist(raw, "catalog rule directories", "catalog rule directory")
+}
+
+func parseCatalogDirectoryAllowlist(raw string, fieldLabel string, itemLabel string) ([]string, error) {
 	parts := strings.Split(raw, ",")
 	normalized := make([]string, 0, len(parts))
 	seen := make(map[string]struct{}, len(parts))
@@ -324,13 +457,13 @@ func parseCatalogPromptDirectoryAllowlist(raw string) ([]string, error) {
 
 		value := strings.ToLower(strings.Trim(original, "/"))
 		if value == "" {
-			return nil, fmt.Errorf("catalog prompt directories contain an empty directory value")
+			return nil, fmt.Errorf("%s contain an empty directory value", fieldLabel)
 		}
 		if value == "." || value == ".." {
-			return nil, fmt.Errorf("catalog prompt directory %q is not allowed", original)
+			return nil, fmt.Errorf("%s %q is not allowed", itemLabel, original)
 		}
 		if strings.ContainsAny(value, `/\`) {
-			return nil, fmt.Errorf("catalog prompt directory %q must be a single directory name", original)
+			return nil, fmt.Errorf("%s %q must be a single directory name", itemLabel, original)
 		}
 
 		if _, exists := seen[value]; exists {
@@ -341,7 +474,83 @@ func parseCatalogPromptDirectoryAllowlist(raw string) ([]string, error) {
 	}
 
 	if len(normalized) == 0 {
-		return nil, fmt.Errorf("catalog prompt directories must include at least one directory name")
+		return nil, fmt.Errorf("%s must include at least one directory name", fieldLabel)
+	}
+
+	return normalized, nil
+}
+
+func parseCatalogRuleFilenameAllowlist(raw string) ([]string, error) {
+	parts := strings.Split(raw, ",")
+	normalized := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+
+	for _, part := range parts {
+		original := strings.TrimSpace(part)
+		if original == "" {
+			continue
+		}
+
+		value := strings.ToLower(strings.Trim(strings.ReplaceAll(original, "\\", "/"), "/"))
+		if value == "" {
+			return nil, fmt.Errorf("catalog rule filenames contain an empty filename value")
+		}
+		if value == "." || value == ".." {
+			return nil, fmt.Errorf("catalog rule filename %q is not allowed", original)
+		}
+		if strings.Contains(value, "/") {
+			return nil, fmt.Errorf("catalog rule filename %q must be a single file name", original)
+		}
+		if !strings.HasSuffix(value, ".md") && !strings.HasSuffix(value, ".markdown") {
+			return nil, fmt.Errorf("catalog rule filename %q must be a markdown filename", original)
+		}
+
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+
+	if len(normalized) == 0 {
+		return nil, fmt.Errorf("catalog rule filenames must include at least one markdown filename")
+	}
+
+	return normalized, nil
+}
+
+func parseMCPAllowedDestinationRoots(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return []string{}, nil
+	}
+
+	parts := strings.Split(raw, ",")
+	normalized := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+
+	for _, part := range parts {
+		original := strings.TrimSpace(part)
+		if original == "" {
+			return nil, fmt.Errorf("MCP allowed destination roots contain an empty path value")
+		}
+		if !filepath.IsAbs(original) {
+			return nil, fmt.Errorf("MCP allowed destination root %q must be absolute", original)
+		}
+
+		cleaned := filepath.Clean(original)
+		if !filepath.IsAbs(cleaned) {
+			return nil, fmt.Errorf("MCP allowed destination root %q must resolve to an absolute path", original)
+		}
+		resolved, err := filepath.Abs(cleaned)
+		if err != nil {
+			return nil, fmt.Errorf("resolve MCP allowed destination root %q: %w", original, err)
+		}
+
+		if _, exists := seen[resolved]; exists {
+			continue
+		}
+		seen[resolved] = struct{}{}
+		normalized = append(normalized, resolved)
 	}
 
 	return normalized, nil

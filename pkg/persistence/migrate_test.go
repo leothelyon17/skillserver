@@ -327,6 +327,230 @@ func TestRunMigrations_UpgradeFromVersionTwoToLatest_AppliesGitCredentialSchema(
 	}
 }
 
+func TestRunMigrations_UpgradeFromPreRuleSchemaToLatest_PreservesRowsAndAllowsRuleClassifier(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	db := openSQLiteTestDB(t, ctx)
+
+	ruleMigrationIndex := -1
+	for i, nextMigration := range schemaMigrations {
+		if nextMigration.name == "catalog_source_classifier_rule_support" {
+			ruleMigrationIndex = i
+			break
+		}
+	}
+	if ruleMigrationIndex <= 0 {
+		t.Fatalf("expected a pre-rule migration chain before catalog_source_classifier_rule_support")
+	}
+
+	preRuleRunner := &MigrationRunner{
+		db:         db,
+		migrations: slices.Clone(schemaMigrations[:ruleMigrationIndex]),
+	}
+	if err := preRuleRunner.Run(ctx); err != nil {
+		t.Fatalf("expected pre-rule migration run to succeed, got %v", err)
+	}
+
+	lastSyncedAt := time.Date(2026, time.March, 8, 0, 5, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	_, err := db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_source_items (
+			item_id,
+			classifier,
+			source_type,
+			name,
+			description,
+			content,
+			content_hash,
+			content_writable,
+			metadata_writable,
+			last_synced_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+		"skill:legacy-skill",
+		"skill",
+		"local",
+		"legacy-skill",
+		"legacy skill row",
+		"skill content",
+		"sha256:legacy-skill",
+		1,
+		1,
+		lastSyncedAt,
+		"prompt:legacy-skill:prompts/system.md",
+		"prompt",
+		"git",
+		"system.md",
+		"legacy prompt row",
+		"prompt content",
+		"sha256:legacy-prompt",
+		0,
+		1,
+		lastSyncedAt,
+	)
+	if err != nil {
+		t.Fatalf("expected pre-rule source inserts to succeed, got %v", err)
+	}
+
+	_, err = db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_metadata_overlays (
+			item_id,
+			display_name_override,
+			custom_metadata_json,
+			labels_json,
+			updated_at,
+			updated_by
+		) VALUES (?, ?, ?, ?, ?, ?);`,
+		"skill:legacy-skill",
+		"Legacy Skill",
+		`{"owner":"platform"}`,
+		`["legacy"]`,
+		lastSyncedAt,
+		"wp-005-test",
+	)
+	if err != nil {
+		t.Fatalf("expected pre-rule metadata overlay insert to succeed, got %v", err)
+	}
+
+	if err := RunMigrations(ctx, db); err != nil {
+		t.Fatalf("expected schema upgrade to latest to succeed, got %v", err)
+	}
+
+	upgradedVersion, err := NewMigrationRunner(db).CurrentVersion(ctx)
+	if err != nil {
+		t.Fatalf("expected upgraded schema version query to succeed, got %v", err)
+	}
+	if upgradedVersion != LatestSchemaVersion() {
+		t.Fatalf("expected upgraded schema version %d, got %d", LatestSchemaVersion(), upgradedVersion)
+	}
+
+	var sourceCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_source_items;`).Scan(&sourceCount); err != nil {
+		t.Fatalf("expected source row count query to succeed, got %v", err)
+	}
+	if sourceCount != 2 {
+		t.Fatalf("expected 2 preserved source rows after upgrade, got %d", sourceCount)
+	}
+
+	type classifierExpectation struct {
+		itemID     string
+		classifier string
+	}
+	for _, expected := range []classifierExpectation{
+		{itemID: "skill:legacy-skill", classifier: "skill"},
+		{itemID: "prompt:legacy-skill:prompts/system.md", classifier: "prompt"},
+	} {
+		var classifier string
+		if err := db.QueryRowContext(
+			ctx,
+			`SELECT classifier FROM catalog_source_items WHERE item_id = ?;`,
+			expected.itemID,
+		).Scan(&classifier); err != nil {
+			t.Fatalf("expected preserved classifier query for %q to succeed, got %v", expected.itemID, err)
+		}
+		if classifier != expected.classifier {
+			t.Fatalf("expected preserved classifier %q for %q, got %q", expected.classifier, expected.itemID, classifier)
+		}
+	}
+
+	var overlayCount int
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM catalog_metadata_overlays WHERE item_id = ?;`,
+		"skill:legacy-skill",
+	).Scan(&overlayCount); err != nil {
+		t.Fatalf("expected metadata overlay count query to succeed, got %v", err)
+	}
+	if overlayCount != 1 {
+		t.Fatalf("expected metadata overlay row to be preserved, got %d", overlayCount)
+	}
+
+	_, err = db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_source_items (
+			item_id,
+			classifier,
+			source_type,
+			name,
+			description,
+			content,
+			content_hash,
+			content_writable,
+			metadata_writable,
+			last_synced_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+		"rule:legacy-skill:rules/agents.md",
+		"rule",
+		"git",
+		"agents.md",
+		"legacy rule row",
+		"rule content",
+		"sha256:legacy-rule",
+		0,
+		1,
+		lastSyncedAt,
+	)
+	if err != nil {
+		t.Fatalf("expected post-upgrade rule insert to succeed, got %v", err)
+	}
+
+	var ruleCount int
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM catalog_source_items WHERE classifier = 'rule';`,
+	).Scan(&ruleCount); err != nil {
+		t.Fatalf("expected rule classifier count query to succeed, got %v", err)
+	}
+	if ruleCount != 1 {
+		t.Fatalf("expected one persisted rule row after upgrade, got %d", ruleCount)
+	}
+
+	requiredIndexes := []string{
+		"idx_catalog_source_classifier_deleted_at",
+		"idx_catalog_source_source_filters",
+		"idx_catalog_source_lookup_paths",
+		"idx_catalog_source_resource_path",
+	}
+	for _, index := range requiredIndexes {
+		exists, err := sqliteObjectExists(ctx, db, "index", index)
+		if err != nil {
+			t.Fatalf("expected index existence query to succeed for %q, got %v", index, err)
+		}
+		if !exists {
+			t.Fatalf("expected index %q to exist after classifier migration", index)
+		}
+	}
+
+	foreignKeyCheckRows, err := db.QueryContext(ctx, `PRAGMA foreign_key_check;`)
+	if err != nil {
+		t.Fatalf("expected foreign_key_check query to succeed, got %v", err)
+	}
+	defer foreignKeyCheckRows.Close()
+
+	if foreignKeyCheckRows.Next() {
+		var (
+			tableName string
+			rowID     int64
+			parent    string
+			fkID      int64
+		)
+		if err := foreignKeyCheckRows.Scan(&tableName, &rowID, &parent, &fkID); err != nil {
+			t.Fatalf("expected foreign_key_check row scan to succeed, got %v", err)
+		}
+		t.Fatalf(
+			"expected no foreign key violations after classifier migration, found table=%s rowid=%d parent=%s fkid=%d",
+			tableName,
+			rowID,
+			parent,
+			fkID,
+		)
+	}
+	if err := foreignKeyCheckRows.Err(); err != nil {
+		t.Fatalf("expected foreign_key_check iteration to succeed, got %v", err)
+	}
+}
+
 func TestRunMigrations_WithNilDatabase_ReturnsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -55,3 +55,38 @@ npx playwright test tests/playwright/wp005-ui-catalog.spec.ts tests/playwright/w
 - [ ] REST list/search taxonomy filters stay parity-consistent (`primary_domain_id`, `secondary_domain_id`, `subdomain_id`, `tag_ids`, `tag_match`).
 - [ ] MCP write tools remain hidden by default and visible only when write gate is enabled.
 - [ ] Playwright taxonomy and pre-taxonomy UI flows pass without regressions.
+
+## WP-011 Integration Safety Regression Matrix (Rule Catalog Materialization)
+
+This matrix validates ADR-007 integration safety and compatibility before rollout.
+
+### Scope
+
+- REST and MCP export/materialization regression coverage, including dry-run safety and path validation.
+- Persistence migration + rule-row lifecycle regression checks.
+- Legacy skill export/import compatibility checks.
+- UI capability-gated materialization verification.
+
+### CI-Compatible Commands
+
+```bash
+go test ./pkg/domain -run 'TestCatalogExportService_|TestCatalogMaterializationService_' -count=1
+go test ./pkg/persistence -run 'TestRunMigrations_UpgradeFromPreRuleSchemaToLatest_PreservesRowsAndAllowsRuleClassifier|TestCatalogSourceRepository_UpsertAndList_WithRuleClassifier_RoundTripsAndFilters|TestCatalogSourceRepository_RuleRowLifecycle_SoftDeleteAndRestorePreservesClassifierFiltering' -count=1
+go test ./pkg/web -run 'TestExportSkill_LegacyRoute_|TestExportCatalog_|TestMaterializeCatalog_' -count=1
+go test ./pkg/mcp -run 'TestMCPServer_StdioRegression' -count=1
+npx playwright test tests/playwright/wp010-ui-export-materialization.spec.ts --project=chromium
+```
+
+### Rollout Gate Checklist
+
+- [ ] Dry-run materialization requests prove no filesystem writes (REST + MCP).
+- [ ] Invalid destination paths and outside-root requests fail with explicit errors (REST + MCP).
+- [ ] Legacy skill export archives remain import-compatible (local and repo-backed).
+- [ ] Rule indexing/filtering behavior is verified for non-persistence and persistence-backed flows.
+- [ ] UI write actions are capability-gated and dry-run-first before write execution.
+
+### Coverage Mapping Notes
+
+- Local skill scenario: `TestExportSkill_LegacyRoute_LocalSkill_PreservesDownloadHeaders`.
+- Repo-backed skill scenario: `TestExportSkill_LegacyRoute_RepoBackedSkillWithSlash_SupportsEncodedPath`.
+- Prompt + rule scenarios: `TestExportCatalog_DryRun_BatchMixedClassifiers_ReturnsManifest`, `TestMaterializeCatalog_DryRunBatch_ReturnsPlannedItemsWithoutWrites`, and MCP stdio regression subtests.

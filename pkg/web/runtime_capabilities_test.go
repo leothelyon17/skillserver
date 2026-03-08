@@ -20,6 +20,15 @@ func TestGetRuntimeCapabilities_ReturnsGitCapabilityState(t *testing.T) {
 	server.SetGitRuntimeCapabilities(GitRuntimeCapabilities{
 		StoredCredentialsEnabled: true,
 	})
+	server.SetCatalogRuntimeCapabilities(CatalogRuntimeCapabilities{
+		RulesEnabled:           true,
+		RuleDirectoryAllowlist: []string{"rules", "governance"},
+		RuleFilenameAllowlist:  []string{"agents.md", "rules.md"},
+	})
+	server.SetMCPRuntimeCapabilities(MCPRuntimeCapabilities{
+		MaterializationEnabled:  true,
+		AllowedDestinationRoots: []string{"/workspace", "/projects"},
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/runtime/capabilities", nil)
 	rec := httptest.NewRecorder()
@@ -35,6 +44,46 @@ func TestGetRuntimeCapabilities_ReturnsGitCapabilityState(t *testing.T) {
 	}
 	if !payload.Git.StoredCredentialsEnabled {
 		t.Fatalf("expected stored credential capability true in response payload")
+	}
+	if !payload.Catalog.RulesEnabled {
+		t.Fatalf("expected rules capability true in response payload")
+	}
+	if len(payload.Catalog.RuleDirectoryAllowlist) != 2 {
+		t.Fatalf("expected 2 rule directories, got %d", len(payload.Catalog.RuleDirectoryAllowlist))
+	}
+	if !payload.MCP.MaterializationEnabled {
+		t.Fatalf("expected materialization capability true in response payload")
+	}
+	if len(payload.MCP.AllowedDestinationRoots) != 2 {
+		t.Fatalf("expected 2 allowed destination roots, got %d", len(payload.MCP.AllowedDestinationRoots))
+	}
+}
+
+func TestGetRuntimeCapabilities_DefaultMaterializationCapabilityDisabled(t *testing.T) {
+	skillManager, err := domain.NewFileSystemManager(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("failed to create file system manager: %v", err)
+	}
+
+	server := NewServer(skillManager, skillManager, nil, nil, nil, false, nil, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/runtime/capabilities", nil)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload RuntimeCapabilitiesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("expected valid runtime capability payload, got %v", err)
+	}
+	if payload.MCP.MaterializationEnabled {
+		t.Fatalf("expected materialization capability disabled by default")
+	}
+	if len(payload.MCP.AllowedDestinationRoots) != 0 {
+		t.Fatalf("expected no default allowed destination roots, got %v", payload.MCP.AllowedDestinationRoots)
 	}
 }
 

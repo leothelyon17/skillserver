@@ -156,6 +156,191 @@ var schemaMigrations = []migration{
 			ON git_repo_credentials (key_id, key_version);`,
 		},
 	},
+	{
+		version: 4,
+		name:    "catalog_source_classifier_rule_support",
+		statements: []string{
+			`PRAGMA defer_foreign_keys = ON;`,
+			`CREATE TABLE catalog_metadata_overlays_v4_backup AS
+			SELECT
+				item_id,
+				display_name_override,
+				description_override,
+				custom_metadata_json,
+				labels_json,
+				updated_at,
+				updated_by
+			FROM catalog_metadata_overlays;`,
+			`CREATE TABLE catalog_item_taxonomy_assignments_v4_backup AS
+			SELECT
+				item_id,
+				primary_domain_id,
+				primary_subdomain_id,
+				secondary_domain_id,
+				secondary_subdomain_id,
+				updated_at,
+				updated_by
+			FROM catalog_item_taxonomy_assignments;`,
+			`CREATE TABLE catalog_item_tag_assignments_v4_backup AS
+			SELECT
+				item_id,
+				tag_id,
+				created_at
+			FROM catalog_item_tag_assignments;`,
+			`DROP TABLE catalog_metadata_overlays;`,
+			`DROP TABLE catalog_item_taxonomy_assignments;`,
+			`DROP TABLE catalog_item_tag_assignments;`,
+			`CREATE TABLE catalog_source_items_v4 (
+				item_id TEXT PRIMARY KEY,
+				classifier TEXT NOT NULL CHECK (classifier IN ('skill', 'prompt', 'rule')),
+				source_type TEXT NOT NULL CHECK (source_type IN ('git', 'local', 'file_import')),
+				source_repo TEXT,
+				parent_skill_id TEXT,
+				resource_path TEXT,
+				name TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				content TEXT NOT NULL DEFAULT '',
+				content_hash TEXT NOT NULL,
+				content_writable INTEGER NOT NULL CHECK (content_writable IN (0, 1)),
+				metadata_writable INTEGER NOT NULL DEFAULT 1 CHECK (metadata_writable IN (0, 1)),
+				last_synced_at TEXT NOT NULL,
+				deleted_at TEXT
+			);`,
+			`INSERT INTO catalog_source_items_v4 (
+				item_id,
+				classifier,
+				source_type,
+				source_repo,
+				parent_skill_id,
+				resource_path,
+				name,
+				description,
+				content,
+				content_hash,
+				content_writable,
+				metadata_writable,
+				last_synced_at,
+				deleted_at
+			)
+			SELECT
+				item_id,
+				classifier,
+				source_type,
+				source_repo,
+				parent_skill_id,
+				resource_path,
+				name,
+				description,
+				content,
+				content_hash,
+				content_writable,
+				metadata_writable,
+				last_synced_at,
+				deleted_at
+			FROM catalog_source_items;`,
+			`DROP TABLE catalog_source_items;`,
+			`ALTER TABLE catalog_source_items_v4 RENAME TO catalog_source_items;`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_source_classifier_deleted_at
+			ON catalog_source_items (classifier, deleted_at);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_source_source_filters
+			ON catalog_source_items (source_type, source_repo, classifier, deleted_at);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_source_lookup_paths
+			ON catalog_source_items (parent_skill_id, resource_path);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_source_resource_path
+			ON catalog_source_items (resource_path);`,
+			`CREATE TABLE catalog_metadata_overlays (
+				item_id TEXT PRIMARY KEY,
+				display_name_override TEXT,
+				description_override TEXT,
+				custom_metadata_json TEXT NOT NULL DEFAULT '{}',
+				labels_json TEXT NOT NULL DEFAULT '[]',
+				updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+				updated_by TEXT,
+				FOREIGN KEY (item_id) REFERENCES catalog_source_items(item_id) ON UPDATE CASCADE ON DELETE CASCADE
+			);`,
+			`CREATE TABLE catalog_item_taxonomy_assignments (
+				item_id TEXT PRIMARY KEY,
+				primary_domain_id TEXT,
+				primary_subdomain_id TEXT,
+				secondary_domain_id TEXT,
+				secondary_subdomain_id TEXT,
+				updated_at TEXT NOT NULL,
+				updated_by TEXT,
+				FOREIGN KEY (item_id) REFERENCES catalog_source_items(item_id) ON UPDATE CASCADE ON DELETE CASCADE,
+				FOREIGN KEY (primary_domain_id) REFERENCES catalog_domains(domain_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+				FOREIGN KEY (primary_subdomain_id) REFERENCES catalog_subdomains(subdomain_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+				FOREIGN KEY (secondary_domain_id) REFERENCES catalog_domains(domain_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+				FOREIGN KEY (secondary_subdomain_id) REFERENCES catalog_subdomains(subdomain_id) ON UPDATE CASCADE ON DELETE RESTRICT
+			);`,
+			`CREATE TABLE catalog_item_tag_assignments (
+				item_id TEXT NOT NULL,
+				tag_id TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (item_id, tag_id),
+				FOREIGN KEY (item_id) REFERENCES catalog_source_items(item_id) ON UPDATE CASCADE ON DELETE CASCADE,
+				FOREIGN KEY (tag_id) REFERENCES catalog_tags(tag_id) ON UPDATE CASCADE ON DELETE RESTRICT
+			);`,
+			`INSERT INTO catalog_metadata_overlays (
+				item_id,
+				display_name_override,
+				description_override,
+				custom_metadata_json,
+				labels_json,
+				updated_at,
+				updated_by
+			)
+			SELECT
+				item_id,
+				display_name_override,
+				description_override,
+				custom_metadata_json,
+				labels_json,
+				updated_at,
+				updated_by
+			FROM catalog_metadata_overlays_v4_backup;`,
+			`INSERT INTO catalog_item_taxonomy_assignments (
+				item_id,
+				primary_domain_id,
+				primary_subdomain_id,
+				secondary_domain_id,
+				secondary_subdomain_id,
+				updated_at,
+				updated_by
+			)
+			SELECT
+				item_id,
+				primary_domain_id,
+				primary_subdomain_id,
+				secondary_domain_id,
+				secondary_subdomain_id,
+				updated_at,
+				updated_by
+			FROM catalog_item_taxonomy_assignments_v4_backup;`,
+			`INSERT INTO catalog_item_tag_assignments (
+				item_id,
+				tag_id,
+				created_at
+			)
+			SELECT
+				item_id,
+				tag_id,
+				created_at
+			FROM catalog_item_tag_assignments_v4_backup;`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_item_taxonomy_primary_domain
+			ON catalog_item_taxonomy_assignments (primary_domain_id);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_item_taxonomy_secondary_domain
+			ON catalog_item_taxonomy_assignments (secondary_domain_id);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_item_taxonomy_primary_subdomain
+			ON catalog_item_taxonomy_assignments (primary_subdomain_id);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_item_taxonomy_secondary_subdomain
+			ON catalog_item_taxonomy_assignments (secondary_subdomain_id);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_item_tag_assignments_tag
+			ON catalog_item_tag_assignments (tag_id);`,
+			`DROP TABLE catalog_metadata_overlays_v4_backup;`,
+			`DROP TABLE catalog_item_taxonomy_assignments_v4_backup;`,
+			`DROP TABLE catalog_item_tag_assignments_v4_backup;`,
+		},
+	},
 }
 
 // NewMigrationRunner creates a migration runner for the provided sqlite handle.

@@ -55,10 +55,15 @@ SkillServer supports both **environment variables** and **command-line flags** w
 | `SKILLSERVER_MCP_SESSION_TIMEOUT` | (none) | `30m` | Session timeout for MCP HTTP mode (`time.ParseDuration` format) |
 | `SKILLSERVER_MCP_STATELESS` | (none) | `false` | Enable stateless MCP HTTP mode |
 | `SKILLSERVER_MCP_ENABLE_WRITES` | (none) | `false` | Enable MCP taxonomy write tools (kept disabled by default) |
+| `SKILLSERVER_MCP_ENABLE_MATERIALIZATION` | (none) | `false` | Enable MCP materialization write tools and REST materialization capability |
+| `SKILLSERVER_MCP_ALLOWED_DESTINATION_ROOTS` | (none) | (empty) | Comma-separated absolute destination roots allowed for materialization writes (required when materialization is enabled) |
 | `SKILLSERVER_MCP_ENABLE_EVENT_STORE` | (none) | `true` | Enable in-memory MCP event store for replay support |
 | `SKILLSERVER_MCP_EVENT_STORE_MAX_BYTES` | (none) | `10485760` | Max bytes for MCP in-memory event store (10 MiB) |
 | `SKILLSERVER_CATALOG_ENABLE_PROMPTS` | (none) | `true` | Enable prompt catalog classification/indexing in unified catalog APIs/tools |
+| `SKILLSERVER_CATALOG_ENABLE_RULES` | (none) | `true` | Enable rule catalog classification/indexing in unified catalog APIs/tools |
 | `SKILLSERVER_CATALOG_PROMPT_DIRS` | (none) | `agent,agents,prompt,prompts` | Comma-separated directory names used for prompt catalog detection |
+| `SKILLSERVER_CATALOG_RULE_DIRS` | (none) | `rule,rules` | Comma-separated directory names used for rule catalog detection |
+| `SKILLSERVER_CATALOG_RULE_FILENAMES` | (none) | `agents.md,rules.md,claude.md,gemini.md` | Comma-separated markdown filenames treated as project-root rule candidates |
 | `SKILLSERVER_PERSISTENCE_DATA` | (none) | `false` | Enable SQLite-backed persistence for catalog source snapshots + metadata overlays |
 | `SKILLSERVER_PERSISTENCE_DIR` | (none) | (empty) | Writable persistence directory (required when `SKILLSERVER_PERSISTENCE_DATA=true`) |
 | `SKILLSERVER_PERSISTENCE_DB_PATH` | (none) | `<SKILLSERVER_PERSISTENCE_DIR>/skillserver.db` | Optional SQLite DB file path (absolute path or relative to persistence dir) |
@@ -80,10 +85,15 @@ SkillServer supports both **environment variables** and **command-line flags** w
 | `--mcp-session-timeout` | `30m` | Session timeout for MCP HTTP mode |
 | `--mcp-stateless` | `false` | Enable stateless MCP HTTP mode |
 | `--mcp-enable-writes` | `false` | Enable MCP taxonomy write tools (kept disabled by default) |
+| `--mcp-enable-materialization` | `false` | Enable MCP materialization write tools and REST materialization capability |
+| `--mcp-allowed-destination-roots` | (empty) | Comma-separated absolute destination roots allowed for materialization writes (required when materialization is enabled) |
 | `--mcp-enable-event-store` | `true` | Enable in-memory MCP event store |
 | `--mcp-event-store-max-bytes` | `10485760` | Max bytes for in-memory MCP event store |
 | `--catalog-enable-prompts` | `true` | Enable prompt catalog classification/indexing |
+| `--catalog-enable-rules` | `true` | Enable rule catalog classification/indexing |
 | `--catalog-prompt-dirs` | `agent,agents,prompt,prompts` | Comma-separated directory names used for prompt catalog detection |
+| `--catalog-rule-dirs` | `rule,rules` | Comma-separated directory names used for rule catalog detection |
+| `--catalog-rule-filenames` | `agents.md,rules.md,claude.md,gemini.md` | Comma-separated markdown filenames treated as project-root rule candidates |
 | `--persistence-data` | `false` | Enable SQLite-backed persistence mode |
 | `--persistence-dir` | (empty) | Writable persistence directory (required when persistence mode is enabled) |
 | `--persistence-db-path` | (empty) | Optional SQLite DB file path override (absolute path or relative to persistence dir) |
@@ -129,6 +139,17 @@ export SKILLSERVER_CATALOG_ENABLE_PROMPTS=false
 
 # Override prompt classification directories (must be single directory names)
 ./skillserver --catalog-prompt-dirs "agent,agents,prompts"
+
+# Roll back rule catalog indexing (keeps skill/prompt catalog behavior)
+./skillserver --catalog-enable-rules=false
+# Or using environment variable
+export SKILLSERVER_CATALOG_ENABLE_RULES=false
+./skillserver
+
+# Enable materialization writes with explicit allowed destination roots
+./skillserver \
+  --mcp-enable-materialization \
+  --mcp-allowed-destination-roots "/workspace,/projects"
 
 # Enable persistence mode (stores SQLite under mounted/local persistence dir)
 mkdir -p ./data/skillserver
@@ -712,21 +733,24 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 - `POST /api/git-repos/:id/sync` - Trigger manual sync for one enabled repository
 - Response auth/sync fields: `auth_mode`, `credential_source`, `has_credentials`, `stored_credentials_enabled`, `last_sync_status`, `last_sync_error`
 
-#### Runtime Capabilities (ADR-006 support)
-- `GET /api/runtime/capabilities` - Return runtime capability gates (for example `git.stored_credentials_enabled`)
+#### Runtime Capabilities (ADR-004/005/006/007 support)
+- `GET /api/runtime/capabilities` - Return runtime capability gates (for example `git.stored_credentials_enabled`, `catalog.rules_enabled`, `mcp.materialization_enabled`, `mcp.allowed_destination_roots`)
 
-#### Catalog (ADR-003, additive)
-- `GET /api/catalog` - List unified catalog items (`skill` + `prompt`) with fields `id`, `classifier`, `name`, `description`, `content`, `parent_skill_id`, `resource_path`, `custom_metadata`, `labels`, `content_writable`, `metadata_writable`, `read_only`
-- `GET /api/catalog/search?q=query&classifier=skill|prompt` - Search unified catalog items with optional classifier filter
+#### Catalog (ADR-003 + ADR-007, additive)
+- `GET /api/catalog` - List unified catalog items (`skill` + `prompt` + `rule`) with fields `id`, `classifier`, `name`, `description`, `content`, `parent_skill_id`, `resource_path`, `custom_metadata`, `labels`, `content_writable`, `metadata_writable`, `read_only`
+- `GET /api/catalog/search?q=query&classifier=skill|prompt|rule` - Search unified catalog items with optional classifier filter
+- `POST /api/catalog/export` - Export one or more catalog items as a `tar.gz` archive with optional dry-run planning (`item_ids`, optional `format`, optional `dry_run`)
+- `POST /api/catalog/materialize` - Plan or materialize one or more catalog items into an absolute destination directory (`item_ids`, `destination_dir`, optional `conflict_policy=error|overwrite|skip`, optional `dry_run`)
 - Optional taxonomy filters for both list/search:
   - `primary_domain_id`
   - `secondary_domain_id`
   - `subdomain_id` (matches primary or secondary subdomain)
   - `tag_ids` (comma-separated IDs)
   - `tag_match=any|all` (defaults to `any`)
-- `classifier` is case-insensitive at input and normalized to `skill` or `prompt` in responses
+- `classifier` is case-insensitive at input and normalized to `skill`, `prompt`, or `rule` in responses
 - Invalid classifier values return `400` (`invalid catalog classifier ...`)
 - Empty or missing `q` for `/api/catalog/search` returns `400` (`query parameter 'q' is required`)
+- `POST /api/catalog/materialize` returns `403` (`catalog materialization capability is disabled`) when materialization capability is disabled.
 - `GET /api/catalog/:id/metadata` - Return source + overlay + effective metadata projections for one catalog item
 - `PATCH /api/catalog/:id/metadata` - Update metadata overlays for one catalog item (`display_name`, `description`, `labels`, `custom_metadata`, optional `updated_by`)
 
@@ -761,9 +785,11 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 - `read_skill` - Read the full content of a skill by its ID
 - `search_skills` - Search for skills by query string
 
-#### Catalog (ADR-003, additive)
-- `list_catalog` - List unified catalog items with optional `classifier` filter (`skill` or `prompt`) and optional taxonomy filters (`primary_domain_id`, `secondary_domain_id`, `subdomain_id`, `tag_ids`, `tag_match`)
+#### Catalog (ADR-003 + ADR-007, additive)
+- `list_catalog` - List unified catalog items with optional `classifier` filter (`skill`, `prompt`, or `rule`) and optional taxonomy filters (`primary_domain_id`, `secondary_domain_id`, `subdomain_id`, `tag_ids`, `tag_match`)
 - `search_catalog` - Search unified catalog items by `query`, with optional `classifier` + taxonomy filters
+- `export_catalog_items` - Export one or more catalog items as `tar.gz` with optional dry-run planning output
+- `materialize_catalog_items` - Materialize one or more catalog items into an allowed destination directory (registered only when materialization gate is enabled)
 - Taxonomy read tools (always registered):
   - `list_taxonomy_domains`
   - `list_taxonomy_subdomains`
@@ -851,6 +877,37 @@ export SKILLSERVER_MCP_ENABLE_WRITES=false
 ```
 
 Detailed rollout/rollback runbook: [`docs/operations/domain-taxonomy-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/domain-taxonomy-rollout-rollback.md)
+
+## Rule Catalog and Materialization Rollout and Rollback (ADR-007)
+
+Runtime controls:
+- Flag: `--catalog-enable-rules=true|false`
+- Env: `SKILLSERVER_CATALOG_ENABLE_RULES=true|false`
+- Flag: `--catalog-rule-dirs=rule,rules`
+- Env: `SKILLSERVER_CATALOG_RULE_DIRS=rule,rules`
+- Flag: `--catalog-rule-filenames=agents.md,rules.md,claude.md,gemini.md`
+- Env: `SKILLSERVER_CATALOG_RULE_FILENAMES=agents.md,rules.md,claude.md,gemini.md`
+- Flag: `--mcp-enable-materialization=true|false`
+- Env: `SKILLSERVER_MCP_ENABLE_MATERIALIZATION=true|false`
+- Flag: `--mcp-allowed-destination-roots=/workspace,/projects`
+- Env: `SKILLSERVER_MCP_ALLOWED_DESTINATION_ROOTS=/workspace,/projects`
+
+Behavior notes:
+- Rule indexing is enabled by default and can be disabled without destructive schema rollback.
+- Materialization writes are disabled by default and require at least one absolute allowed destination root when enabled.
+- `export_catalog_items` and `POST /api/catalog/export` remain available when materialization writes are disabled.
+
+Quick rollback:
+
+```bash
+# Immediate write-gate rollback
+./skillserver --mcp-enable-materialization=false
+
+# Optional classifier rollback to hide rule items
+./skillserver --catalog-enable-rules=false
+```
+
+Detailed rollout/rollback runbook: [`docs/operations/rule-catalog-materialization-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/rule-catalog-materialization-rollout-rollback.md)
 
 ## Private Git Credential Sources Rollout and Rollback (ADR-006)
 

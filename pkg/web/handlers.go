@@ -1,7 +1,9 @@
 package web
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -150,6 +152,30 @@ type PatchCatalogItemTaxonomyRequest struct {
 	UpdatedBy            *string   `json:"updated_by,omitempty"`
 }
 
+// CatalogExportResponse represents JSON responses from POST /api/catalog/export.
+type CatalogExportResponse struct {
+	Format   domain.CatalogExportFormat   `json:"format"`
+	DryRun   bool                         `json:"dry_run"`
+	Manifest domain.CatalogExportManifest `json:"manifest"`
+	Download *CatalogExportDownload       `json:"download,omitempty"`
+}
+
+// CatalogExportDownload represents archive metadata for non-dry-run export responses.
+type CatalogExportDownload struct {
+	FileName          string `json:"file_name"`
+	ContentType       string `json:"content_type"`
+	ContentLength     int    `json:"content_length"`
+	LegacySkillExport string `json:"legacy_skill_export_url,omitempty"`
+}
+
+// CatalogMaterializeResponse represents JSON responses from POST /api/catalog/materialize.
+type CatalogMaterializeResponse struct {
+	DryRun                 bool                                      `json:"dry_run"`
+	DestinationDir         string                                    `json:"destination_dir"`
+	ResolvedDestinationDir string                                    `json:"resolved_destination_dir"`
+	Items                  []domain.CatalogMaterializationItemResult `json:"items"`
+}
+
 // CatalogMetadataResponse represents source, overlay, and effective metadata views.
 type CatalogMetadataResponse struct {
 	ItemID    string                           `json:"item_id"`
@@ -200,6 +226,8 @@ type CatalogMetadataEffectiveResponse struct {
 }
 
 const (
+	catalogExportRequestMaxBodyBytes       = 32 * 1024
+	catalogMaterializeRequestMaxBodyBytes  = 32 * 1024
 	catalogTaxonomyRequestMaxBodyBytes     = 32 * 1024
 	catalogMetadataPatchMaxBodyBytes       = 32 * 1024
 	catalogMetadataDisplayNameMaxChars     = 256
@@ -1377,6 +1405,450 @@ func decodeCatalogTaxonomyRequest[T any](c *echo.Context) (T, error) {
 	return request, nil
 }
 
+func decodeCatalogExportRequest(c *echo.Context) (domain.CatalogExportRequest, error) {
+	limitedReader := io.LimitReader(c.Request().Body, catalogExportRequestMaxBodyBytes+1)
+	payload, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return domain.CatalogExportRequest{}, fmt.Errorf("invalid request payload")
+	}
+	if len(payload) == 0 {
+		return domain.CatalogExportRequest{}, fmt.Errorf("request body is required")
+	}
+	if len(payload) > catalogExportRequestMaxBodyBytes {
+		return domain.CatalogExportRequest{}, fmt.Errorf(
+			"request payload exceeds %d bytes",
+			catalogExportRequestMaxBodyBytes,
+		)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+
+	var request domain.CatalogExportRequest
+	if err := decoder.Decode(&request); err != nil {
+		return domain.CatalogExportRequest{}, fmt.Errorf("invalid request payload")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return domain.CatalogExportRequest{}, fmt.Errorf("invalid request payload")
+	}
+
+	return request, nil
+}
+
+func decodeCatalogMaterializationRequest(c *echo.Context) (domain.CatalogMaterializationRequest, error) {
+	limitedReader := io.LimitReader(c.Request().Body, catalogMaterializeRequestMaxBodyBytes+1)
+	payload, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return domain.CatalogMaterializationRequest{}, fmt.Errorf("invalid request payload")
+	}
+	if len(payload) == 0 {
+		return domain.CatalogMaterializationRequest{}, fmt.Errorf("request body is required")
+	}
+	if len(payload) > catalogMaterializeRequestMaxBodyBytes {
+		return domain.CatalogMaterializationRequest{}, fmt.Errorf(
+			"request payload exceeds %d bytes",
+			catalogMaterializeRequestMaxBodyBytes,
+		)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+
+	var request domain.CatalogMaterializationRequest
+	if err := decoder.Decode(&request); err != nil {
+		return domain.CatalogMaterializationRequest{}, fmt.Errorf("invalid request payload")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return domain.CatalogMaterializationRequest{}, fmt.Errorf("invalid request payload")
+	}
+
+	return request, nil
+}
+
+func decodeLegacySkillExportName(rawPath string) (string, error) {
+	name := strings.TrimPrefix(strings.TrimSpace(rawPath), "/")
+	if name == "" {
+		return "", fmt.Errorf("skill name is required")
+	}
+
+	decoded, err := url.PathUnescape(name)
+	if err != nil {
+		return "", fmt.Errorf("skill name path is invalid")
+	}
+	decoded = strings.TrimSpace(decoded)
+	if decoded == "" {
+		return "", fmt.Errorf("skill name is required")
+	}
+
+	return decoded, nil
+}
+
+func buildCatalogExportResponse(result domain.CatalogExportResult) CatalogExportResponse {
+	response := CatalogExportResponse{
+		Format:   result.Format,
+		DryRun:   result.DryRun,
+		Manifest: result.Manifest,
+	}
+
+	if result.DryRun {
+		return response
+	}
+
+	contentType := strings.TrimSpace(result.ContentType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	download := &CatalogExportDownload{
+		FileName:      result.FileName,
+		ContentType:   contentType,
+		ContentLength: len(result.ArchiveData),
+	}
+	if legacyURL := buildLegacySkillExportURL(result.Manifest); legacyURL != "" {
+		download.LegacySkillExport = legacyURL
+	}
+
+	response.Download = download
+	return response
+}
+
+func buildLegacySkillExportURL(manifest domain.CatalogExportManifest) string {
+	if len(manifest.Items) != 1 {
+		return ""
+	}
+
+	item := manifest.Items[0]
+	if item.Classifier != domain.CatalogClassifierSkill {
+		return ""
+	}
+
+	sourceRef := strings.TrimSpace(item.SourceRef)
+	if sourceRef == "" {
+		return ""
+	}
+
+	return "/api/skills/export/" + url.PathEscape(sourceRef)
+}
+
+func (s *Server) executeCatalogExport(
+	ctx context.Context,
+	request domain.CatalogExportRequest,
+) (domain.CatalogExportResult, error) {
+	// Preserve WP-002 single-skill behavior for compatibility callers.
+	if shouldUseLegacyCatalogExportPath(request) {
+		exportService, err := domain.NewCatalogExportService(s.skillManager)
+		if err != nil {
+			return domain.CatalogExportResult{}, err
+		}
+		return exportService.Export(ctx, request)
+	}
+
+	return s.executeCatalogExportViaMaterialization(ctx, request)
+}
+
+func shouldUseLegacyCatalogExportPath(request domain.CatalogExportRequest) bool {
+	itemIDs := normalizeRequestedCatalogExportItemIDs(request.ItemIDs)
+	if len(itemIDs) != 1 {
+		return false
+	}
+
+	classifierToken, _, hasClassifier := strings.Cut(itemIDs[0], ":")
+	if !hasClassifier {
+		return true
+	}
+
+	classifier, err := domain.ParseCatalogClassifier(classifierToken)
+	if err != nil {
+		return false
+	}
+	return classifier == domain.CatalogClassifierSkill
+}
+
+func normalizeRequestedCatalogExportItemIDs(itemIDs []string) []string {
+	normalized := make([]string, 0, len(itemIDs))
+	for _, itemID := range itemIDs {
+		trimmed := strings.TrimSpace(itemID)
+		if trimmed == "" {
+			continue
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
+}
+
+func (s *Server) executeCatalogExportViaMaterialization(
+	ctx context.Context,
+	request domain.CatalogExportRequest,
+) (domain.CatalogExportResult, error) {
+	format := request.Format
+	if format == "" {
+		format = domain.CatalogExportFormatTarGz
+	}
+	if format != domain.CatalogExportFormatTarGz {
+		return domain.CatalogExportResult{}, fmt.Errorf(
+			"%w: export format %q is not supported",
+			domain.ErrCatalogExportInvalidRequest,
+			format,
+		)
+	}
+
+	stagingRoot, err := os.MkdirTemp("", "skillserver-catalog-export-*")
+	if err != nil {
+		return domain.CatalogExportResult{}, fmt.Errorf("create export staging root: %w", err)
+	}
+	defer os.RemoveAll(stagingRoot)
+
+	materializationService, err := domain.NewCatalogMaterializationService(s.skillManager, []string{stagingRoot})
+	if err != nil {
+		return domain.CatalogExportResult{}, err
+	}
+
+	materializedResult, err := materializationService.Materialize(
+		ctx,
+		domain.CatalogMaterializationRequest{
+			ItemIDs:        request.ItemIDs,
+			DestinationDir: stagingRoot,
+			DryRun:         request.DryRun,
+		},
+	)
+	if err != nil {
+		return domain.CatalogExportResult{}, mapCatalogMaterializationErrorToExportError(err)
+	}
+
+	manifest := buildCatalogExportManifestFromMaterializationResult(materializedResult)
+	result := domain.CatalogExportResult{
+		Format:   format,
+		DryRun:   request.DryRun,
+		Manifest: manifest,
+	}
+	if request.DryRun {
+		return result, nil
+	}
+
+	archiveData, err := buildCatalogExportArchiveFromDirectory(stagingRoot)
+	if err != nil {
+		return domain.CatalogExportResult{}, fmt.Errorf("build catalog export archive: %w", err)
+	}
+
+	result.ContentType = "application/gzip"
+	result.FileName = buildCatalogExportArchiveFileName(manifest)
+	result.ArchiveData = archiveData
+	return result, nil
+}
+
+func mapCatalogMaterializationErrorToExportError(materializeErr error) error {
+	switch {
+	case errors.Is(materializeErr, domain.ErrCatalogMaterializationInvalidRequest),
+		errors.Is(materializeErr, domain.ErrCatalogMaterializationDestinationOutsideAllowedRoots):
+		return fmt.Errorf("%w: %v", domain.ErrCatalogExportInvalidRequest, materializeErr)
+	case errors.Is(materializeErr, domain.ErrCatalogMaterializationItemNotFound):
+		return fmt.Errorf("%w: %v", domain.ErrCatalogExportItemNotFound, materializeErr)
+	case errors.Is(materializeErr, domain.ErrCatalogMaterializationUnsupportedClassifier):
+		return fmt.Errorf("%w: %v", domain.ErrCatalogExportUnsupportedClassifier, materializeErr)
+	default:
+		return materializeErr
+	}
+}
+
+func buildCatalogExportManifestFromMaterializationResult(
+	result domain.CatalogMaterializationResult,
+) domain.CatalogExportManifest {
+	manifestItems := make([]domain.CatalogExportManifestItem, 0, len(result.Items))
+	for _, item := range result.Items {
+		archiveRoot := strings.TrimSpace(item.TargetPath)
+		if archiveRoot == "" && len(item.Files) > 0 {
+			archiveRoot = strings.TrimSpace(item.Files[0].TargetPath)
+		}
+		if archiveRoot == "" {
+			archiveRoot = "."
+		}
+
+		sourceRef := strings.TrimSpace(item.SourceRef)
+		if sourceRef == "" && item.Classifier == domain.CatalogClassifierSkill {
+			sourceRef = strings.TrimSpace(strings.TrimPrefix(item.ItemID, "skill:"))
+		}
+
+		manifestItems = append(manifestItems, domain.CatalogExportManifestItem{
+			ItemID:          item.ItemID,
+			Classifier:      item.Classifier,
+			SourceRef:       sourceRef,
+			ArchiveRoot:     archiveRoot,
+			ArchiveFileName: buildCatalogExportManifestItemFileName(item),
+		})
+	}
+	return domain.CatalogExportManifest{Items: manifestItems}
+}
+
+func buildCatalogExportManifestItemFileName(item domain.CatalogMaterializationItemResult) string {
+	switch item.Classifier {
+	case domain.CatalogClassifierSkill:
+		sourceRef := strings.TrimSpace(item.SourceRef)
+		if sourceRef == "" {
+			sourceRef = strings.TrimSpace(strings.TrimPrefix(item.ItemID, "skill:"))
+		}
+		if sourceRef == "" {
+			return "skill-export.tar.gz"
+		}
+		replacer := strings.NewReplacer("/", "-", "\\", "-", ":", "-", " ", "-")
+		return replacer.Replace(sourceRef) + ".tar.gz"
+	default:
+		targetPath := strings.TrimSpace(item.TargetPath)
+		if targetPath == "" && len(item.Files) > 0 {
+			targetPath = strings.TrimSpace(item.Files[0].TargetPath)
+		}
+		baseName := filepath.Base(filepath.FromSlash(targetPath))
+		baseName = strings.TrimSpace(baseName)
+		if baseName == "" || baseName == "." || baseName == string(filepath.Separator) {
+			baseName = strings.TrimSpace(item.ItemID)
+		}
+		replacer := strings.NewReplacer("/", "-", "\\", "-", ":", "-", " ", "-")
+		normalized := strings.TrimSpace(replacer.Replace(baseName))
+		if normalized == "" {
+			return "catalog-item"
+		}
+		return normalized
+	}
+}
+
+func buildCatalogExportArchiveFileName(manifest domain.CatalogExportManifest) string {
+	if len(manifest.Items) == 1 {
+		item := manifest.Items[0]
+		fileName := strings.TrimSpace(item.ArchiveFileName)
+		if fileName == "" {
+			return "catalog-export.tar.gz"
+		}
+		if strings.HasSuffix(fileName, ".tar.gz") {
+			return fileName
+		}
+		return fileName + ".tar.gz"
+	}
+
+	return "catalog-export.tar.gz"
+}
+
+func buildCatalogExportArchiveFromDirectory(rootDir string) ([]byte, error) {
+	var buffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buffer)
+	tarWriter := tar.NewWriter(gzipWriter)
+
+	defer gzipWriter.Close()
+	defer tarWriter.Close()
+
+	if err := filepath.Walk(rootDir, func(currentPath string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		relativePath, err := filepath.Rel(rootDir, currentPath)
+		if err != nil {
+			return err
+		}
+		relativePath = filepath.ToSlash(relativePath)
+		relativePath = strings.TrimPrefix(relativePath, "./")
+		if relativePath == "" || relativePath == "." || strings.HasPrefix(relativePath, "../") {
+			return fmt.Errorf("invalid archive path %q", relativePath)
+		}
+
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = relativePath
+		if err := tarWriter.WriteHeader(header); err != nil {
+			return err
+		}
+
+		content, err := os.ReadFile(currentPath)
+		if err != nil {
+			return err
+		}
+		if _, err := tarWriter.Write(content); err != nil {
+			return err
+		}
+
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := tarWriter.Close(); err != nil {
+		return nil, err
+	}
+	if err := gzipWriter.Close(); err != nil {
+		return nil, err
+	}
+
+	return buffer.Bytes(), nil
+}
+
+func (s *Server) executeCatalogMaterialization(
+	ctx context.Context,
+	request domain.CatalogMaterializationRequest,
+) (domain.CatalogMaterializationResult, error) {
+	materializationService, err := domain.NewCatalogMaterializationService(
+		s.skillManager,
+		s.mcpRuntimeCapabilities.AllowedDestinationRoots,
+	)
+	if err != nil {
+		return domain.CatalogMaterializationResult{}, err
+	}
+	return materializationService.Materialize(ctx, request)
+}
+
+func encodeCatalogExportServiceError(c *echo.Context, exportErr error) error {
+	switch {
+	case errors.Is(exportErr, domain.ErrCatalogExportInvalidRequest),
+		errors.Is(exportErr, domain.ErrCatalogExportUnsupportedClassifier):
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": exportErr.Error(),
+		})
+	case errors.Is(exportErr, domain.ErrCatalogExportItemNotFound):
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": exportErr.Error(),
+		})
+	default:
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": exportErr.Error(),
+		})
+	}
+}
+
+func buildCatalogMaterializeResponse(
+	result domain.CatalogMaterializationResult,
+) CatalogMaterializeResponse {
+	return CatalogMaterializeResponse{
+		DryRun:                 result.DryRun,
+		DestinationDir:         result.DestinationDir,
+		ResolvedDestinationDir: result.ResolvedDestinationDir,
+		Items:                  result.Items,
+	}
+}
+
+func encodeCatalogMaterializationServiceError(c *echo.Context, materializeErr error) error {
+	switch {
+	case errors.Is(materializeErr, domain.ErrCatalogMaterializationInvalidRequest),
+		errors.Is(materializeErr, domain.ErrCatalogMaterializationUnsupportedClassifier):
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": materializeErr.Error(),
+		})
+	case errors.Is(materializeErr, domain.ErrCatalogMaterializationDestinationOutsideAllowedRoots):
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": materializeErr.Error(),
+		})
+	case errors.Is(materializeErr, domain.ErrCatalogMaterializationItemNotFound):
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": materializeErr.Error(),
+		})
+	default:
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": materializeErr.Error(),
+		})
+	}
+}
+
 func decodeCatalogTaxonomyDomainListFilter(
 	c *echo.Context,
 ) (domain.CatalogTaxonomyDomainListFilter, error) {
@@ -2265,48 +2737,83 @@ func (s *Server) deleteSkillResource(c *echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// exportSkill exports a skill as a compressed archive
+// exportCatalog handles additive export planning/execution requests.
+func (s *Server) exportCatalog(c *echo.Context) error {
+	request, err := decodeCatalogExportRequest(c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	result, err := s.executeCatalogExport(c.Request().Context(), request)
+	if err != nil {
+		return encodeCatalogExportServiceError(c, err)
+	}
+
+	return c.JSON(http.StatusOK, buildCatalogExportResponse(result))
+}
+
+// materializeCatalog handles project-folder materialization planning/execution requests.
+func (s *Server) materializeCatalog(c *echo.Context) error {
+	if !s.mcpRuntimeCapabilities.MaterializationEnabled {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "catalog materialization capability is disabled",
+		})
+	}
+
+	request, err := decodeCatalogMaterializationRequest(c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	result, err := s.executeCatalogMaterialization(c.Request().Context(), request)
+	if err != nil {
+		return encodeCatalogMaterializationServiceError(c, err)
+	}
+
+	return c.JSON(http.StatusOK, buildCatalogMaterializeResponse(result))
+}
+
+// exportSkill exports a skill as a compressed archive.
+//
+// This route is retained for backward compatibility and now delegates to the
+// shared catalog export service introduced in WP-001.
 func (s *Server) exportSkill(c *echo.Context) error {
-	// Get skill name from wildcard path (handles names with slashes like "repoName/skillName")
-	// The route is /skills/export/*, so * captures the skill name
-	name := c.Param("*")
-	// Remove leading slash if present
-	name = strings.TrimPrefix(name, "/")
-	// URL decode the name (Echo should do this automatically, but be explicit)
-	if decoded, err := url.PathUnescape(name); err == nil {
-		name = decoded
-	}
-
-	// Check if skill exists
-	skill, err := s.skillManager.ReadSkill(name)
+	name, err := decodeLegacySkillExportName(c.Param("*"))
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"error": "skill not found",
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
 		})
 	}
 
-	// Get the skills directory from the manager
-	fsManager, ok := s.skillManager.(*domain.FileSystemManager)
-	if !ok {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "unsupported manager type",
-		})
-	}
-
-	// Create archive
-	archiveData, err := domain.ExportSkill(skill.ID, fsManager.GetSkillsDir())
+	result, err := s.executeCatalogExport(c.Request().Context(), domain.CatalogExportRequest{
+		ItemIDs: []string{domain.BuildSkillCatalogItemID(name)},
+	})
 	if err != nil {
+		return encodeCatalogExportServiceError(c, err)
+	}
+
+	if len(result.ArchiveData) == 0 {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": fmt.Sprintf("failed to create archive: %v", err),
+			"error": "catalog export completed without archive data",
 		})
 	}
 
-	// Set headers for file download
-	c.Response().Header().Set("Content-Type", "application/gzip")
-	c.Response().Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.tar.gz\"", name))
-	c.Response().Header().Set("Content-Length", fmt.Sprintf("%d", len(archiveData)))
+	contentType := strings.TrimSpace(result.ContentType)
+	if contentType == "" {
+		contentType = "application/gzip"
+	}
 
-	return c.Blob(http.StatusOK, "application/gzip", archiveData)
+	// Keep the legacy filename semantics for callers that depend on this header.
+	fileName := name + ".tar.gz"
+	c.Response().Header().Set("Content-Type", contentType)
+	c.Response().Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
+	c.Response().Header().Set("Content-Length", strconv.Itoa(len(result.ArchiveData)))
+
+	return c.Blob(http.StatusOK, contentType, result.ArchiveData)
 }
 
 // importSkill imports a skill from a compressed archive
@@ -2454,13 +2961,17 @@ type UpdateGitRepoRequest struct {
 
 // RuntimeCapabilitiesResponse represents runtime capability gates exposed to API/UI clients.
 type RuntimeCapabilitiesResponse struct {
-	Git GitRuntimeCapabilities `json:"git"`
+	Git     GitRuntimeCapabilities     `json:"git"`
+	Catalog CatalogRuntimeCapabilities `json:"catalog"`
+	MCP     MCPRuntimeCapabilities     `json:"mcp"`
 }
 
 // getRuntimeCapabilities returns runtime capability state needed by the repo API/UI.
 func (s *Server) getRuntimeCapabilities(c *echo.Context) error {
 	return c.JSON(http.StatusOK, RuntimeCapabilitiesResponse{
-		Git: s.gitRuntimeCapabilities,
+		Git:     s.gitRuntimeCapabilities,
+		Catalog: s.catalogRuntimeCapabilities,
+		MCP:     s.mcpRuntimeCapabilities,
 	})
 }
 

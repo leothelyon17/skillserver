@@ -12,14 +12,18 @@ type CatalogClassifier string
 const (
 	CatalogClassifierSkill  CatalogClassifier = "skill"
 	CatalogClassifierPrompt CatalogClassifier = "prompt"
+	CatalogClassifierRule   CatalogClassifier = "rule"
 )
 
 const (
 	skillCatalogIDPrefix  = "skill:"
 	promptCatalogIDPrefix = "prompt:"
+	ruleCatalogIDPrefix   = "rule:"
 )
 
 var defaultPromptDirectoryAllowlist = []string{"agent", "agents", "prompt", "prompts"}
+var defaultRuleDirectoryAllowlist = []string{"rule", "rules"}
+var defaultRuleFilenameAllowlist = []string{"agents.md", "rules.md", "claude.md", "gemini.md"}
 
 // CatalogItem represents a first-class searchable catalog object.
 type CatalogItem struct {
@@ -71,7 +75,7 @@ func normalizeCatalogItemMutability(item CatalogItem) (contentWritable bool, met
 // IsValid reports whether the classifier is supported.
 func (c CatalogClassifier) IsValid() bool {
 	switch c {
-	case CatalogClassifierSkill, CatalogClassifierPrompt:
+	case CatalogClassifierSkill, CatalogClassifierPrompt, CatalogClassifierRule:
 		return true
 	default:
 		return false
@@ -94,22 +98,44 @@ func DefaultPromptDirectoryAllowlist() []string {
 	return copied
 }
 
+// DefaultRuleDirectoryAllowlist returns a defensive copy of default rule directory names.
+func DefaultRuleDirectoryAllowlist() []string {
+	copied := make([]string, len(defaultRuleDirectoryAllowlist))
+	copy(copied, defaultRuleDirectoryAllowlist)
+	return copied
+}
+
+// DefaultRuleFilenameAllowlist returns a defensive copy of default project-rule filenames.
+func DefaultRuleFilenameAllowlist() []string {
+	copied := make([]string, len(defaultRuleFilenameAllowlist))
+	copy(copied, defaultRuleFilenameAllowlist)
+	return copied
+}
+
 // NormalizePromptDirectoryAllowlist normalizes and de-duplicates prompt directory names.
 func NormalizePromptDirectoryAllowlist(promptDirs []string) []string {
-	normalized := make([]string, 0, len(promptDirs))
-	seen := make(map[string]struct{}, len(promptDirs))
+	return normalizeCatalogDirectoryAllowlist(promptDirs)
+}
 
-	for _, entry := range promptDirs {
+// NormalizeRuleDirectoryAllowlist normalizes and de-duplicates rule directory names.
+func NormalizeRuleDirectoryAllowlist(ruleDirs []string) []string {
+	return normalizeCatalogDirectoryAllowlist(ruleDirs)
+}
+
+// NormalizeRuleFilenameAllowlist normalizes and de-duplicates rule filenames.
+func NormalizeRuleFilenameAllowlist(filenames []string) []string {
+	normalized := make([]string, 0, len(filenames))
+	seen := make(map[string]struct{}, len(filenames))
+
+	for _, entry := range filenames {
 		value := strings.ToLower(strings.TrimSpace(entry))
 		if value == "" {
 			continue
 		}
 
+		value = strings.ReplaceAll(value, "\\", "/")
 		value = strings.Trim(value, "/")
-		if value == "" {
-			continue
-		}
-		if strings.Contains(value, "/") {
+		if value == "" || strings.Contains(value, "/") {
 			continue
 		}
 
@@ -125,6 +151,16 @@ func NormalizePromptDirectoryAllowlist(promptDirs []string) []string {
 
 // ClassifyCatalogPath classifies a path into a catalog item type when it can be inferred.
 func ClassifyCatalogPath(resourcePath string, promptDirAllowlist []string) (CatalogClassifier, bool) {
+	return ClassifyCatalogPathWithAllowlists(resourcePath, promptDirAllowlist, nil, nil)
+}
+
+// ClassifyCatalogPathWithAllowlists classifies a path using prompt and rule allowlist controls.
+func ClassifyCatalogPathWithAllowlists(
+	resourcePath string,
+	promptDirAllowlist []string,
+	ruleDirAllowlist []string,
+	ruleFilenameAllowlist []string,
+) (CatalogClassifier, bool) {
 	normalizedPath := normalizeCatalogPath(resourcePath)
 	if normalizedPath == "" {
 		return "", false
@@ -136,6 +172,10 @@ func ClassifyCatalogPath(resourcePath string, promptDirAllowlist []string) (Cata
 
 	if IsPromptCatalogCandidate(normalizedPath, promptDirAllowlist) {
 		return CatalogClassifierPrompt, true
+	}
+
+	if IsRuleCatalogCandidate(normalizedPath, ruleDirAllowlist, ruleFilenameAllowlist) {
+		return CatalogClassifierRule, true
 	}
 
 	return "", false
@@ -161,19 +201,38 @@ func IsPromptCatalogCandidate(resourcePath string, promptDirAllowlist []string) 
 		allowlist = DefaultPromptDirectoryAllowlist()
 	}
 
-	allowed := make(map[string]struct{}, len(allowlist))
-	for _, entry := range allowlist {
-		allowed[entry] = struct{}{}
+	return isCatalogPathInAllowedDirectory(normalizedPath, allowlist)
+}
+
+// IsRuleCatalogCandidate reports whether a resource path should be classified as a rule catalog item.
+func IsRuleCatalogCandidate(resourcePath string, ruleDirAllowlist []string, ruleFilenameAllowlist []string) bool {
+	normalizedPath := normalizeCatalogPath(resourcePath)
+	if normalizedPath == "" {
+		return false
 	}
 
-	segments := strings.Split(strings.ToLower(normalizedPath), "/")
-	for _, segment := range segments[:len(segments)-1] {
-		if _, ok := allowed[segment]; ok {
-			return true
-		}
+	if isSkillDefinitionPath(normalizedPath) {
+		return false
 	}
 
-	return false
+	if !isMarkdownPath(normalizedPath) {
+		return false
+	}
+
+	filenameAllowlist := NormalizeRuleFilenameAllowlist(ruleFilenameAllowlist)
+	if len(filenameAllowlist) == 0 {
+		filenameAllowlist = DefaultRuleFilenameAllowlist()
+	}
+	if isRuleAllowlistedFilename(normalizedPath, filenameAllowlist) {
+		return true
+	}
+
+	dirAllowlist := NormalizeRuleDirectoryAllowlist(ruleDirAllowlist)
+	if len(dirAllowlist) == 0 {
+		dirAllowlist = DefaultRuleDirectoryAllowlist()
+	}
+
+	return isCatalogPathInAllowedDirectory(normalizedPath, dirAllowlist)
 }
 
 // CanonicalSkillCatalogKey normalizes skill IDs for deterministic catalog key generation.
@@ -209,6 +268,94 @@ func BuildSkillCatalogItemID(skillID string) string {
 // BuildPromptCatalogItemID returns a deterministic ID for prompt catalog items.
 func BuildPromptCatalogItemID(skillID, resourcePath string) string {
 	return promptCatalogIDPrefix + CanonicalPromptCatalogKey(skillID, resourcePath)
+}
+
+// CanonicalRuleCatalogResourcePath normalizes rule resource paths for deterministic keys/IDs.
+func CanonicalRuleCatalogResourcePath(resourcePath string) string {
+	return normalizeCatalogPath(resourcePath)
+}
+
+// CanonicalRuleCatalogKey returns a deterministic rule dedupe key.
+func CanonicalRuleCatalogKey(skillID, resourcePath string) string {
+	skillKey := CanonicalSkillCatalogKey(skillID)
+	resourceKey := CanonicalRuleCatalogResourcePath(resourcePath)
+
+	if skillKey == "" {
+		return resourceKey
+	}
+	if resourceKey == "" {
+		return skillKey
+	}
+
+	return skillKey + ":" + resourceKey
+}
+
+// BuildRuleCatalogItemID returns a deterministic ID for rule catalog items.
+func BuildRuleCatalogItemID(skillID, resourcePath string) string {
+	return ruleCatalogIDPrefix + CanonicalRuleCatalogKey(skillID, resourcePath)
+}
+
+func normalizeCatalogDirectoryAllowlist(entries []string) []string {
+	normalized := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+
+	for _, entry := range entries {
+		value := strings.ToLower(strings.TrimSpace(entry))
+		if value == "" {
+			continue
+		}
+
+		value = strings.Trim(value, "/")
+		if value == "" {
+			continue
+		}
+		if strings.Contains(value, "/") {
+			continue
+		}
+
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+
+	return normalized
+}
+
+func isCatalogPathInAllowedDirectory(resourcePath string, allowlist []string) bool {
+	if len(allowlist) == 0 {
+		return false
+	}
+
+	allowed := make(map[string]struct{}, len(allowlist))
+	for _, entry := range allowlist {
+		allowed[entry] = struct{}{}
+	}
+
+	segments := strings.Split(strings.ToLower(resourcePath), "/")
+	for _, segment := range segments[:len(segments)-1] {
+		if _, ok := allowed[segment]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isRuleAllowlistedFilename(resourcePath string, filenameAllowlist []string) bool {
+	if len(filenameAllowlist) == 0 {
+		return false
+	}
+
+	allowed := make(map[string]struct{}, len(filenameAllowlist))
+	for _, entry := range filenameAllowlist {
+		allowed[entry] = struct{}{}
+	}
+
+	filename := strings.ToLower(path.Base(resourcePath))
+	_, ok := allowed[filename]
+	return ok
 }
 
 func isSkillDefinitionPath(resourcePath string) bool {

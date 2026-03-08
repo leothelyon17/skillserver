@@ -24,12 +24,13 @@ type CatalogClassifier string
 const (
 	CatalogClassifierSkill  CatalogClassifier = "skill"
 	CatalogClassifierPrompt CatalogClassifier = "prompt"
+	CatalogClassifierRule   CatalogClassifier = "rule"
 )
 
 // IsValid reports whether the classifier value is supported by the schema.
 func (c CatalogClassifier) IsValid() bool {
 	switch c {
-	case CatalogClassifierSkill, CatalogClassifierPrompt:
+	case CatalogClassifierSkill, CatalogClassifierPrompt, CatalogClassifierRule:
 		return true
 	default:
 		return false

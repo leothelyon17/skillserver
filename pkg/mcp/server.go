@@ -10,7 +10,9 @@ import (
 
 // ServerOptions configures MCP server behavior.
 type ServerOptions struct {
-	EnableTaxonomyWriteTools bool
+	EnableTaxonomyWriteTools               bool
+	EnableMaterializationTools             bool
+	AllowedMaterializationDestinationRoots []string
 }
 
 // CatalogMetadataReader exposes effective catalog item listing for MCP read tools.
@@ -71,15 +73,17 @@ type CatalogTaxonomyRegistryWriter interface {
 
 // Server wraps the MCP server and provides access to the skill manager
 type Server struct {
-	mcpServer                *mcp.Server
-	skillManager             domain.SkillManager
-	catalogMetadata          CatalogMetadataReader
-	taxonomyAssign           CatalogTaxonomyAssignmentReader
-	taxonomyAssignWrite      CatalogTaxonomyAssignmentWriter
-	taxonomyRegistry         CatalogTaxonomyRegistryReader
-	taxonomyRegistryWrite    CatalogTaxonomyRegistryWriter
-	enableTaxonomyWriteTools bool
-	runWithTransport         func(context.Context, mcp.Transport) error
+	mcpServer                              *mcp.Server
+	skillManager                           domain.SkillManager
+	catalogMetadata                        CatalogMetadataReader
+	taxonomyAssign                         CatalogTaxonomyAssignmentReader
+	taxonomyAssignWrite                    CatalogTaxonomyAssignmentWriter
+	taxonomyRegistry                       CatalogTaxonomyRegistryReader
+	taxonomyRegistryWrite                  CatalogTaxonomyRegistryWriter
+	enableTaxonomyWriteTools               bool
+	enableMaterializationTools             bool
+	allowedMaterializationDestinationRoots []string
+	runWithTransport                       func(context.Context, mcp.Transport) error
 }
 
 // NewServer creates a new MCP server for skills
@@ -96,12 +100,20 @@ func NewServer(skillManager domain.SkillManager, options ...ServerOptions) *Serv
 
 	mcpServer := mcp.NewServer(impl, nil)
 	server := &Server{
-		mcpServer:                mcpServer,
-		skillManager:             skillManager,
-		enableTaxonomyWriteTools: opts.EnableTaxonomyWriteTools,
+		mcpServer:                  mcpServer,
+		skillManager:               skillManager,
+		enableTaxonomyWriteTools:   opts.EnableTaxonomyWriteTools,
+		enableMaterializationTools: opts.EnableMaterializationTools,
+		allowedMaterializationDestinationRoots: append(
+			[]string(nil),
+			opts.AllowedMaterializationDestinationRoots...,
+		),
 	}
 
 	registerReadTools(mcpServer, server)
+	if server.enableMaterializationTools {
+		registerMaterializationWriteTools(mcpServer, server)
+	}
 	if server.enableTaxonomyWriteTools {
 		registerTaxonomyWriteTools(mcpServer, server)
 	}
@@ -146,7 +158,7 @@ func registerReadTools(mcpServer *mcp.Server, server *Server) {
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "list_catalog",
-		Description: "List unified catalog items (skills and prompts) with optional classifier and taxonomy filters",
+		Description: "List unified catalog items (skills, prompts, and rules) with optional classifier and taxonomy filters",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input ListCatalogInput) (
 		*mcp.CallToolResult,
 		ListCatalogOutput,
@@ -157,13 +169,24 @@ func registerReadTools(mcpServer *mcp.Server, server *Server) {
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "search_catalog",
-		Description: "Search unified catalog items by query with optional classifier and taxonomy filters",
+		Description: "Search unified catalog items (skills, prompts, and rules) by query with optional classifier and taxonomy filters",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input SearchCatalogInput) (
 		*mcp.CallToolResult,
 		SearchCatalogOutput,
 		error,
 	) {
 		return searchCatalog(ctx, req, input, server.skillManager, server.catalogMetadata)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "export_catalog_items",
+		Description: "Export catalog items into a tar.gz archive with optional dry-run planning output",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input ExportCatalogItemsInput) (
+		*mcp.CallToolResult,
+		ExportCatalogItemsOutput,
+		error,
+	) {
+		return exportCatalogItems(ctx, req, input, server.skillManager)
 	})
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
@@ -241,6 +264,26 @@ func registerReadTools(mcpServer *mcp.Server, server *Server) {
 		error,
 	) {
 		return getSkillResourceInfo(ctx, req, input, server.skillManager)
+	})
+}
+
+func registerMaterializationWriteTools(mcpServer *mcp.Server, server *Server) {
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name: "materialize_catalog_items",
+		Description: "Materialize catalog items into an allowed destination directory. " +
+			"Supports dry-run planning and write execution when capability-gated",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input MaterializeCatalogItemsInput) (
+		*mcp.CallToolResult,
+		MaterializeCatalogItemsOutput,
+		error,
+	) {
+		return materializeCatalogItems(
+			ctx,
+			req,
+			input,
+			server.skillManager,
+			server.allowedMaterializationDestinationRoots,
+		)
 	})
 }
 
@@ -384,6 +427,16 @@ func (s *Server) SetCatalogTaxonomyRegistryService(service CatalogTaxonomyRegist
 		return
 	}
 	s.taxonomyRegistryWrite = nil
+}
+
+// MaterializationToolsEnabled reports whether runtime config enabled write-capable materialization tools.
+func (s *Server) MaterializationToolsEnabled() bool {
+	return s.enableMaterializationTools
+}
+
+// AllowedMaterializationDestinationRoots returns the configured destination-root allowlist for materialization.
+func (s *Server) AllowedMaterializationDestinationRoots() []string {
+	return append([]string(nil), s.allowedMaterializationDestinationRoots...)
 }
 
 // RunWithTransport starts the MCP server with the given transport (e.g. in-memory for in-process embedding).

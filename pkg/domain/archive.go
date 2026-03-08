@@ -11,9 +11,20 @@ import (
 	"strings"
 )
 
-// ExportSkill creates a tar.gz archive containing the skill directory
-// Returns the archive data as bytes
+// ExportSkill creates a tar.gz archive containing the skill directory.
+//
+// Deprecated: Prefer CatalogExportService for new export flows. This function
+// is retained as a compatibility wrapper for legacy callers.
 func ExportSkill(skillID string, skillsDir string) ([]byte, error) {
+	skillPath, err := resolveSkillPathForArchive(skillID, skillsDir)
+	if err != nil {
+		return nil, err
+	}
+
+	return buildSkillArchive(skillPath)
+}
+
+func resolveSkillPathForArchive(skillID string, skillsDir string) (string, error) {
 	// Get the skill path
 	var skillPath string
 	if strings.Contains(skillID, "/") {
@@ -23,25 +34,29 @@ func ExportSkill(skillID string, skillsDir string) ([]byte, error) {
 			repoName := parts[0]
 			skillDirName := parts[1]
 			repoPath := filepath.Join(skillsDir, repoName)
-			
+
 			// Find skill directory within repo
 			var err error
 			skillPath, err = findSkillDirByName(repoPath, skillDirName)
 			if err != nil {
-				return nil, fmt.Errorf("skill not found: %s", skillID)
+				return "", fmt.Errorf("skill not found: %s", skillID)
 			}
 		} else {
-			return nil, fmt.Errorf("invalid skill ID format: %s", skillID)
+			return "", fmt.Errorf("invalid skill ID format: %s", skillID)
 		}
 	} else {
 		// Local skill
 		skillPath = filepath.Join(skillsDir, skillID)
 		skillMdPath := filepath.Join(skillPath, "SKILL.md")
 		if _, err := os.Stat(skillMdPath); err != nil {
-			return nil, fmt.Errorf("skill not found: %s", skillID)
+			return "", fmt.Errorf("skill not found: %s", skillID)
 		}
 	}
 
+	return skillPath, nil
+}
+
+func buildSkillArchive(skillPath string) ([]byte, error) {
 	// Get skill name (directory name)
 	skillName := filepath.Base(skillPath)
 

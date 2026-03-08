@@ -279,9 +279,9 @@ func mapCatalogItemToSourceRow(item CatalogItem, syncedAt time.Time) (persistenc
 	resourcePath := normalizeCatalogOptionalPath(item.ResourcePath)
 
 	var parentSkillID *string
-	if classifier == persistence.CatalogClassifierPrompt {
+	if classifier == persistence.CatalogClassifierPrompt || classifier == persistence.CatalogClassifierRule {
 		if skillID == "" {
-			return persistence.CatalogSourceRow{}, fmt.Errorf("prompt catalog item parent skill id is required")
+			return persistence.CatalogSourceRow{}, fmt.Errorf("%s catalog item parent skill id is required", classifier)
 		}
 		parentSkillID = stringPointer(skillID)
 	}
@@ -318,6 +318,8 @@ func mapCatalogClassifier(
 		return persistence.CatalogClassifierSkill, nil
 	case CatalogClassifierPrompt:
 		return persistence.CatalogClassifierPrompt, nil
+	case CatalogClassifierRule:
+		return persistence.CatalogClassifierRule, nil
 	}
 
 	trimmedID := strings.TrimSpace(itemID)
@@ -326,6 +328,8 @@ func mapCatalogClassifier(
 		return persistence.CatalogClassifierSkill, nil
 	case strings.HasPrefix(trimmedID, promptCatalogIDPrefix):
 		return persistence.CatalogClassifierPrompt, nil
+	case strings.HasPrefix(trimmedID, ruleCatalogIDPrefix):
+		return persistence.CatalogClassifierRule, nil
 	default:
 		return "", fmt.Errorf("catalog classifier %q is invalid", classifier)
 	}
@@ -347,6 +351,14 @@ func resolveCatalogSkillID(item CatalogItem) string {
 
 	if strings.HasPrefix(itemID, promptCatalogIDPrefix) {
 		payload := strings.TrimPrefix(itemID, promptCatalogIDPrefix)
+		parts := strings.SplitN(payload, ":", 2)
+		if len(parts) == 2 {
+			return parts[0]
+		}
+	}
+
+	if strings.HasPrefix(itemID, ruleCatalogIDPrefix) {
+		payload := strings.TrimPrefix(itemID, ruleCatalogIDPrefix)
 		parts := strings.SplitN(payload, ":", 2)
 		if len(parts) == 2 {
 			return parts[0]

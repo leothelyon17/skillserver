@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 )
 
 type runtimeWebServer interface {
@@ -58,12 +59,14 @@ func runRuntime(ctx context.Context, deps runtimeDependencies) error {
 
 	if deps.enableLogging {
 		logger.Printf(
-			"Resolved MCP runtime options: transport=%s http_path=%s session_timeout=%s stateless=%t writes_enabled=%t event_store_enabled=%t event_store_max_bytes=%d",
+			"Resolved MCP runtime options: transport=%s http_path=%s session_timeout=%s stateless=%t writes_enabled=%t materialization_enabled=%t allowed_destination_roots=%s event_store_enabled=%t event_store_max_bytes=%d",
 			deps.mcpConfig.Transport,
 			deps.mcpConfig.HTTPPath,
 			deps.mcpConfig.SessionTimeout,
 			deps.mcpConfig.Stateless,
 			deps.mcpConfig.EnableWrites,
+			deps.mcpConfig.EnableMaterialization,
+			strings.Join(deps.mcpConfig.AllowedDestinationRoots, ","),
 			deps.mcpConfig.EnableEventStore,
 			deps.mcpConfig.EventStoreMaxBytes,
 		)
