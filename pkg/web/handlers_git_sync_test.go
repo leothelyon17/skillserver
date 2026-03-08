@@ -4,6 +4,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -98,6 +101,43 @@ func TestSyncGitRepo_WithoutManualHook_RebuildsIndexForCompatibility(t *testing.
 	}
 	if skillManager.rebuildIndexCallCount() != 1 {
 		t.Fatalf("expected legacy rebuild fallback to run once, got %d", skillManager.rebuildIndexCallCount())
+	}
+}
+
+func TestAddGitRepo_UpdatesFileSystemManagerBeforeSyncerAddRepo(t *testing.T) {
+	t.Parallel()
+
+	skillsDir := t.TempDir()
+	fsManager, err := domain.NewFileSystemManager(skillsDir, []string{})
+	if err != nil {
+		t.Fatalf("failed to initialize file system manager: %v", err)
+	}
+
+	configManager := git.NewConfigManager(skillsDir)
+	skillManager := &fakeGitSyncSkillManager{}
+	syncer := &observingAddRepoSyncer{
+		fakeGitSyncer: fakeGitSyncer{
+			skillsDir: skillsDir,
+		},
+		fsManager: fsManager,
+	}
+
+	server := NewServer(skillManager, fsManager, nil, syncer, configManager, false, nil, "")
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/git-repos",
+		strings.NewReader(`{"url":"https://example.com/acme/repo-observe.git"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+	if !syncer.observedRepoSkillDuringAddRepo {
+		t.Fatalf("expected fsManager git repo list to be updated before syncer AddRepo execution")
 	}
 }
 
@@ -291,4 +331,37 @@ func (s *fakeGitSyncer) syncedRepoIDs() []string {
 	result := make([]string, len(s.synced))
 	copy(result, s.synced)
 	return result
+}
+
+type observingAddRepoSyncer struct {
+	fakeGitSyncer
+	fsManager                      *domain.FileSystemManager
+	observedRepoSkillDuringAddRepo bool
+}
+
+func (s *observingAddRepoSyncer) AddRepo(repo git.GitRepoConfig) error {
+	repoName := git.ResolveRepoCheckoutName(repo)
+	skillDir := filepath.Join(s.skillsDir, repoName, "observed-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		return err
+	}
+
+	skillContent := "---\nname: observed-skill\ndescription: ordering-check\n---\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0644); err != nil {
+		return err
+	}
+
+	skills, err := s.fsManager.ListSkills()
+	if err != nil {
+		return err
+	}
+	expectedSkillID := repoName + "/observed-skill"
+	for _, skill := range skills {
+		if skill.ID == expectedSkillID {
+			s.observedRepoSkillDuringAddRepo = true
+			break
+		}
+	}
+
+	return s.fakeGitSyncer.AddRepo(repo)
 }
