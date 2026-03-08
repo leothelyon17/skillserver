@@ -839,7 +839,7 @@ func (s *Server) getCatalogMetadata(c *echo.Context) error {
 		})
 	}
 
-	itemID, err := decodeCatalogItemIDFromPath(c.Param("id"))
+	itemID, err := decodeCatalogItemIDFromRequest(c)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": err.Error(),
@@ -871,7 +871,7 @@ func (s *Server) patchCatalogMetadata(c *echo.Context) error {
 		})
 	}
 
-	itemID, err := decodeCatalogItemIDFromPath(c.Param("id"))
+	itemID, err := decodeCatalogItemIDFromRequest(c)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": err.Error(),
@@ -917,7 +917,7 @@ func (s *Server) getCatalogItemTaxonomy(c *echo.Context) error {
 		})
 	}
 
-	itemID, err := decodeCatalogItemIDFromPath(c.Param("id"))
+	itemID, err := decodeCatalogItemIDFromRequest(c)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": err.Error(),
@@ -940,7 +940,7 @@ func (s *Server) patchCatalogItemTaxonomy(c *echo.Context) error {
 		})
 	}
 
-	itemID, err := decodeCatalogItemIDFromPath(c.Param("id"))
+	itemID, err := decodeCatalogItemIDFromRequest(c)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": err.Error(),
@@ -1356,6 +1356,37 @@ func decodeCatalogItemIDFromPath(raw string) (string, error) {
 	}
 
 	return itemID, nil
+}
+
+func decodeCatalogItemIDFromQuery(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fmt.Errorf("catalog item id is required")
+	}
+
+	decoded, err := url.QueryUnescape(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("catalog item id query is invalid")
+	}
+
+	itemID := strings.TrimSpace(decoded)
+	if itemID == "" {
+		return "", fmt.Errorf("catalog item id is required")
+	}
+
+	return itemID, nil
+}
+
+func decodeCatalogItemIDFromRequest(c *echo.Context) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("catalog item id is required")
+	}
+
+	if rawQuery := strings.TrimSpace(c.QueryParam("item_id")); rawQuery != "" {
+		return decodeCatalogItemIDFromQuery(rawQuery)
+	}
+
+	return decodeCatalogItemIDFromPath(c.Param("id"))
 }
 
 func decodeCatalogTaxonomyObjectIDFromPath(raw string, field string) (string, error) {

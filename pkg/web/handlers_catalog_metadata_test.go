@@ -111,6 +111,105 @@ func TestCatalogMetadataEndpoints_PatchAndGet_SupportsLocalAndGitItems(t *testin
 	}
 }
 
+func TestCatalogMetadataEndpoints_PromptIDsWithImportedPathsRemainMetadataWritable(t *testing.T) {
+	t.Parallel()
+
+	server, sourceRepo := newCatalogMetadataFixtureServer(t)
+	promptItemID := domain.BuildPromptCatalogItemID(
+		"repo-a/git-skill",
+		"imports/plugins/python-development/agents/python-pro.md",
+	)
+
+	repoName := "repo-a"
+	if err := sourceRepo.Upsert(context.Background(), persistence.CatalogSourceRow{
+		ItemID:           promptItemID,
+		Classifier:       persistence.CatalogClassifierPrompt,
+		SourceType:       persistence.CatalogSourceTypeGit,
+		SourceRepo:       &repoName,
+		ParentSkillID:    catalogMetadataStringPtr(domain.CanonicalSkillCatalogKey("repo-a/git-skill")),
+		ResourcePath:     catalogMetadataStringPtr("imports/plugins/python-development/agents/python-pro.md"),
+		Name:             "python-pro",
+		Description:      "fixture git prompt",
+		Content:          "prompt content",
+		ContentHash:      "sha256:prompt",
+		ContentWritable:  false,
+		MetadataWritable: true,
+		LastSyncedAt:     time.Date(2026, time.March, 5, 1, 30, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("expected prompt source upsert to succeed, got %v", err)
+	}
+
+	target := "/api/catalog/" + url.PathEscape(promptItemID) + "/metadata"
+
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload := decodeJSONObject(t, rec.Body.Bytes())
+	effective, ok := payload["effective"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected effective metadata object, got %T", payload["effective"])
+	}
+	if contentWritable, ok := effective["content_writable"].(bool); !ok || contentWritable {
+		t.Fatalf("expected prompt effective content_writable=false, got %v", effective["content_writable"])
+	}
+	if metadataWritable, ok := effective["metadata_writable"].(bool); !ok || !metadataWritable {
+		t.Fatalf("expected prompt effective metadata_writable=true, got %v", effective["metadata_writable"])
+	}
+
+	patchRequest := `{"display_name":"Python Pro Overlay","labels":["prompt-overlay"]}`
+	req = httptest.NewRequest(http.MethodPatch, target, strings.NewReader(patchRequest))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	patchPayload := decodeJSONObject(t, rec.Body.Bytes())
+	patchEffective, ok := patchPayload["effective"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected patch effective metadata object, got %T", patchPayload["effective"])
+	}
+	if metadataWritable, ok := patchEffective["metadata_writable"].(bool); !ok || !metadataWritable {
+		t.Fatalf(
+			"expected patch effective metadata_writable=true, got %v",
+			patchEffective["metadata_writable"],
+		)
+	}
+
+	queryTarget := "/api/catalog/metadata?item_id=" + url.QueryEscape(promptItemID)
+	req = httptest.NewRequest(http.MethodGet, queryTarget, nil)
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf(
+			"expected query metadata status %d, got %d body=%q",
+			http.StatusOK,
+			rec.Code,
+			rec.Body.String(),
+		)
+	}
+
+	queryPayload := decodeJSONObject(t, rec.Body.Bytes())
+	queryEffective, ok := queryPayload["effective"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected query effective metadata object, got %T", queryPayload["effective"])
+	}
+	if metadataWritable, ok := queryEffective["metadata_writable"].(bool); !ok || !metadataWritable {
+		t.Fatalf(
+			"expected query effective metadata_writable=true, got %v",
+			queryEffective["metadata_writable"],
+		)
+	}
+}
+
 func TestCatalogMetadataEndpoints_ListAndSearch_UseEffectiveOverlayProjection(t *testing.T) {
 	t.Parallel()
 
@@ -420,4 +519,8 @@ func findCatalogItemByID(t *testing.T, items []map[string]any, itemID string) ma
 
 	t.Fatalf("expected catalog item id %q, got %+v", itemID, items)
 	return nil
+}
+
+func catalogMetadataStringPtr(value string) *string {
+	return &value
 }
