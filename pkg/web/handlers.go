@@ -19,6 +19,7 @@ import (
 
 	"github.com/mudler/skillserver/pkg/domain"
 	"github.com/mudler/skillserver/pkg/git"
+	"github.com/mudler/skillserver/pkg/persistence"
 )
 
 // SkillResponse represents a skill in API responses
@@ -2399,17 +2400,68 @@ type GitRepoResponse struct {
 	URL     string `json:"url"`
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
+	// AuthMode exposes the configured repo authentication mode without secret material.
+	AuthMode string `json:"auth_mode"`
+	// CredentialSource exposes where credentials resolve from without secret material.
+	CredentialSource string `json:"credential_source"`
+	// HasCredentials indicates whether the configured auth mode has complete non-secret refs or stored secret material.
+	HasCredentials bool `json:"has_credentials"`
+	// StoredCredentialsEnabled indicates whether stored-secret git workflows are allowed at runtime.
+	StoredCredentialsEnabled bool `json:"stored_credentials_enabled"`
+	// LastSyncStatus reflects redacted sync status state from the syncer.
+	LastSyncStatus string `json:"last_sync_status"`
+	// LastSyncError reflects a redacted sync error, if present.
+	LastSyncError string `json:"last_sync_error,omitempty"`
+}
+
+// GitRepoAuthRequest represents non-secret auth descriptor metadata for add/update requests.
+type GitRepoAuthRequest struct {
+	Mode          string `json:"mode,omitempty"`
+	Source        string `json:"source,omitempty"`
+	ReferenceID   string `json:"reference_id,omitempty"`
+	UsernameRef   string `json:"username_ref,omitempty"`
+	PasswordRef   string `json:"password_ref,omitempty"`
+	TokenRef      string `json:"token_ref,omitempty"`
+	KeyRef        string `json:"key_ref,omitempty"`
+	KnownHostsRef string `json:"known_hosts_ref,omitempty"`
+}
+
+// GitRepoStoredCredentialWriteRequest contains write-only secret fields accepted only when auth.source=stored.
+type GitRepoStoredCredentialWriteRequest struct {
+	Username   string `json:"username,omitempty"`
+	Password   string `json:"password,omitempty"`
+	Token      string `json:"token,omitempty"`
+	PrivateKey string `json:"private_key,omitempty"`
+	Passphrase string `json:"passphrase,omitempty"`
+	KnownHosts string `json:"known_hosts,omitempty"`
 }
 
 // AddGitRepoRequest represents a request to add a git repository
 type AddGitRepoRequest struct {
-	URL string `json:"url"`
+	URL              string                               `json:"url"`
+	Enabled          *bool                                `json:"enabled,omitempty"`
+	Auth             *GitRepoAuthRequest                  `json:"auth,omitempty"`
+	StoredCredential *GitRepoStoredCredentialWriteRequest `json:"stored_credential,omitempty"`
 }
 
 // UpdateGitRepoRequest represents a request to update a git repository
 type UpdateGitRepoRequest struct {
-	URL     string `json:"url"`
-	Enabled bool   `json:"enabled"`
+	URL              string                               `json:"url"`
+	Enabled          *bool                                `json:"enabled,omitempty"`
+	Auth             *GitRepoAuthRequest                  `json:"auth,omitempty"`
+	StoredCredential *GitRepoStoredCredentialWriteRequest `json:"stored_credential,omitempty"`
+}
+
+// RuntimeCapabilitiesResponse represents runtime capability gates exposed to API/UI clients.
+type RuntimeCapabilitiesResponse struct {
+	Git GitRuntimeCapabilities `json:"git"`
+}
+
+// getRuntimeCapabilities returns runtime capability state needed by the repo API/UI.
+func (s *Server) getRuntimeCapabilities(c *echo.Context) error {
+	return c.JSON(http.StatusOK, RuntimeCapabilitiesResponse{
+		Git: s.gitRuntimeCapabilities,
+	})
 }
 
 // listGitRepos lists all configured git repositories
@@ -2429,12 +2481,13 @@ func (s *Server) listGitRepos(c *echo.Context) error {
 	// Convert to response format
 	repos := make([]GitRepoResponse, len(configRepos))
 	for i, repo := range configRepos {
-		repos[i] = GitRepoResponse{
-			ID:      repo.ID,
-			URL:     repo.URL,
-			Name:    repo.Name,
-			Enabled: repo.Enabled,
+		response, responseErr := s.buildGitRepoResponse(repo)
+		if responseErr != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to build repo response: %v", responseErr),
+			})
 		}
+		repos[i] = response
 	}
 
 	return c.JSON(http.StatusOK, repos)
@@ -2445,6 +2498,11 @@ func (s *Server) addGitRepo(c *echo.Context) error {
 	if s.gitSyncer == nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "git syncer not available",
+		})
+	}
+	if s.configManager == nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "config manager not available",
 		})
 	}
 
@@ -2461,10 +2519,30 @@ func (s *Server) addGitRepo(c *echo.Context) error {
 		})
 	}
 
-	// Validate URL format (basic check)
-	if !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://") && !strings.HasPrefix(req.URL, "git@") {
+	authConfig := normalizeGitRepoAuthRequest(req.Auth)
+	hasStoredCredentialInput := hasStoredCredentialWriteInput(req.StoredCredential)
+	if err := validateGitRepoAuthRequest(
+		authConfig,
+		hasStoredCredentialInput,
+		s.gitRuntimeCapabilities.StoredCredentialsEnabled,
+	); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "invalid URL format",
+			"error": err.Error(),
+		})
+	}
+	storedCredentialPayload, hasStoredCredentialPayload, err := buildStoredCredentialPayload(
+		authConfig.Mode,
+		req.StoredCredential,
+	)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	canonicalRepoURL, err := git.CanonicalizeRepoURL(req.URL)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("invalid URL: %v", err),
 		})
 	}
 
@@ -2476,9 +2554,9 @@ func (s *Server) addGitRepo(c *echo.Context) error {
 		})
 	}
 
-	// Check if repo already exists
+	// Check if repo already exists (canonical URL match)
 	for _, repo := range configRepos {
-		if repo.URL == req.URL {
+		if repo.URL == canonicalRepoURL {
 			return c.JSON(http.StatusBadRequest, map[string]string{
 				"error": "repository already exists",
 			})
@@ -2487,10 +2565,20 @@ func (s *Server) addGitRepo(c *echo.Context) error {
 
 	// Add new repo to config (enabled by default)
 	newRepo := git.GitRepoConfig{
-		ID:      git.GenerateID(req.URL),
-		URL:     req.URL,
-		Name:    git.ExtractRepoName(req.URL),
+		ID:      git.GenerateID(canonicalRepoURL),
+		URL:     canonicalRepoURL,
+		Name:    git.ResolveCheckoutName(canonicalRepoURL),
 		Enabled: true,
+		Auth:    authConfig,
+	}
+	if req.Enabled != nil {
+		newRepo.Enabled = *req.Enabled
+	}
+	if repoAuthSourceForAPI(newRepo.Auth.Mode, newRepo.Auth.Source) == git.GitRepoAuthSourceStored &&
+		!hasStoredCredentialPayload {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "stored_credential payload is required when auth.source=\"stored\" for new repositories",
+		})
 	}
 	configRepos = append(configRepos, newRepo)
 
@@ -2501,33 +2589,43 @@ func (s *Server) addGitRepo(c *echo.Context) error {
 		})
 	}
 
+	var createdStoredCredential bool
+	if hasStoredCredentialPayload {
+		createdStoredCredential, err = s.upsertStoredCredential(newRepo, storedCredentialPayload)
+		if err != nil {
+			rollbackRepos := removeRepoByID(configRepos, newRepo.ID)
+			_ = s.configManager.SaveConfig(rollbackRepos)
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to persist stored credentials: %v", err),
+			})
+		}
+	}
+
 	// Add repo to syncer and update FileSystemManager
 	if s.gitSyncer != nil {
-		if err := s.gitSyncer.AddRepo(req.URL); err != nil {
+		if err := s.gitSyncer.AddRepo(newRepo); err != nil {
 			// Remove from config if sync failed
-			for i, repo := range configRepos {
-				if repo.URL == req.URL {
-					configRepos = append(configRepos[:i], configRepos[i+1:]...)
-					s.configManager.SaveConfig(configRepos)
-					break
-				}
+			rollbackRepos := removeRepoByID(configRepos, newRepo.ID)
+			_ = s.configManager.SaveConfig(rollbackRepos)
+			if createdStoredCredential {
+				_ = s.deleteStoredCredentialByReferenceID(resolveStoredCredentialReferenceID(newRepo.Auth, newRepo.ID))
 			}
 			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error": err.Error(),
+				"error": git.RedactGitAuthError(err),
 			})
 		}
 
 		// Update FileSystemManager's git repos list for read-only detection
 		if s.fsManager != nil {
-			enabledRepos := make([]string, 0)
+			enabledRepos := make([]git.GitRepoConfig, 0)
 			for _, repo := range configRepos {
 				if repo.Enabled {
-					enabledRepos = append(enabledRepos, repo.URL)
+					enabledRepos = append(enabledRepos, repo)
 				}
 			}
 			gitRepoNames := make([]string, len(enabledRepos))
-			for i, url := range enabledRepos {
-				gitRepoNames[i] = git.ExtractRepoName(url)
+			for i, repo := range enabledRepos {
+				gitRepoNames[i] = git.ResolveRepoCheckoutName(repo)
 			}
 			s.fsManager.UpdateGitRepos(gitRepoNames)
 		}
@@ -2540,11 +2638,11 @@ func (s *Server) addGitRepo(c *echo.Context) error {
 		}
 	}
 
-	response := GitRepoResponse{
-		ID:      git.GenerateID(req.URL),
-		URL:     req.URL,
-		Name:    git.ExtractRepoName(req.URL),
-		Enabled: true,
+	response, responseErr := s.buildGitRepoResponse(newRepo)
+	if responseErr != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to build repo response: %v", responseErr),
+		})
 	}
 
 	return c.JSON(http.StatusCreated, response)
@@ -2557,6 +2655,11 @@ func (s *Server) updateGitRepo(c *echo.Context) error {
 			"error": "git syncer not available",
 		})
 	}
+	if s.configManager == nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "config manager not available",
+		})
+	}
 
 	id := c.Param("id")
 
@@ -2567,67 +2670,6 @@ func (s *Server) updateGitRepo(c *echo.Context) error {
 		})
 	}
 
-	// Find repo by ID
-	repos := s.gitSyncer.GetRepos()
-	var foundURL string
-	for _, url := range repos {
-		if git.GenerateID(url) == id {
-			foundURL = url
-			break
-		}
-	}
-
-	if foundURL == "" {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"error": "repository not found",
-		})
-	}
-
-	// If URL changed, remove old and add new
-	if req.URL != "" && req.URL != foundURL {
-		if err := s.gitSyncer.RemoveRepo(foundURL); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
-		}
-		if err := s.gitSyncer.AddRepo(req.URL); err != nil {
-			// Try to restore old repo on error
-			s.gitSyncer.AddRepo(foundURL)
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error": err.Error(),
-			})
-		}
-		foundURL = req.URL
-	}
-
-	// Update FileSystemManager's git repos list for read-only detection
-	if s.fsManager != nil {
-		repos := s.gitSyncer.GetRepos()
-		gitRepoNames := make([]string, len(repos))
-		for i, url := range repos {
-			gitRepoNames[i] = git.ExtractRepoName(url)
-		}
-		s.fsManager.UpdateGitRepos(gitRepoNames)
-	}
-
-	// Save config
-	if s.configManager != nil {
-		repos := s.gitSyncer.GetRepos()
-		configs := make([]git.GitRepoConfig, len(repos))
-		for i, url := range repos {
-			configs[i] = git.GitRepoConfig{
-				ID:      git.GenerateID(url),
-				URL:     url,
-				Name:    git.ExtractRepoName(url),
-				Enabled: true,
-			}
-		}
-		if err := s.configManager.SaveConfig(configs); err != nil {
-			fmt.Printf("Warning: failed to save config: %v\n", err)
-		}
-	}
-
-	// Load current config
 	configRepos, err := s.configManager.LoadConfig()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -2635,47 +2677,152 @@ func (s *Server) updateGitRepo(c *echo.Context) error {
 		})
 	}
 
-	// Update enabled status for the repo
+	repoIndex := -1
 	for i := range configRepos {
 		if configRepos[i].ID == id {
-			configRepos[i].Enabled = req.Enabled
+			repoIndex = i
 			break
 		}
 	}
+	if repoIndex < 0 {
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": "repository not found",
+		})
+	}
 
-	// Save updated config
+	updatedRepo := configRepos[repoIndex]
+	updatedURL := updatedRepo.URL
+	if strings.TrimSpace(req.URL) != "" {
+		updatedURL, err = git.CanonicalizeRepoURL(req.URL)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("invalid URL: %v", err),
+			})
+		}
+	}
+	if req.Enabled != nil {
+		updatedRepo.Enabled = *req.Enabled
+	}
+	if req.Auth != nil {
+		updatedRepo.Auth = normalizeGitRepoAuthRequest(req.Auth)
+	}
+
+	hasStoredCredentialInput := hasStoredCredentialWriteInput(req.StoredCredential)
+	if err := validateGitRepoAuthRequest(
+		updatedRepo.Auth,
+		hasStoredCredentialInput,
+		s.gitRuntimeCapabilities.StoredCredentialsEnabled,
+	); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	storedCredentialPayload, hasStoredCredentialPayload, err := buildStoredCredentialPayload(
+		updatedRepo.Auth.Mode,
+		req.StoredCredential,
+	)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	// Duplicate detection uses canonical URL semantics, excluding the repo being updated.
+	for i, repo := range configRepos {
+		if i == repoIndex {
+			continue
+		}
+		if repo.URL == updatedURL {
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": "repository already exists",
+			})
+		}
+	}
+
+	originalRepo := configRepos[repoIndex]
+	updatedRepo.URL = updatedURL
+	updatedRepo.ID = git.GenerateID(updatedURL)
+	updatedRepo.Name = git.ResolveCheckoutName(updatedURL)
+	if req.Auth == nil {
+		updatedRepo.Auth = originalRepo.Auth
+	}
+	if req.Enabled == nil {
+		updatedRepo.Enabled = originalRepo.Enabled
+	}
+	if repoAuthSourceForAPI(updatedRepo.Auth.Mode, updatedRepo.Auth.Source) == git.GitRepoAuthSourceStored &&
+		!hasStoredCredentialPayload {
+		hasConfiguredStoredCredentials, lookupErr := s.hasStoredCredentialForRepo(updatedRepo)
+		if lookupErr != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to verify stored credential state: %v", lookupErr),
+			})
+		}
+		if !hasConfiguredStoredCredentials {
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": "stored_credential payload is required when auth.source=\"stored\" has no configured credential",
+			})
+		}
+	}
+	configRepos[repoIndex] = updatedRepo
+
+	// Save updated config before applying runtime state; on runtime errors we roll back.
 	if err := s.configManager.SaveConfig(configRepos); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to save config: %v", err),
 		})
 	}
 
-	// Update syncer and FileSystemManager based on enabled repos
-	if s.gitSyncer != nil {
-		enabledRepos := make([]string, 0)
-		for _, repo := range configRepos {
-			if repo.Enabled {
-				enabledRepos = append(enabledRepos, repo.URL)
-			}
+	storedCredentialCreated := false
+	if hasStoredCredentialPayload {
+		storedCredentialCreated, err = s.upsertStoredCredential(updatedRepo, storedCredentialPayload)
+		if err != nil {
+			configRepos[repoIndex] = originalRepo
+			_ = s.configManager.SaveConfig(configRepos)
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to persist stored credentials: %v", err),
+			})
 		}
+	}
 
-		// Update syncer repos
+	enabledRepos := make([]git.GitRepoConfig, 0, len(configRepos))
+	for _, repo := range configRepos {
+		if repo.Enabled {
+			enabledRepos = append(enabledRepos, repo)
+		}
+	}
+
+	if s.gitSyncer != nil {
 		if err := s.gitSyncer.UpdateRepos(enabledRepos); err != nil {
+			// Best-effort rollback to preserve a coherent config/runtime state.
+			configRepos[repoIndex] = originalRepo
+			_ = s.configManager.SaveConfig(configRepos)
+
+			rollbackEnabledRepos := make([]git.GitRepoConfig, 0, len(configRepos))
+			for _, repo := range configRepos {
+				if repo.Enabled {
+					rollbackEnabledRepos = append(rollbackEnabledRepos, repo)
+				}
+			}
+			_ = s.gitSyncer.UpdateRepos(rollbackEnabledRepos)
+			if storedCredentialCreated {
+				_ = s.deleteStoredCredentialByReferenceID(
+					resolveStoredCredentialReferenceID(updatedRepo.Auth, updatedRepo.ID),
+				)
+			}
+
 			return c.JSON(http.StatusInternalServerError, map[string]string{
 				"error": fmt.Sprintf("failed to update syncer: %v", err),
 			})
 		}
 
-		// Update FileSystemManager's git repos list
 		if s.fsManager != nil {
 			gitRepoNames := make([]string, len(enabledRepos))
-			for i, url := range enabledRepos {
-				gitRepoNames[i] = git.ExtractRepoName(url)
+			for i, repo := range enabledRepos {
+				gitRepoNames[i] = git.ResolveRepoCheckoutName(repo)
 			}
 			s.fsManager.UpdateGitRepos(gitRepoNames)
 		}
 
-		// Rebuild index
 		if err := s.skillManager.RebuildIndex(); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{
 				"error": "failed to rebuild index",
@@ -2683,18 +2830,15 @@ func (s *Server) updateGitRepo(c *echo.Context) error {
 		}
 	}
 
-	// Find updated repo for response
-	var response GitRepoResponse
-	for _, repo := range configRepos {
-		if repo.ID == id {
-			response = GitRepoResponse{
-				ID:      repo.ID,
-				URL:     repo.URL,
-				Name:    repo.Name,
-				Enabled: repo.Enabled,
-			}
-			break
-		}
+	if shouldDeleteImplicitStoredCredential(originalRepo, updatedRepo) {
+		_ = s.deleteStoredCredentialByReferenceID(resolveStoredCredentialReferenceID(originalRepo.Auth, originalRepo.ID))
+	}
+
+	response, responseErr := s.buildGitRepoResponse(updatedRepo)
+	if responseErr != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to build repo response: %v", responseErr),
+		})
 	}
 
 	return c.JSON(http.StatusOK, response)
@@ -2740,8 +2884,7 @@ func (s *Server) deleteGitRepo(c *echo.Context) error {
 	}
 
 	// Get repo name to delete the directory
-	repoName := foundRepo.Name
-	foundURL := foundRepo.URL
+	repoName := git.ResolveRepoCheckoutName(*foundRepo)
 
 	// Remove repo from config (we already have configRepos loaded above)
 	updatedConfigs := make([]git.GitRepoConfig, 0, len(configRepos)-1)
@@ -2759,9 +2902,9 @@ func (s *Server) deleteGitRepo(c *echo.Context) error {
 	}
 
 	// Remove repo from syncer
-	if err := s.gitSyncer.RemoveRepo(foundURL); err != nil {
+	if err := s.gitSyncer.RemoveRepo(foundRepo.ID); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": err.Error(),
+			"error": git.RedactGitAuthError(err),
 		})
 	}
 
@@ -2775,15 +2918,15 @@ func (s *Server) deleteGitRepo(c *echo.Context) error {
 
 	// Update FileSystemManager's git repos list for read-only detection
 	if s.fsManager != nil {
-		enabledRepos := make([]string, 0)
+		enabledRepos := make([]git.GitRepoConfig, 0)
 		for _, repo := range updatedConfigs {
 			if repo.Enabled {
-				enabledRepos = append(enabledRepos, repo.URL)
+				enabledRepos = append(enabledRepos, repo)
 			}
 		}
 		gitRepoNames := make([]string, len(enabledRepos))
-		for i, url := range enabledRepos {
-			gitRepoNames[i] = git.ExtractRepoName(url)
+		for i, repo := range enabledRepos {
+			gitRepoNames[i] = git.ResolveRepoCheckoutName(repo)
 		}
 		s.fsManager.UpdateGitRepos(gitRepoNames)
 	}
@@ -2793,6 +2936,12 @@ func (s *Server) deleteGitRepo(c *echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "failed to rebuild index",
 		})
+	}
+
+	if usesImplicitStoredCredentialReference(*foundRepo) {
+		_ = s.deleteStoredCredentialByReferenceID(
+			resolveStoredCredentialReferenceID(foundRepo.Auth, foundRepo.ID),
+		)
 	}
 
 	return c.NoContent(http.StatusNoContent)
@@ -2839,15 +2988,15 @@ func (s *Server) syncGitRepo(c *echo.Context) error {
 	}
 
 	// Sync the repo
-	if err := s.gitSyncer.SyncRepo(foundRepo.URL); err != nil {
+	if err := s.gitSyncer.SyncRepo(foundRepo.ID); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": err.Error(),
+			"error": git.RedactGitAuthError(err),
 		})
 	}
 	if s.manualRepoSyncHook != nil {
 		if err := s.manualRepoSyncHook(*foundRepo); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
+				"error": git.RedactGitAuthError(err),
 			})
 		}
 	} else if err := s.skillManager.RebuildIndex(); err != nil {
@@ -2856,11 +3005,11 @@ func (s *Server) syncGitRepo(c *echo.Context) error {
 		})
 	}
 
-	response := GitRepoResponse{
-		ID:      foundRepo.ID,
-		URL:     foundRepo.URL,
-		Name:    foundRepo.Name,
-		Enabled: foundRepo.Enabled,
+	response, responseErr := s.buildGitRepoResponse(*foundRepo)
+	if responseErr != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to build repo response: %v", responseErr),
+		})
 	}
 
 	return c.JSON(http.StatusOK, response)
@@ -2909,10 +3058,10 @@ func (s *Server) toggleGitRepo(c *echo.Context) error {
 
 	// Update syncer and FileSystemManager based on enabled repos
 	if s.gitSyncer != nil {
-		enabledRepos := make([]string, 0)
+		enabledRepos := make([]git.GitRepoConfig, 0)
 		for _, repo := range configRepos {
 			if repo.Enabled {
-				enabledRepos = append(enabledRepos, repo.URL)
+				enabledRepos = append(enabledRepos, repo)
 			}
 		}
 
@@ -2926,8 +3075,8 @@ func (s *Server) toggleGitRepo(c *echo.Context) error {
 		// Update FileSystemManager's git repos list
 		if s.fsManager != nil {
 			gitRepoNames := make([]string, len(enabledRepos))
-			for i, url := range enabledRepos {
-				gitRepoNames[i] = git.ExtractRepoName(url)
+			for i, repo := range enabledRepos {
+				gitRepoNames[i] = git.ResolveRepoCheckoutName(repo)
 			}
 			s.fsManager.UpdateGitRepos(gitRepoNames)
 		}
@@ -2940,14 +3089,368 @@ func (s *Server) toggleGitRepo(c *echo.Context) error {
 		}
 	}
 
-	response := GitRepoResponse{
-		ID:      foundRepo.ID,
-		URL:     foundRepo.URL,
-		Name:    foundRepo.Name,
-		Enabled: foundRepo.Enabled,
+	response, responseErr := s.buildGitRepoResponse(*foundRepo)
+	if responseErr != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to build repo response: %v", responseErr),
+		})
 	}
 
 	return c.JSON(http.StatusOK, response)
+}
+
+func normalizeGitRepoAuthRequest(request *GitRepoAuthRequest) git.GitRepoAuthConfig {
+	if request == nil {
+		return git.GitRepoAuthConfig{
+			Mode:   git.GitRepoAuthModeNone,
+			Source: git.GitRepoAuthSourceNone,
+		}
+	}
+
+	normalized := git.GitRepoAuthConfig{
+		Mode:          strings.TrimSpace(strings.ToLower(request.Mode)),
+		Source:        strings.TrimSpace(strings.ToLower(request.Source)),
+		ReferenceID:   strings.TrimSpace(request.ReferenceID),
+		UsernameRef:   strings.TrimSpace(request.UsernameRef),
+		PasswordRef:   strings.TrimSpace(request.PasswordRef),
+		TokenRef:      strings.TrimSpace(request.TokenRef),
+		KeyRef:        strings.TrimSpace(request.KeyRef),
+		KnownHostsRef: strings.TrimSpace(request.KnownHostsRef),
+	}
+	if normalized.Mode == "" {
+		normalized.Mode = git.GitRepoAuthModeNone
+	}
+	if normalized.Source == "" && normalized.Mode == git.GitRepoAuthModeNone {
+		normalized.Source = git.GitRepoAuthSourceNone
+	}
+
+	return normalized
+}
+
+func validateGitRepoAuthRequest(
+	auth git.GitRepoAuthConfig,
+	hasStoredCredentialInput bool,
+	storedCredentialsEnabled bool,
+) error {
+	mode := repoAuthModeForAPI(auth.Mode)
+	source := repoAuthSourceForAPI(mode, auth.Source)
+
+	switch mode {
+	case git.GitRepoAuthModeNone:
+		if source != "" && source != git.GitRepoAuthSourceNone {
+			return fmt.Errorf("auth mode %q does not support source %q", mode, source)
+		}
+		if hasAnyAuthReferenceFields(auth) {
+			return fmt.Errorf("auth mode %q does not support credential reference fields", mode)
+		}
+		if hasStoredCredentialInput {
+			return fmt.Errorf("auth mode %q does not support stored_credential payload", mode)
+		}
+		return nil
+	case git.GitRepoAuthModeHTTPSToken, git.GitRepoAuthModeHTTPSBasic, git.GitRepoAuthModeSSHKey:
+	default:
+		return fmt.Errorf("unsupported auth mode %q", mode)
+	}
+
+	switch source {
+	case git.GitRepoAuthSourceEnv, git.GitRepoAuthSourceFile:
+		if strings.TrimSpace(auth.ReferenceID) != "" {
+			return fmt.Errorf("auth source %q does not support reference_id", source)
+		}
+		if hasStoredCredentialInput {
+			return fmt.Errorf("stored_credential payload is supported only when auth.source=%q", git.GitRepoAuthSourceStored)
+		}
+		return git.ValidateGitRepoAuthConfig(git.GitRepoAuthConfig{
+			Mode:          mode,
+			Source:        source,
+			UsernameRef:   strings.TrimSpace(auth.UsernameRef),
+			PasswordRef:   strings.TrimSpace(auth.PasswordRef),
+			TokenRef:      strings.TrimSpace(auth.TokenRef),
+			KeyRef:        strings.TrimSpace(auth.KeyRef),
+			KnownHostsRef: strings.TrimSpace(auth.KnownHostsRef),
+		})
+
+	case git.GitRepoAuthSourceStored:
+		if !storedCredentialsEnabled {
+			return fmt.Errorf("stored credentials are disabled by server configuration")
+		}
+		if hasEnvFileReferenceFields(auth) {
+			return fmt.Errorf("auth source %q does not support *_ref credential references", source)
+		}
+		return nil
+
+	case "", git.GitRepoAuthSourceNone:
+		return fmt.Errorf(
+			"auth mode %q requires source %q, %q, or %q",
+			mode,
+			git.GitRepoAuthSourceEnv,
+			git.GitRepoAuthSourceFile,
+			git.GitRepoAuthSourceStored,
+		)
+
+	default:
+		return fmt.Errorf("auth mode %q does not support source %q", mode, source)
+	}
+}
+
+func buildStoredCredentialPayload(
+	authMode string,
+	input *GitRepoStoredCredentialWriteRequest,
+) (persistence.GitRepoCredentialSecretPayload, bool, error) {
+	if !hasStoredCredentialWriteInput(input) {
+		return persistence.GitRepoCredentialSecretPayload{}, false, nil
+	}
+
+	mode := repoAuthModeForAPI(authMode)
+	if input == nil {
+		return persistence.GitRepoCredentialSecretPayload{}, false, fmt.Errorf("stored_credential payload is required")
+	}
+
+	switch mode {
+	case git.GitRepoAuthModeHTTPSToken:
+		if strings.TrimSpace(input.Token) == "" {
+			return persistence.GitRepoCredentialSecretPayload{}, false, fmt.Errorf("stored_credential.token is required for auth mode %q", mode)
+		}
+		return persistence.GitRepoCredentialSecretPayload{
+			Type:     persistence.GitRepoCredentialSecretTypeHTTPSToken,
+			Username: strings.TrimSpace(input.Username),
+			Token:    input.Token,
+		}, true, nil
+
+	case git.GitRepoAuthModeHTTPSBasic:
+		if strings.TrimSpace(input.Username) == "" {
+			return persistence.GitRepoCredentialSecretPayload{}, false, fmt.Errorf("stored_credential.username is required for auth mode %q", mode)
+		}
+		if strings.TrimSpace(input.Password) == "" {
+			return persistence.GitRepoCredentialSecretPayload{}, false, fmt.Errorf("stored_credential.password is required for auth mode %q", mode)
+		}
+		return persistence.GitRepoCredentialSecretPayload{
+			Type:     persistence.GitRepoCredentialSecretTypeHTTPSBasic,
+			Username: strings.TrimSpace(input.Username),
+			Password: input.Password,
+		}, true, nil
+
+	case git.GitRepoAuthModeSSHKey:
+		if strings.TrimSpace(input.PrivateKey) == "" {
+			return persistence.GitRepoCredentialSecretPayload{}, false, fmt.Errorf("stored_credential.private_key is required for auth mode %q", mode)
+		}
+		if strings.TrimSpace(input.KnownHosts) == "" {
+			return persistence.GitRepoCredentialSecretPayload{}, false, fmt.Errorf("stored_credential.known_hosts is required for auth mode %q", mode)
+		}
+		return persistence.GitRepoCredentialSecretPayload{
+			Type:       persistence.GitRepoCredentialSecretTypeSSHKey,
+			PrivateKey: input.PrivateKey,
+			Passphrase: input.Passphrase,
+			KnownHosts: input.KnownHosts,
+		}, true, nil
+	}
+
+	return persistence.GitRepoCredentialSecretPayload{}, false, fmt.Errorf(
+		"stored_credential payload is not supported for auth mode %q",
+		mode,
+	)
+}
+
+func (s *Server) buildGitRepoResponse(repo git.GitRepoConfig) (GitRepoResponse, error) {
+	mode := repoAuthModeForAPI(repo.Auth.Mode)
+	source := repoAuthSourceForAPI(mode, repo.Auth.Source)
+	hasCredentials, err := s.hasCredentialsConfigured(repo)
+	if err != nil {
+		return GitRepoResponse{}, err
+	}
+
+	lastSyncStatus := string(git.RepoSyncStateNever)
+	lastSyncError := ""
+	if s.gitSyncer != nil {
+		if status, ok := s.gitSyncer.GetRepoSyncStatus(repo.ID); ok {
+			if strings.TrimSpace(string(status.State)) != "" {
+				lastSyncStatus = string(status.State)
+			}
+			lastSyncError = strings.TrimSpace(status.LastError)
+		}
+	}
+
+	return GitRepoResponse{
+		ID:                       repo.ID,
+		URL:                      repo.URL,
+		Name:                     repo.Name,
+		Enabled:                  repo.Enabled,
+		AuthMode:                 mode,
+		CredentialSource:         source,
+		HasCredentials:           hasCredentials,
+		StoredCredentialsEnabled: s.gitRuntimeCapabilities.StoredCredentialsEnabled,
+		LastSyncStatus:           lastSyncStatus,
+		LastSyncError:            lastSyncError,
+	}, nil
+}
+
+func (s *Server) hasCredentialsConfigured(repo git.GitRepoConfig) (bool, error) {
+	mode := repoAuthModeForAPI(repo.Auth.Mode)
+	if mode == git.GitRepoAuthModeNone {
+		return false, nil
+	}
+
+	source := repoAuthSourceForAPI(mode, repo.Auth.Source)
+	switch source {
+	case git.GitRepoAuthSourceEnv, git.GitRepoAuthSourceFile:
+		return hasEnvFileCredentialsConfigured(mode, repo.Auth), nil
+	case git.GitRepoAuthSourceStored:
+		return s.hasStoredCredentialForRepo(repo)
+	default:
+		return false, nil
+	}
+}
+
+func (s *Server) hasStoredCredentialForRepo(repo git.GitRepoConfig) (bool, error) {
+	if s.gitCredentialStore == nil {
+		return false, nil
+	}
+
+	referenceID := resolveStoredCredentialReferenceID(repo.Auth, repo.ID)
+	if strings.TrimSpace(referenceID) == "" {
+		return false, nil
+	}
+
+	_, err := s.gitCredentialStore.GetEncryptedByRepoID(context.Background(), referenceID)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, persistence.ErrGitRepoCredentialNotFound) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (s *Server) upsertStoredCredential(
+	repo git.GitRepoConfig,
+	payload persistence.GitRepoCredentialSecretPayload,
+) (bool, error) {
+	if s.gitCredentialStore == nil {
+		return false, fmt.Errorf("stored credential persistence is not available")
+	}
+
+	referenceID := resolveStoredCredentialReferenceID(repo.Auth, repo.ID)
+	_, existingErr := s.gitCredentialStore.GetEncryptedByRepoID(context.Background(), referenceID)
+	if existingErr != nil && !errors.Is(existingErr, persistence.ErrGitRepoCredentialNotFound) {
+		return false, existingErr
+	}
+	existed := existingErr == nil
+
+	if err := s.gitCredentialStore.ReplaceCredential(
+		context.Background(),
+		referenceID,
+		payload,
+		time.Now().UTC(),
+	); err != nil {
+		return false, err
+	}
+
+	return !existed, nil
+}
+
+func (s *Server) deleteStoredCredentialByReferenceID(referenceID string) error {
+	if s.gitCredentialStore == nil || strings.TrimSpace(referenceID) == "" {
+		return nil
+	}
+	_, err := s.gitCredentialStore.DeleteByRepoID(context.Background(), referenceID)
+	return err
+}
+
+func repoAuthModeForAPI(mode string) string {
+	normalized := strings.TrimSpace(strings.ToLower(mode))
+	if normalized == "" {
+		return git.GitRepoAuthModeNone
+	}
+	return normalized
+}
+
+func repoAuthSourceForAPI(mode, source string) string {
+	normalized := strings.TrimSpace(strings.ToLower(source))
+	if normalized == "" && mode == git.GitRepoAuthModeNone {
+		return git.GitRepoAuthSourceNone
+	}
+	return normalized
+}
+
+func hasAnyAuthReferenceFields(auth git.GitRepoAuthConfig) bool {
+	return strings.TrimSpace(auth.ReferenceID) != "" ||
+		hasEnvFileReferenceFields(auth)
+}
+
+func hasEnvFileReferenceFields(auth git.GitRepoAuthConfig) bool {
+	return strings.TrimSpace(auth.UsernameRef) != "" ||
+		strings.TrimSpace(auth.PasswordRef) != "" ||
+		strings.TrimSpace(auth.TokenRef) != "" ||
+		strings.TrimSpace(auth.KeyRef) != "" ||
+		strings.TrimSpace(auth.KnownHostsRef) != ""
+}
+
+func hasEnvFileCredentialsConfigured(mode string, auth git.GitRepoAuthConfig) bool {
+	switch mode {
+	case git.GitRepoAuthModeHTTPSToken:
+		return strings.TrimSpace(auth.TokenRef) != ""
+	case git.GitRepoAuthModeHTTPSBasic:
+		return strings.TrimSpace(auth.UsernameRef) != "" &&
+			strings.TrimSpace(auth.PasswordRef) != ""
+	case git.GitRepoAuthModeSSHKey:
+		return strings.TrimSpace(auth.KeyRef) != "" &&
+			strings.TrimSpace(auth.KnownHostsRef) != ""
+	default:
+		return false
+	}
+}
+
+func hasStoredCredentialWriteInput(input *GitRepoStoredCredentialWriteRequest) bool {
+	if input == nil {
+		return false
+	}
+	return strings.TrimSpace(input.Username) != "" ||
+		strings.TrimSpace(input.Password) != "" ||
+		strings.TrimSpace(input.Token) != "" ||
+		strings.TrimSpace(input.PrivateKey) != "" ||
+		strings.TrimSpace(input.Passphrase) != "" ||
+		strings.TrimSpace(input.KnownHosts) != ""
+}
+
+func resolveStoredCredentialReferenceID(auth git.GitRepoAuthConfig, repoID string) string {
+	if ref := strings.TrimSpace(auth.ReferenceID); ref != "" {
+		return ref
+	}
+	return strings.TrimSpace(repoID)
+}
+
+func usesImplicitStoredCredentialReference(repo git.GitRepoConfig) bool {
+	return repoAuthSourceForAPI(repoAuthModeForAPI(repo.Auth.Mode), repo.Auth.Source) == git.GitRepoAuthSourceStored &&
+		strings.TrimSpace(repo.Auth.ReferenceID) == ""
+}
+
+func shouldDeleteImplicitStoredCredential(oldRepo, newRepo git.GitRepoConfig) bool {
+	if !usesImplicitStoredCredentialReference(oldRepo) {
+		return false
+	}
+	oldReferenceID := resolveStoredCredentialReferenceID(oldRepo.Auth, oldRepo.ID)
+	if oldReferenceID == "" {
+		return false
+	}
+
+	newSource := repoAuthSourceForAPI(repoAuthModeForAPI(newRepo.Auth.Mode), newRepo.Auth.Source)
+	if newSource != git.GitRepoAuthSourceStored {
+		return true
+	}
+
+	newReferenceID := resolveStoredCredentialReferenceID(newRepo.Auth, newRepo.ID)
+	return oldReferenceID != newReferenceID
+}
+
+func removeRepoByID(repos []git.GitRepoConfig, repoID string) []git.GitRepoConfig {
+	filtered := make([]git.GitRepoConfig, 0, len(repos))
+	for _, repo := range repos {
+		if repo.ID == repoID {
+			continue
+		}
+		filtered = append(filtered, repo)
+	}
+	return filtered
 }
 
 // Helper functions

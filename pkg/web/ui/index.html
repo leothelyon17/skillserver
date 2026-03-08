@@ -33,7 +33,7 @@
                 <button @click="showImportModal = true" class="btn btn-secondary">
                     <i class="fas fa-upload mr-2"></i>Import Skill
                 </button>
-                <button @click="showGitReposModal = true; loadGitRepos()" class="btn btn-secondary">
+                <button @click="openGitReposModal()" class="btn btn-secondary">
                     <i class="fas fa-code-branch mr-2"></i>Git Repos
                 </button>
                 <div class="relative">
@@ -1251,7 +1251,7 @@
         >
             <div 
                 @click.stop
-                class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-md"
+                class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-3xl"
             >
                 <div class="flex justify-between items-center p-4 border-b border-gray-200 dark:border-gray-700">
                     <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
@@ -1313,22 +1313,258 @@
                     <!-- Add Repository Form -->
                     <div class="mb-6 p-4 bg-gray-50 dark:bg-gray-900/50 rounded-lg">
                         <h4 class="text-md font-semibold mb-3 text-gray-900 dark:text-gray-100">Add Repository</h4>
-                        <div class="flex gap-2">
-                            <input 
-                                type="text" 
-                                x-model="newGitRepoUrl"
-                                placeholder="https://github.com/user/repo.git"
-                                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                                @keydown.enter="addGitRepo()"
+                        <div class="space-y-3">
+                            <div>
+                                <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Repository URL</label>
+                                <input 
+                                    type="text" 
+                                    x-model="newGitRepo.url"
+                                    placeholder="https://github.com/user/repo.git"
+                                    class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    @keydown.enter="addGitRepo()"
+                                >
+                            </div>
+                            <div>
+                                <button
+                                    @click="newGitRepo.advanced = !newGitRepo.advanced"
+                                    class="text-sm text-blue-600 dark:text-blue-300 hover:underline"
+                                    type="button"
+                                >
+                                    <i class="fas fa-lock mr-1"></i>Private repository authentication (optional)
+                                </button>
+                            </div>
+                            <div
+                                x-show="newGitRepo.advanced || newGitRepo.authMode !== 'none'"
+                                class="space-y-3 rounded border border-gray-200 dark:border-gray-700 p-3 bg-white dark:bg-gray-800"
+                                style="display: none;"
                             >
-                            <button 
-                                @click="addGitRepo()"
-                                class="btn btn-primary"
-                                :disabled="isLoading || !newGitRepoUrl"
-                            >
-                                <i x-show="!isLoading" class="fas fa-plus mr-2"></i>
-                                <i x-show="isLoading" class="fas fa-spinner fa-spin mr-2"></i>Add
-                            </button>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Auth Mode</label>
+                                        <select
+                                            x-model="newGitRepo.authMode"
+                                            @change="onGitAuthModeChange(newGitRepo)"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                            <option value="none">None (Public Repository)</option>
+                                            <option value="https_token">HTTPS Token</option>
+                                            <option value="https_basic">HTTPS Username/Password</option>
+                                            <option value="ssh_key">SSH Private Key</option>
+                                        </select>
+                                    </div>
+                                    <div x-show="newGitRepo.authMode !== 'none'" style="display: none;">
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Credential Source</label>
+                                        <select
+                                            x-model="newGitRepo.credentialSource"
+                                            @change="onGitCredentialSourceChange(newGitRepo)"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                            <option value="env">Environment Variable</option>
+                                            <option value="file">File Path</option>
+                                            <option
+                                                x-show="gitCapabilities.storedCredentialsEnabled || newGitRepo.credentialSource === 'stored'"
+                                                value="stored"
+                                            >
+                                                Stored Secret
+                                            </option>
+                                        </select>
+                                        <p
+                                            x-show="newGitRepo.authMode !== 'none' && !gitCapabilities.storedCredentialsEnabled"
+                                            class="text-xs mt-2 text-gray-500 dark:text-gray-400"
+                                        >
+                                            Stored-secret credentials are not enabled on this server.
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div
+                                    x-show="newGitRepo.authMode === 'https_token' && (newGitRepo.credentialSource === 'env' || newGitRepo.credentialSource === 'file')"
+                                    class="grid grid-cols-1 md:grid-cols-2 gap-3"
+                                    style="display: none;"
+                                >
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
+                                            <span x-text="newGitRepo.credentialSource === 'env' ? 'Token Environment Variable' : 'Token File Path'"></span>
+                                        </label>
+                                        <input
+                                            type="text"
+                                            x-model="newGitRepo.tokenRef"
+                                            placeholder="GIT_PRIVATE_TOKEN"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
+                                            <span x-text="newGitRepo.credentialSource === 'env' ? 'Username Environment Variable (optional)' : 'Username File Path (optional)'"></span>
+                                        </label>
+                                        <input
+                                            type="text"
+                                            x-model="newGitRepo.usernameRef"
+                                            placeholder="GIT_USERNAME"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                    </div>
+                                </div>
+
+                                <div
+                                    x-show="newGitRepo.authMode === 'https_basic' && (newGitRepo.credentialSource === 'env' || newGitRepo.credentialSource === 'file')"
+                                    class="grid grid-cols-1 md:grid-cols-2 gap-3"
+                                    style="display: none;"
+                                >
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
+                                            <span x-text="newGitRepo.credentialSource === 'env' ? 'Username Environment Variable' : 'Username File Path'"></span>
+                                        </label>
+                                        <input
+                                            type="text"
+                                            x-model="newGitRepo.usernameRef"
+                                            placeholder="GIT_USERNAME"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
+                                            <span x-text="newGitRepo.credentialSource === 'env' ? 'Password Environment Variable' : 'Password File Path'"></span>
+                                        </label>
+                                        <input
+                                            type="text"
+                                            x-model="newGitRepo.passwordRef"
+                                            placeholder="GIT_PASSWORD"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                    </div>
+                                </div>
+
+                                <div
+                                    x-show="newGitRepo.authMode === 'ssh_key' && (newGitRepo.credentialSource === 'env' || newGitRepo.credentialSource === 'file')"
+                                    class="grid grid-cols-1 md:grid-cols-2 gap-3"
+                                    style="display: none;"
+                                >
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
+                                            <span x-text="newGitRepo.credentialSource === 'env' ? 'Private Key Environment Variable' : 'Private Key File Path'"></span>
+                                        </label>
+                                        <input
+                                            type="text"
+                                            x-model="newGitRepo.keyRef"
+                                            placeholder="GIT_PRIVATE_KEY"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
+                                            <span x-text="newGitRepo.credentialSource === 'env' ? 'Known Hosts Environment Variable' : 'Known Hosts File Path'"></span>
+                                        </label>
+                                        <input
+                                            type="text"
+                                            x-model="newGitRepo.knownHostsRef"
+                                            placeholder="GIT_KNOWN_HOSTS"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                    </div>
+                                </div>
+
+                                <div
+                                    x-show="newGitRepo.authMode !== 'none' && newGitRepo.credentialSource === 'stored' && gitCapabilities.storedCredentialsEnabled"
+                                    class="space-y-3 rounded border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3"
+                                    style="display: none;"
+                                >
+                                    <p class="text-xs text-amber-700 dark:text-amber-200">
+                                        Stored credentials are write-only. Values are never returned to the browser.
+                                    </p>
+                                    <div
+                                        x-show="newGitRepo.authMode === 'https_token'"
+                                        class="grid grid-cols-1 md:grid-cols-2 gap-3"
+                                        style="display: none;"
+                                    >
+                                        <div>
+                                            <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Username (optional)</label>
+                                            <input
+                                                type="text"
+                                                x-model="newGitRepo.storedUsername"
+                                                placeholder="git"
+                                                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                            >
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Token</label>
+                                            <input
+                                                type="password"
+                                                x-model="newGitRepo.storedToken"
+                                                placeholder="Personal access token"
+                                                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                            >
+                                        </div>
+                                    </div>
+                                    <div
+                                        x-show="newGitRepo.authMode === 'https_basic'"
+                                        class="grid grid-cols-1 md:grid-cols-2 gap-3"
+                                        style="display: none;"
+                                    >
+                                        <div>
+                                            <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Username</label>
+                                            <input
+                                                type="text"
+                                                x-model="newGitRepo.storedUsername"
+                                                placeholder="git"
+                                                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                            >
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Password</label>
+                                            <input
+                                                type="password"
+                                                x-model="newGitRepo.storedPassword"
+                                                placeholder="Password"
+                                                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                            >
+                                        </div>
+                                    </div>
+                                    <div
+                                        x-show="newGitRepo.authMode === 'ssh_key'"
+                                        class="space-y-3"
+                                        style="display: none;"
+                                    >
+                                        <div>
+                                            <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Private Key</label>
+                                            <textarea
+                                                x-model="newGitRepo.storedPrivateKey"
+                                                rows="4"
+                                                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                                                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                            ></textarea>
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Known Hosts</label>
+                                            <textarea
+                                                x-model="newGitRepo.storedKnownHosts"
+                                                rows="3"
+                                                placeholder="github.com ssh-ed25519 AAAA..."
+                                                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                            ></textarea>
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Passphrase (optional)</label>
+                                            <input
+                                                type="password"
+                                                x-model="newGitRepo.storedPassphrase"
+                                                placeholder="Optional passphrase"
+                                                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                            >
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="flex justify-end">
+                                <button 
+                                    @click="addGitRepo()"
+                                    class="btn btn-primary"
+                                    :disabled="isLoading || !newGitRepo.url"
+                                >
+                                    <i x-show="!isLoading" class="fas fa-plus mr-2"></i>
+                                    <i x-show="isLoading" class="fas fa-spinner fa-spin mr-2"></i>Add
+                                </button>
+                            </div>
                         </div>
                     </div>
 
@@ -1353,6 +1589,29 @@
                                         </span>
                                     </div>
                                     <div class="text-sm text-gray-600 dark:text-gray-400 truncate" x-text="repo.url"></div>
+                                    <div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                                        <span class="px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200" x-text="gitAuthSummary(repo)"></span>
+                                        <span
+                                            class="px-2 py-0.5 rounded"
+                                            :class="repo.auth_mode !== 'none' && !repo.has_credentials
+                                                ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-200'
+                                                : 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-200'"
+                                            x-text="gitCredentialSummary(repo)"
+                                        ></span>
+                                        <span
+                                            class="px-2 py-0.5 rounded"
+                                            :class="gitSyncStatusBadgeClass(repo.last_sync_status)"
+                                            x-text="`Sync: ${gitSyncStatusLabel(repo.last_sync_status)}`"
+                                        ></span>
+                                    </div>
+                                    <div
+                                        x-show="repo.last_sync_error"
+                                        class="mt-2 text-xs text-amber-700 dark:text-amber-300 break-words"
+                                        style="display: none;"
+                                    >
+                                        <i class="fas fa-exclamation-triangle mr-1"></i>
+                                        <span x-text="repo.last_sync_error"></span>
+                                    </div>
                                 </div>
                                 <div class="flex gap-2 ml-4">
                                     <button 
@@ -1422,15 +1681,255 @@
                         <i class="fas fa-times"></i>
                     </button>
                 </div>
-                <div class="p-4">
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Repository URL</label>
-                        <input 
-                            type="text" 
-                            x-model="editingGitRepo.url"
-                            placeholder="https://github.com/user/repo.git"
-                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                <div class="p-4 max-h-[70vh] overflow-auto">
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Repository URL</label>
+                            <input 
+                                type="text" 
+                                x-model="editingGitRepo.url"
+                                placeholder="https://github.com/user/repo.git"
+                                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                            >
+                        </div>
+                        <div>
+                            <button
+                                @click="editingGitRepo.advanced = !editingGitRepo.advanced"
+                                class="text-sm text-blue-600 dark:text-blue-300 hover:underline"
+                                type="button"
+                            >
+                                <i class="fas fa-lock mr-1"></i>Update authentication settings
+                            </button>
+                        </div>
+                        <div
+                            x-show="editingGitRepo.advanced || editingGitRepo.authMode !== 'none'"
+                            class="space-y-3 rounded border border-gray-200 dark:border-gray-700 p-3 bg-gray-50 dark:bg-gray-900/50"
+                            style="display: none;"
                         >
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Auth Mode</label>
+                                    <select
+                                        x-model="editingGitRepo.authMode"
+                                        @change="onGitAuthModeChange(editingGitRepo)"
+                                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    >
+                                        <option value="none">None (Public Repository)</option>
+                                        <option value="https_token">HTTPS Token</option>
+                                        <option value="https_basic">HTTPS Username/Password</option>
+                                        <option value="ssh_key">SSH Private Key</option>
+                                    </select>
+                                </div>
+                                <div x-show="editingGitRepo.authMode !== 'none'" style="display: none;">
+                                    <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Credential Source</label>
+                                    <select
+                                        x-model="editingGitRepo.credentialSource"
+                                        @change="onGitCredentialSourceChange(editingGitRepo)"
+                                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    >
+                                        <option value="env">Environment Variable</option>
+                                        <option value="file">File Path</option>
+                                        <option
+                                            x-show="gitCapabilities.storedCredentialsEnabled || editingGitRepo.credentialSource === 'stored'"
+                                            value="stored"
+                                        >
+                                            Stored Secret
+                                        </option>
+                                    </select>
+                                    <p
+                                        x-show="editingGitRepo.authMode !== 'none' && !gitCapabilities.storedCredentialsEnabled"
+                                        class="text-xs mt-2 text-gray-500 dark:text-gray-400"
+                                    >
+                                        Stored-secret credentials are not enabled on this server.
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div
+                                x-show="editingGitRepo.authMode === 'https_token' && (editingGitRepo.credentialSource === 'env' || editingGitRepo.credentialSource === 'file')"
+                                class="grid grid-cols-1 md:grid-cols-2 gap-3"
+                                style="display: none;"
+                            >
+                                <div>
+                                    <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
+                                        <span x-text="editingGitRepo.credentialSource === 'env' ? 'Token Environment Variable' : 'Token File Path'"></span>
+                                    </label>
+                                    <input
+                                        type="text"
+                                        x-model="editingGitRepo.tokenRef"
+                                        placeholder="GIT_PRIVATE_TOKEN"
+                                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    >
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
+                                        <span x-text="editingGitRepo.credentialSource === 'env' ? 'Username Environment Variable (optional)' : 'Username File Path (optional)'"></span>
+                                    </label>
+                                    <input
+                                        type="text"
+                                        x-model="editingGitRepo.usernameRef"
+                                        placeholder="GIT_USERNAME"
+                                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    >
+                                </div>
+                            </div>
+
+                            <div
+                                x-show="editingGitRepo.authMode === 'https_basic' && (editingGitRepo.credentialSource === 'env' || editingGitRepo.credentialSource === 'file')"
+                                class="grid grid-cols-1 md:grid-cols-2 gap-3"
+                                style="display: none;"
+                            >
+                                <div>
+                                    <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
+                                        <span x-text="editingGitRepo.credentialSource === 'env' ? 'Username Environment Variable' : 'Username File Path'"></span>
+                                    </label>
+                                    <input
+                                        type="text"
+                                        x-model="editingGitRepo.usernameRef"
+                                        placeholder="GIT_USERNAME"
+                                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    >
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
+                                        <span x-text="editingGitRepo.credentialSource === 'env' ? 'Password Environment Variable' : 'Password File Path'"></span>
+                                    </label>
+                                    <input
+                                        type="text"
+                                        x-model="editingGitRepo.passwordRef"
+                                        placeholder="GIT_PASSWORD"
+                                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    >
+                                </div>
+                            </div>
+
+                            <div
+                                x-show="editingGitRepo.authMode === 'ssh_key' && (editingGitRepo.credentialSource === 'env' || editingGitRepo.credentialSource === 'file')"
+                                class="grid grid-cols-1 md:grid-cols-2 gap-3"
+                                style="display: none;"
+                            >
+                                <div>
+                                    <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
+                                        <span x-text="editingGitRepo.credentialSource === 'env' ? 'Private Key Environment Variable' : 'Private Key File Path'"></span>
+                                    </label>
+                                    <input
+                                        type="text"
+                                        x-model="editingGitRepo.keyRef"
+                                        placeholder="GIT_PRIVATE_KEY"
+                                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    >
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">
+                                        <span x-text="editingGitRepo.credentialSource === 'env' ? 'Known Hosts Environment Variable' : 'Known Hosts File Path'"></span>
+                                    </label>
+                                    <input
+                                        type="text"
+                                        x-model="editingGitRepo.knownHostsRef"
+                                        placeholder="GIT_KNOWN_HOSTS"
+                                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                    >
+                                </div>
+                            </div>
+
+                            <div
+                                x-show="editingGitRepo.authMode !== 'none' && editingGitRepo.credentialSource === 'stored'"
+                                class="space-y-3 rounded border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3"
+                                style="display: none;"
+                            >
+                                <p
+                                    x-show="editingGitRepo.hasCredentials"
+                                    class="text-xs text-amber-700 dark:text-amber-200"
+                                    style="display: none;"
+                                >
+                                    Stored credential is configured. Values are masked; leave fields blank to keep existing values.
+                                </p>
+                                <p class="text-xs text-amber-700 dark:text-amber-200">
+                                    Stored credentials are write-only and never returned in API responses.
+                                </p>
+                                <div
+                                    x-show="gitCapabilities.storedCredentialsEnabled && editingGitRepo.authMode === 'https_token'"
+                                    class="grid grid-cols-1 md:grid-cols-2 gap-3"
+                                    style="display: none;"
+                                >
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Username (optional)</label>
+                                        <input
+                                            type="text"
+                                            x-model="editingGitRepo.storedUsername"
+                                            placeholder="git"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Token</label>
+                                        <input
+                                            type="password"
+                                            x-model="editingGitRepo.storedToken"
+                                            placeholder="Personal access token"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                    </div>
+                                </div>
+                                <div
+                                    x-show="gitCapabilities.storedCredentialsEnabled && editingGitRepo.authMode === 'https_basic'"
+                                    class="grid grid-cols-1 md:grid-cols-2 gap-3"
+                                    style="display: none;"
+                                >
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Username</label>
+                                        <input
+                                            type="text"
+                                            x-model="editingGitRepo.storedUsername"
+                                            placeholder="git"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Password</label>
+                                        <input
+                                            type="password"
+                                            x-model="editingGitRepo.storedPassword"
+                                            placeholder="Password"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                    </div>
+                                </div>
+                                <div
+                                    x-show="gitCapabilities.storedCredentialsEnabled && editingGitRepo.authMode === 'ssh_key'"
+                                    class="space-y-3"
+                                    style="display: none;"
+                                >
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Private Key</label>
+                                        <textarea
+                                            x-model="editingGitRepo.storedPrivateKey"
+                                            rows="4"
+                                            placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        ></textarea>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Known Hosts</label>
+                                        <textarea
+                                            x-model="editingGitRepo.storedKnownHosts"
+                                            rows="3"
+                                            placeholder="github.com ssh-ed25519 AAAA..."
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        ></textarea>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-2 text-gray-900 dark:text-gray-100">Passphrase (optional)</label>
+                                        <input
+                                            type="password"
+                                            x-model="editingGitRepo.storedPassphrase"
+                                            placeholder="Optional passphrase"
+                                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                        >
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="flex justify-end gap-3 p-4 border-t border-gray-200 dark:border-gray-700">
@@ -1609,8 +2108,52 @@
                 showGitReposModal: false,
                 showEditGitRepoModal: false,
                 gitRepos: [],
-                newGitRepoUrl: '',
-                editingGitRepo: { id: '', url: '' },
+                gitCapabilities: {
+                    storedCredentialsEnabled: false
+                },
+                newGitRepo: {
+                    advanced: false,
+                    url: '',
+                    enabled: true,
+                    authMode: 'none',
+                    credentialSource: 'none',
+                    originalAuthMode: 'none',
+                    originalCredentialSource: 'none',
+                    usernameRef: '',
+                    passwordRef: '',
+                    tokenRef: '',
+                    keyRef: '',
+                    knownHostsRef: '',
+                    storedUsername: '',
+                    storedPassword: '',
+                    storedToken: '',
+                    storedPrivateKey: '',
+                    storedPassphrase: '',
+                    storedKnownHosts: '',
+                    hasCredentials: false
+                },
+                editingGitRepo: {
+                    id: '',
+                    advanced: false,
+                    url: '',
+                    enabled: true,
+                    authMode: 'none',
+                    credentialSource: 'none',
+                    originalAuthMode: 'none',
+                    originalCredentialSource: 'none',
+                    usernameRef: '',
+                    passwordRef: '',
+                    tokenRef: '',
+                    keyRef: '',
+                    knownHostsRef: '',
+                    storedUsername: '',
+                    storedPassword: '',
+                    storedToken: '',
+                    storedPrivateKey: '',
+                    storedPassphrase: '',
+                    storedKnownHosts: '',
+                    hasCredentials: false
+                },
                 isDark: true,
                 searchDebounceHandle: null,
                 searchAbortController: null,
@@ -3765,11 +4308,113 @@
                     }
                 },
 
+                createEmptyGitRepoForm() {
+                    return {
+                        id: '',
+                        advanced: false,
+                        url: '',
+                        enabled: true,
+                        authMode: 'none',
+                        credentialSource: 'none',
+                        originalAuthMode: 'none',
+                        originalCredentialSource: 'none',
+                        usernameRef: '',
+                        passwordRef: '',
+                        tokenRef: '',
+                        keyRef: '',
+                        knownHostsRef: '',
+                        storedUsername: '',
+                        storedPassword: '',
+                        storedToken: '',
+                        storedPrivateKey: '',
+                        storedPassphrase: '',
+                        storedKnownHosts: '',
+                        hasCredentials: false
+                    };
+                },
+
+                normalizeGitAuthMode(mode) {
+                    const normalized = String(mode || '').trim().toLowerCase();
+                    if (!normalized) {
+                        return 'none';
+                    }
+                    return normalized;
+                },
+
+                normalizeGitCredentialSource(source, authMode) {
+                    const mode = this.normalizeGitAuthMode(authMode);
+                    const normalized = String(source || '').trim().toLowerCase();
+                    if (!normalized) {
+                        if (mode === 'none') {
+                            return 'none';
+                        }
+                        return 'env';
+                    }
+                    return normalized;
+                },
+
+                resetGitRepoCredentialRefs(form) {
+                    form.usernameRef = '';
+                    form.passwordRef = '';
+                    form.tokenRef = '';
+                    form.keyRef = '';
+                    form.knownHostsRef = '';
+                },
+
+                clearGitRepoStoredCredentialInputs(form) {
+                    form.storedUsername = '';
+                    form.storedPassword = '';
+                    form.storedToken = '';
+                    form.storedPrivateKey = '';
+                    form.storedPassphrase = '';
+                    form.storedKnownHosts = '';
+                },
+
+                async openGitReposModal() {
+                    this.showGitReposModal = true;
+                    this.resetNewGitRepoForm();
+                    await this.loadGitRepos();
+                },
+
+                resetNewGitRepoForm() {
+                    this.newGitRepo = this.createEmptyGitRepoForm();
+                },
+
+                syncStoredCredentialCapabilityFromRepos(repos) {
+                    if (!Array.isArray(repos) || repos.length === 0) {
+                        return;
+                    }
+                    const capability = repos.find((repo) => typeof repo.stored_credentials_enabled === 'boolean');
+                    if (capability) {
+                        this.gitCapabilities.storedCredentialsEnabled = capability.stored_credentials_enabled;
+                    }
+                },
+
+                async loadGitRuntimeCapabilities() {
+                    try {
+                        const response = await fetch('/api/runtime/capabilities');
+                        if (!response.ok) {
+                            return;
+                        }
+
+                        const payload = await response.json();
+                        this.gitCapabilities.storedCredentialsEnabled = !!(
+                            payload &&
+                            payload.git &&
+                            payload.git.stored_credentials_enabled
+                        );
+                    } catch (error) {
+                        console.error('Failed to load runtime capabilities:', error);
+                    }
+                },
+
                 async loadGitRepos() {
+                    await this.loadGitRuntimeCapabilities();
                     try {
                         const response = await fetch('/api/git-repos');
                         if (response.ok) {
                             this.gitRepos = await response.json();
+                            this.syncStoredCredentialCapabilityFromRepos(this.gitRepos);
                         } else {
                             console.error('Failed to load git repos');
                         }
@@ -3778,9 +4423,306 @@
                     }
                 },
 
+                onGitAuthModeChange(form) {
+                    form.authMode = this.normalizeGitAuthMode(form.authMode);
+                    if (form.authMode === 'none') {
+                        form.credentialSource = 'none';
+                        this.resetGitRepoCredentialRefs(form);
+                        this.clearGitRepoStoredCredentialInputs(form);
+                        return;
+                    }
+
+                    if (form.credentialSource === 'none') {
+                        form.credentialSource = 'env';
+                    }
+                    if (form.credentialSource === 'stored' && !this.gitCapabilities.storedCredentialsEnabled) {
+                        form.credentialSource = 'env';
+                    }
+                    if (form.credentialSource === 'stored') {
+                        this.resetGitRepoCredentialRefs(form);
+                    } else {
+                        this.clearGitRepoStoredCredentialInputs(form);
+                    }
+                },
+
+                onGitCredentialSourceChange(form) {
+                    form.credentialSource = this.normalizeGitCredentialSource(form.credentialSource, form.authMode);
+                    if (form.authMode !== 'none' && form.credentialSource === 'none') {
+                        form.credentialSource = 'env';
+                    }
+                    if (form.credentialSource === 'stored') {
+                        this.resetGitRepoCredentialRefs(form);
+                    } else {
+                        this.clearGitRepoStoredCredentialInputs(form);
+                    }
+                },
+
+                gitCredentialSourceLabel(source) {
+                    switch (String(source || '').toLowerCase()) {
+                        case 'env':
+                            return 'env';
+                        case 'file':
+                            return 'file';
+                        case 'stored':
+                            return 'stored';
+                        default:
+                            return 'none';
+                    }
+                },
+
+                gitAuthSummary(repo) {
+                    const mode = this.normalizeGitAuthMode(repo.auth_mode);
+                    const source = this.gitCredentialSourceLabel(repo.credential_source);
+
+                    switch (mode) {
+                        case 'https_token':
+                            return `HTTPS Token (${source})`;
+                        case 'https_basic':
+                            return `HTTPS Basic (${source})`;
+                        case 'ssh_key':
+                            return `SSH Key (${source})`;
+                        default:
+                            return 'Public (No Auth)';
+                    }
+                },
+
+                gitCredentialSummary(repo) {
+                    const mode = this.normalizeGitAuthMode(repo.auth_mode);
+                    if (mode === 'none') {
+                        return 'No credentials required';
+                    }
+                    return repo.has_credentials ? 'Credentials configured' : 'Credentials missing';
+                },
+
+                gitSyncStatusLabel(status) {
+                    const value = String(status || '').trim().toLowerCase();
+                    switch (value) {
+                        case 'success':
+                            return 'Success';
+                        case 'failed':
+                            return 'Failed';
+                        case 'running':
+                            return 'Running';
+                        case 'never':
+                            return 'Never';
+                        default:
+                            return value === '' ? 'Unknown' : value.charAt(0).toUpperCase() + value.slice(1);
+                    }
+                },
+
+                gitSyncStatusBadgeClass(status) {
+                    const value = String(status || '').trim().toLowerCase();
+                    if (value === 'success') {
+                        return 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-200';
+                    }
+                    if (value === 'failed') {
+                        return 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-200';
+                    }
+                    if (value === 'running') {
+                        return 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-200';
+                    }
+                    return 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
+                },
+
+                hasStoredCredentialInput(form) {
+                    return [
+                        form.storedUsername,
+                        form.storedPassword,
+                        form.storedToken,
+                        form.storedPrivateKey,
+                        form.storedPassphrase,
+                        form.storedKnownHosts
+                    ].some((value) => String(value || '').trim() !== '');
+                },
+
+                buildGitRepoStoredCredentialPayload(form) {
+                    const mode = this.normalizeGitAuthMode(form.authMode);
+                    const hasInput = this.hasStoredCredentialInput(form);
+                    if (!hasInput) {
+                        return { payload: null, error: '' };
+                    }
+
+                    const username = String(form.storedUsername || '').trim();
+                    const password = String(form.storedPassword || '');
+                    const token = String(form.storedToken || '');
+                    const privateKey = String(form.storedPrivateKey || '');
+                    const passphrase = String(form.storedPassphrase || '');
+                    const knownHosts = String(form.storedKnownHosts || '');
+
+                    if (mode === 'https_token') {
+                        if (token.trim() === '') {
+                            return { payload: null, error: 'Stored token is required for HTTPS token auth' };
+                        }
+                        const payload = { token };
+                        if (username !== '') {
+                            payload.username = username;
+                        }
+                        return { payload, error: '' };
+                    }
+
+                    if (mode === 'https_basic') {
+                        if (username === '' || password.trim() === '') {
+                            return { payload: null, error: 'Stored username and password are required for HTTPS basic auth' };
+                        }
+                        return {
+                            payload: {
+                                username,
+                                password
+                            },
+                            error: ''
+                        };
+                    }
+
+                    if (mode === 'ssh_key') {
+                        if (privateKey.trim() === '' || knownHosts.trim() === '') {
+                            return { payload: null, error: 'Stored private key and known hosts are required for SSH auth' };
+                        }
+                        const payload = {
+                            private_key: privateKey,
+                            known_hosts: knownHosts
+                        };
+                        if (passphrase.trim() !== '') {
+                            payload.passphrase = passphrase;
+                        }
+                        return { payload, error: '' };
+                    }
+
+                    return { payload: null, error: 'Stored credentials are not supported for this auth mode' };
+                },
+
+                gitAuthChanged(form) {
+                    const currentMode = this.normalizeGitAuthMode(form.authMode);
+                    const currentSource = this.normalizeGitCredentialSource(form.credentialSource, currentMode);
+                    const originalMode = this.normalizeGitAuthMode(form.originalAuthMode);
+                    const originalSource = this.normalizeGitCredentialSource(form.originalCredentialSource, originalMode);
+                    return currentMode !== originalMode || currentSource !== originalSource;
+                },
+
+                hasEnvFileReferenceInputForMode(form) {
+                    const mode = this.normalizeGitAuthMode(form.authMode);
+                    if (mode === 'https_token') {
+                        return String(form.tokenRef || '').trim() !== '' || String(form.usernameRef || '').trim() !== '';
+                    }
+                    if (mode === 'https_basic') {
+                        return String(form.usernameRef || '').trim() !== '' || String(form.passwordRef || '').trim() !== '';
+                    }
+                    if (mode === 'ssh_key') {
+                        return String(form.keyRef || '').trim() !== '' || String(form.knownHostsRef || '').trim() !== '';
+                    }
+                    return false;
+                },
+
+                validateGitRepoForm(form, isEdit) {
+                    if (!String(form.url || '').trim()) {
+                        return 'Repository URL is required';
+                    }
+
+                    const mode = this.normalizeGitAuthMode(form.authMode);
+                    const source = this.normalizeGitCredentialSource(form.credentialSource, mode);
+                    const authChanged = isEdit ? this.gitAuthChanged(form) : mode !== 'none';
+                    if (mode === 'none') {
+                        return '';
+                    }
+
+                    if (!['env', 'file', 'stored'].includes(source)) {
+                        return 'Credential source is required for private repository auth';
+                    }
+                    if (source === 'stored' && !this.gitCapabilities.storedCredentialsEnabled) {
+                        return 'Stored-secret credentials are disabled on this server';
+                    }
+
+                    if (source === 'env' || source === 'file') {
+                        const hasEnvFileReferenceInput = this.hasEnvFileReferenceInputForMode(form);
+                        if (isEdit && !authChanged && !hasEnvFileReferenceInput) {
+                            return '';
+                        }
+                        if (mode === 'https_token' && !String(form.tokenRef || '').trim()) {
+                            return 'Token reference is required for HTTPS token auth';
+                        }
+                        if (mode === 'https_basic') {
+                            if (!String(form.usernameRef || '').trim() || !String(form.passwordRef || '').trim()) {
+                                return 'Username and password references are required for HTTPS basic auth';
+                            }
+                        }
+                        if (mode === 'ssh_key') {
+                            if (!String(form.keyRef || '').trim() || !String(form.knownHostsRef || '').trim()) {
+                                return 'Private key and known hosts references are required for SSH auth';
+                            }
+                        }
+                    }
+
+                    if (source === 'stored') {
+                        const storedPayload = this.buildGitRepoStoredCredentialPayload(form);
+                        if (storedPayload.error) {
+                            return storedPayload.error;
+                        }
+                        if (!storedPayload.payload && !(isEdit && !authChanged && form.hasCredentials)) {
+                            return 'Stored credential values are required for this auth mode';
+                        }
+                    }
+
+                    return '';
+                },
+
+                buildGitRepoAuthPayload(form) {
+                    const mode = this.normalizeGitAuthMode(form.authMode);
+                    if (mode === 'none') {
+                        return null;
+                    }
+
+                    const source = this.normalizeGitCredentialSource(form.credentialSource, mode);
+                    const payload = { mode, source };
+
+                    if (source === 'env' || source === 'file') {
+                        if (mode === 'https_token') {
+                            payload.token_ref = String(form.tokenRef || '').trim();
+                            const usernameRef = String(form.usernameRef || '').trim();
+                            if (usernameRef !== '') {
+                                payload.username_ref = usernameRef;
+                            }
+                        } else if (mode === 'https_basic') {
+                            payload.username_ref = String(form.usernameRef || '').trim();
+                            payload.password_ref = String(form.passwordRef || '').trim();
+                        } else if (mode === 'ssh_key') {
+                            payload.key_ref = String(form.keyRef || '').trim();
+                            payload.known_hosts_ref = String(form.knownHostsRef || '').trim();
+                        }
+                    }
+
+                    return payload;
+                },
+
+                buildGitRepoPayload(form, isEdit) {
+                    const payload = {
+                        url: String(form.url || '').trim()
+                    };
+
+                    const authPayload = this.buildGitRepoAuthPayload(form);
+                    const authChanged = isEdit ? this.gitAuthChanged(form) : false;
+                    const hasEnvFileReferenceInput = this.hasEnvFileReferenceInputForMode(form);
+                    if (isEdit) {
+                        payload.enabled = !!form.enabled;
+                        if (authChanged) {
+                            payload.auth = authPayload || { mode: 'none', source: 'none' };
+                        } else if (authPayload && hasEnvFileReferenceInput) {
+                            payload.auth = authPayload;
+                        }
+                    } else if (authPayload) {
+                        payload.auth = authPayload;
+                    }
+
+                    const storedPayload = this.buildGitRepoStoredCredentialPayload(form);
+                    if (storedPayload.payload) {
+                        payload.stored_credential = storedPayload.payload;
+                    }
+
+                    return payload;
+                },
+
                 async addGitRepo() {
-                    if (!this.newGitRepoUrl.trim()) {
-                        this.showToast('Repository URL is required', 'error');
+                    const validationError = this.validateGitRepoForm(this.newGitRepo, false);
+                    if (validationError) {
+                        this.showToast(validationError, 'error');
                         return;
                     }
 
@@ -3791,18 +4733,19 @@
                             headers: {
                                 'Content-Type': 'application/json',
                             },
-                            body: JSON.stringify({ url: this.newGitRepoUrl }),
+                            body: JSON.stringify(this.buildGitRepoPayload(this.newGitRepo, false)),
                         });
 
                         if (response.ok) {
                             await this.loadGitRepos();
-                            this.newGitRepoUrl = '';
+                            this.resetNewGitRepoForm();
                             this.showToast('Repository added successfully', 'success');
-                            // Reload skills to show new repo's skills
                             await this.loadSkills();
                         } else {
-                            const error = await response.json();
-                            this.showToast('Failed to add repository: ' + (error.error || 'Unknown error'), 'error');
+                            this.showToast(
+                                `Failed to add repository: ${await this.responseErrorMessage(response, 'Failed to add repository')}`,
+                                'error',
+                            );
                         }
                     } catch (error) {
                         console.error('Add repo failed:', error);
@@ -3813,16 +4756,27 @@
                 },
 
                 editGitRepo(repo) {
-                    this.editingGitRepo = {
-                        id: repo.id,
-                        url: repo.url
-                    };
+                    const authMode = this.normalizeGitAuthMode(repo.auth_mode);
+                    const credentialSource = this.normalizeGitCredentialSource(repo.credential_source, authMode);
+
+                    this.editingGitRepo = this.createEmptyGitRepoForm();
+                    this.editingGitRepo.id = repo.id;
+                    this.editingGitRepo.url = repo.url;
+                    this.editingGitRepo.enabled = !!repo.enabled;
+                    this.editingGitRepo.authMode = authMode;
+                    this.editingGitRepo.credentialSource = credentialSource;
+                    this.editingGitRepo.originalAuthMode = authMode;
+                    this.editingGitRepo.originalCredentialSource = credentialSource;
+                    this.editingGitRepo.hasCredentials = !!repo.has_credentials;
+                    this.editingGitRepo.advanced = authMode !== 'none';
+
                     this.showEditGitRepoModal = true;
                 },
 
                 async updateGitRepo() {
-                    if (!this.editingGitRepo.url.trim()) {
-                        this.showToast('Repository URL is required', 'error');
+                    const validationError = this.validateGitRepoForm(this.editingGitRepo, true);
+                    if (validationError) {
+                        this.showToast(validationError, 'error');
                         return;
                     }
 
@@ -3833,21 +4787,20 @@
                             headers: {
                                 'Content-Type': 'application/json',
                             },
-                            body: JSON.stringify({ 
-                                url: this.editingGitRepo.url,
-                                enabled: true
-                            }),
+                            body: JSON.stringify(this.buildGitRepoPayload(this.editingGitRepo, true)),
                         });
 
                         if (response.ok) {
                             await this.loadGitRepos();
                             this.showEditGitRepoModal = false;
+                            this.editingGitRepo = this.createEmptyGitRepoForm();
                             this.showToast('Repository updated successfully', 'success');
-                            // Reload skills
                             await this.loadSkills();
                         } else {
-                            const error = await response.json();
-                            this.showToast('Failed to update repository: ' + (error.error || 'Unknown error'), 'error');
+                            this.showToast(
+                                `Failed to update repository: ${await this.responseErrorMessage(response, 'Failed to update repository')}`,
+                                'error',
+                            );
                         }
                     } catch (error) {
                         console.error('Update repo failed:', error);
@@ -3858,7 +4811,7 @@
                 },
 
                 async deleteGitRepo(id) {
-                    const repo = this.gitRepos.find(r => r.id === id);
+                    const repo = this.gitRepos.find((r) => r.id === id);
                     if (!repo) return;
 
                     const confirmed = await this.showConfirm(`Are you sure you want to delete "${repo.name}"?`);
@@ -3875,11 +4828,12 @@
                         if (response.ok) {
                             await this.loadGitRepos();
                             this.showToast('Repository deleted successfully', 'success');
-                            // Reload skills
                             await this.loadSkills();
                         } else {
-                            const error = await response.json();
-                            this.showToast('Failed to delete repository: ' + (error.error || 'Unknown error'), 'error');
+                            this.showToast(
+                                `Failed to delete repository: ${await this.responseErrorMessage(response, 'Failed to delete repository')}`,
+                                'error',
+                            );
                         }
                     } catch (error) {
                         console.error('Delete repo failed:', error);
@@ -3897,12 +4851,14 @@
                         });
 
                         if (response.ok) {
+                            await this.loadGitRepos();
                             this.showToast('Repository synced successfully', 'success');
-                            // Reload skills
                             await this.loadSkills();
                         } else {
-                            const error = await response.json();
-                            this.showToast('Failed to sync repository: ' + (error.error || 'Unknown error'), 'error');
+                            this.showToast(
+                                `Failed to sync repository: ${await this.responseErrorMessage(response, 'Failed to sync repository')}`,
+                                'error',
+                            );
                         }
                     } catch (error) {
                         console.error('Sync repo failed:', error);
@@ -3924,11 +4880,12 @@
                             await this.loadGitRepos();
                             const status = updatedRepo.enabled ? 'enabled' : 'disabled';
                             this.showToast(`Repository ${status} successfully`, 'success');
-                            // Reload skills to reflect changes
                             await this.loadSkills();
                         } else {
-                            const error = await response.json();
-                            this.showToast('Failed to toggle repository: ' + (error.error || 'Unknown error'), 'error');
+                            this.showToast(
+                                `Failed to toggle repository: ${await this.responseErrorMessage(response, 'Failed to toggle repository')}`,
+                                'error',
+                            );
                         }
                     } catch (error) {
                         console.error('Toggle repo failed:', error);

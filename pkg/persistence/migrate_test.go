@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -116,6 +117,7 @@ func TestRunMigrations_WithEmptyDatabase_AppliesCurrentSchema(t *testing.T) {
 		"catalog_tags",
 		"catalog_item_taxonomy_assignments",
 		"catalog_item_tag_assignments",
+		"git_repo_credentials",
 	}
 	for _, table := range requiredTables {
 		exists, err := sqliteObjectExists(ctx, db, "table", table)
@@ -138,6 +140,7 @@ func TestRunMigrations_WithEmptyDatabase_AppliesCurrentSchema(t *testing.T) {
 		"idx_catalog_item_taxonomy_primary_subdomain",
 		"idx_catalog_item_taxonomy_secondary_subdomain",
 		"idx_catalog_item_tag_assignments_tag",
+		"idx_git_repo_credentials_key_metadata",
 	}
 	for _, index := range requiredIndexes {
 		exists, err := sqliteObjectExists(ctx, db, "index", index)
@@ -160,6 +163,10 @@ func TestRunMigrations_WithEmptyDatabase_AppliesCurrentSchema(t *testing.T) {
 		{table: "catalog_tags", column: "color"},
 		{table: "catalog_item_taxonomy_assignments", column: "secondary_subdomain_id"},
 		{table: "catalog_item_tag_assignments", column: "created_at"},
+		{table: "git_repo_credentials", column: "key_id"},
+		{table: "git_repo_credentials", column: "key_version"},
+		{table: "git_repo_credentials", column: "ciphertext"},
+		{table: "git_repo_credentials", column: "nonce"},
 	}
 	for _, expectation := range requiredColumns {
 		exists, err := sqliteColumnExists(ctx, db, expectation.table, expectation.column)
@@ -208,7 +215,7 @@ func TestRunMigrations_RepeatedExecution_IsIdempotent(t *testing.T) {
 	}
 }
 
-func TestRunMigrations_UpgradeFromVersionOneToLatest_AppliesTaxonomySchema(t *testing.T) {
+func TestRunMigrations_UpgradeFromVersionOneToLatest_AppliesPostV1Schema(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -246,21 +253,77 @@ func TestRunMigrations_UpgradeFromVersionOneToLatest_AppliesTaxonomySchema(t *te
 		t.Fatalf("expected schema version %d after upgrade, got %d", LatestSchemaVersion(), upgradedVersion)
 	}
 
-	requiredV2Tables := []string{
+	requiredPostV1Tables := []string{
 		"catalog_domains",
 		"catalog_subdomains",
 		"catalog_tags",
 		"catalog_item_taxonomy_assignments",
 		"catalog_item_tag_assignments",
+		"git_repo_credentials",
 	}
-	for _, table := range requiredV2Tables {
+	for _, table := range requiredPostV1Tables {
 		exists, err := sqliteObjectExists(ctx, db, "table", table)
 		if err != nil {
 			t.Fatalf("expected table existence query to succeed for %q, got %v", table, err)
 		}
 		if !exists {
-			t.Fatalf("expected v2 table %q to exist", table)
+			t.Fatalf("expected post-v1 table %q to exist", table)
 		}
+	}
+}
+
+func TestRunMigrations_UpgradeFromVersionTwoToLatest_AppliesGitCredentialSchema(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	db := openSQLiteTestDB(t, ctx)
+
+	if len(schemaMigrations) < 3 {
+		t.Fatalf("expected at least three schema migrations, got %d", len(schemaMigrations))
+	}
+
+	v2Runner := &MigrationRunner{
+		db:         db,
+		migrations: slices.Clone(schemaMigrations[:2]),
+	}
+	if err := v2Runner.Run(ctx); err != nil {
+		t.Fatalf("expected v2 migration run to succeed, got %v", err)
+	}
+
+	v2Version, err := v2Runner.CurrentVersion(ctx)
+	if err != nil {
+		t.Fatalf("expected v2 schema version query to succeed, got %v", err)
+	}
+	if v2Version != 2 {
+		t.Fatalf("expected schema version %d after v2 run, got %d", 2, v2Version)
+	}
+
+	if err := RunMigrations(ctx, db); err != nil {
+		t.Fatalf("expected migration upgrade from v2 to latest to succeed, got %v", err)
+	}
+
+	latestVersion, err := NewMigrationRunner(db).CurrentVersion(ctx)
+	if err != nil {
+		t.Fatalf("expected latest schema version query to succeed, got %v", err)
+	}
+	if latestVersion != LatestSchemaVersion() {
+		t.Fatalf("expected upgraded schema version %d, got %d", LatestSchemaVersion(), latestVersion)
+	}
+
+	credentialTableExists, err := sqliteObjectExists(ctx, db, "table", "git_repo_credentials")
+	if err != nil {
+		t.Fatalf("expected git_repo_credentials table existence query to succeed, got %v", err)
+	}
+	if !credentialTableExists {
+		t.Fatalf("expected git_repo_credentials table to exist after v2 upgrade")
+	}
+
+	keyMetadataIndexExists, err := sqliteObjectExists(ctx, db, "index", "idx_git_repo_credentials_key_metadata")
+	if err != nil {
+		t.Fatalf("expected key metadata index existence query to succeed, got %v", err)
+	}
+	if !keyMetadataIndexExists {
+		t.Fatalf("expected idx_git_repo_credentials_key_metadata index to exist after v2 upgrade")
 	}
 }
 
