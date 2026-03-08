@@ -70,9 +70,22 @@ type ConfigManager struct {
 
 // NewConfigManager creates a new ConfigManager
 func NewConfigManager(skillsDir string) *ConfigManager {
+	return NewConfigManagerWithPath(filepath.Join(skillsDir, ".git-repos.json"))
+}
+
+// NewConfigManagerWithPath creates a new ConfigManager for an explicit config file path.
+func NewConfigManagerWithPath(configPath string) *ConfigManager {
 	return &ConfigManager{
-		configPath: filepath.Join(skillsDir, ".git-repos.json"),
+		configPath: filepath.Clean(configPath),
 	}
+}
+
+// ConfigPath returns the backing configuration file path.
+func (cm *ConfigManager) ConfigPath() string {
+	if cm == nil {
+		return ""
+	}
+	return cm.configPath
 }
 
 // LoadConfig loads git repository configurations from the config file

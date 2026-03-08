@@ -45,7 +45,6 @@ SkillServer supports both **environment variables** and **command-line flags** w
 |----------|-------------|---------|-------------|
 | `SKILLSERVER_DIR` | `SKILLS_DIR` | `./skills` | Directory to store skills |
 | `SKILLSERVER_PORT` | `PORT` | `8080` | Port for the web server |
-| `SKILLSERVER_GIT_REPOS` | `GIT_REPOS` | (empty) | Comma-separated Git repository URLs |
 | `SKILLSERVER_GIT_ENABLE_STORED_CREDENTIALS` | (none) | `false` | Enable encrypted stored credentials for private Git repositories (requires persistence + master key) |
 | `SKILLSERVER_GIT_CREDENTIAL_MASTER_KEY` | (none) | (empty) | Inline master key for stored Git credentials (mutually exclusive with `SKILLSERVER_GIT_CREDENTIAL_MASTER_KEY_FILE`) |
 | `SKILLSERVER_GIT_CREDENTIAL_MASTER_KEY_FILE` | (none) | (empty) | File path containing the stored-credential master key (mutually exclusive with `SKILLSERVER_GIT_CREDENTIAL_MASTER_KEY`) |
@@ -75,7 +74,7 @@ SkillServer supports both **environment variables** and **command-line flags** w
 |------|---------|-------------|
 | `--dir` | `./skills` | Directory to store skills (overrides `SKILLSERVER_DIR` or `SKILLS_DIR`) |
 | `--port` | `8080` | Port for the web server (overrides `SKILLSERVER_PORT` or `PORT`) |
-| `--git-repos` | (empty) | Comma-separated list of Git repository URLs (overrides `SKILLSERVER_GIT_REPOS` or `GIT_REPOS`) |
+| `--git-repos` | (empty) | Optional comma-separated Git repository URLs to seed when no persisted repo config exists |
 | `--git-enable-stored-credentials` | `false` | Enable encrypted stored credentials for private Git repositories |
 | `--git-credential-master-key` | (empty) | Inline master key for stored credentials (mutually exclusive with `--git-credential-master-key-file`) |
 | `--git-credential-master-key-file` | (empty) | File path containing stored-credential master key (mutually exclusive with `--git-credential-master-key`) |
@@ -209,12 +208,11 @@ export SKILLSERVER_GIT_ENABLE_STORED_CREDENTIALS=false
 ### With Git Synchronization
 
 ```bash
-# Using environment variable
-export SKILLSERVER_GIT_REPOS="https://github.com/user/repo1.git,https://github.com/user/repo2.git"
-./skillserver
-
-# Using command-line flag
+# Optional bootstrap seeding on first start
 ./skillserver --git-repos "https://github.com/user/repo1.git,https://github.com/user/repo2.git"
+
+# Preferred ongoing workflow: add/edit repos in the Web UI
+# (Settings persist in the repo config file and continue syncing from origin)
 ```
 
 Note: there is no specific layout that the repository needs to follow. The only requirements is that in every skill you have a `SKILL.md` file, and that gets scanned automatically.
@@ -228,11 +226,16 @@ See [here](https://github.com/anthropics/skills) for an example repository.
 docker run -p 8080:8080 \
   -e SKILLSERVER_DIR=/app/skills \
   -e SKILLSERVER_PORT=8080 \
-  -e SKILLSERVER_GIT_REPOS="https://github.com/user/repo.git" \
   -v $(pwd)/skills:/app/skills \
   ghcr.io/mudler/skillserver:latest
 
 # Using command-line flags
+docker run -p 8080:8080 \
+  -v $(pwd)/skills:/app/skills \
+  ghcr.io/mudler/skillserver:latest \
+  --dir /app/skills --port 8080
+
+# Optional one-time bootstrap seeding
 docker run -p 8080:8080 \
   -v $(pwd)/skills:/app/skills \
   ghcr.io/mudler/skillserver:latest \
@@ -403,12 +406,11 @@ curl -sS -X POST "http://127.0.0.1:8080/api/git-repos" \
 docker run -p 8080:8080 \
   -v $(pwd)/skills:/app/skills \
   -v $(pwd)/secrets/git:/run/secrets/git:ro \
-  -e SKILLSERVER_GIT_REPOS="git@github.com:acme/private-skills.git" \
   -e REPO_ACME_PAT="***" \
   ghcr.io/mudler/skillserver:latest
 ```
 
-Use API `auth.source=env` with `token_ref=REPO_ACME_PAT`, or `auth.source=file` with file paths under `/run/secrets/git`.
+Add/update repositories through the Web UI or `POST /api/git-repos`. Use `auth.source=env` with `token_ref=REPO_ACME_PAT`, or `auth.source=file` with file paths under `/run/secrets/git`.
 
 ### Kubernetes Secret Patterns (Env + File)
 
@@ -563,8 +565,6 @@ mcp_servers:
     env:
       SKILLSERVER_DIR: "/app/skills"
       SKILLSERVER_PORT: "9090"
-      # Optional: Git repositories to sync
-      # SKILLSERVER_GIT_REPOS: "https://github.com/user/repo.git"
       # Enable logging for debugging (default: false, disabled to avoid interfering with MCP stdio)
       # SKILLSERVER_ENABLE_LOGGING: "true"
 ```
@@ -601,18 +601,13 @@ mcp:
       "mcpServers": {
         "skillserver": {
           "command": "docker",
-          "env": {
-            "SKILLSERVER_DIR": "/app/skills",
-            "SKILLSERVER_PORT": "9090",
-            "SKILLSERVER_GIT_REPOS": "https://github.com/user/repo.git"
-          },
           "args": [
             "run", "-i", "--rm",
             "-v", "/host/path/to/skills:/app/skills",
-            "-e", "SKILLSERVER_DIR",
-            "-e", "SKILLSERVER_PORT",
-            "-e", "SKILLSERVER_GIT_REPOS",
-            "ghcr.io/mudler/skillserver:latest"
+            "ghcr.io/mudler/skillserver:latest",
+            "--dir", "/app/skills",
+            "--port", "9090",
+            "--git-repos", "https://github.com/user/repo.git"
           ]
         }
       }
@@ -635,8 +630,7 @@ Add SkillServer to your Claude Desktop MCP configuration (typically `~/Library/A
       ],
       "env": {
         "SKILLSERVER_DIR": "/app/skills",
-        "SKILLSERVER_PORT": "9090",
-        "SKILLSERVER_GIT_REPOS": "https://github.com/user/repo.git"
+        "SKILLSERVER_PORT": "9090"
       }
     }
   }

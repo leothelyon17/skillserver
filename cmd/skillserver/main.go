@@ -27,11 +27,6 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-// getEnvOrEmpty returns the environment variable value or empty string
-func getEnvOrEmpty(key string) string {
-	return os.Getenv(key)
-}
-
 // getEnvBool returns the environment variable as a boolean, or default value
 func getEnvBool(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
@@ -58,10 +53,6 @@ func main() {
 	// Get default values from environment variables
 	defaultDir := getEnvOrDefault("SKILLSERVER_DIR", getEnvOrDefault("SKILLS_DIR", "./skills"))
 	defaultPort := getEnvOrDefault("SKILLSERVER_PORT", getEnvOrDefault("PORT", "8080"))
-	defaultGitRepos := getEnvOrEmpty("SKILLSERVER_GIT_REPOS")
-	if defaultGitRepos == "" {
-		defaultGitRepos = getEnvOrEmpty("GIT_REPOS")
-	}
 	// Logging defaults to false (disabled) to avoid interfering with MCP stdio
 	defaultEnableLogging := getEnvBool("SKILLSERVER_ENABLE_LOGGING", false)
 	defaultEnableImportDiscovery := getEnvBool("SKILLSERVER_ENABLE_IMPORT_DISCOVERY", true)
@@ -69,7 +60,11 @@ func main() {
 	// Parse command line flags (flags override environment variables)
 	skillsDir := flag.String("dir", defaultDir, "Directory to store skills (env: SKILLSERVER_DIR or SKILLS_DIR)")
 	port := flag.String("port", defaultPort, "Port for the web server (env: SKILLSERVER_PORT or PORT)")
-	gitReposFlag := flag.String("git-repos", defaultGitRepos, "Comma-separated list of Git repository URLs to sync (env: SKILLSERVER_GIT_REPOS or GIT_REPOS)")
+	gitReposFlag := flag.String(
+		"git-repos",
+		"",
+		"Optional comma-separated Git repository URLs to seed when no persisted repo config exists",
+	)
 	enableLogging := flag.Bool("enable-logging", defaultEnableLogging, "Enable logging to stderr (env: SKILLSERVER_ENABLE_LOGGING). Default: false (disabled to avoid interfering with MCP stdio)")
 	enableImportDiscovery := flag.Bool("enable-import-discovery", defaultEnableImportDiscovery, "Enable imported resource discovery and imports/... virtual resources (env: SKILLSERVER_ENABLE_IMPORT_DISCOVERY)")
 	mcpFlagValues := registerMCPRuntimeFlags(flag.CommandLine)
@@ -128,22 +123,26 @@ func main() {
 	log.SetOutput(logger.Writer())
 	log.SetFlags(logger.Flags())
 
-	// Get final values (flags take precedence over env vars)
+	// Resolve final startup values after parsing flags.
 	finalDir := *skillsDir
 	finalPort := *port
 	finalGitRepos := *gitReposFlag
 
-	// Initialize config manager
-	configManager := git.NewConfigManager(finalDir)
+	configManager := git.NewConfigManagerWithPath(
+		resolveGitRepoConfigPath(finalDir, persistenceRuntimeConfig),
+	)
+	if err := migrateLegacyGitRepoConfigIfNeeded(configManager, finalDir, persistenceRuntimeConfig); err != nil && *enableLogging {
+		log.Printf("Warning: Failed to migrate legacy git repo config: %v", err)
+	}
 
-	// Load git repos from config file or use command line/env repos.
+	// Load git repos from persisted config, optionally seeding from --git-repos when empty.
 	var gitRepoConfigs []git.GitRepoConfig
 	configRepos, err := configManager.LoadConfig()
 	if err != nil && *enableLogging {
 		log.Printf("Warning: Failed to load git repo config: %v", err)
 	}
 
-	// If config file has repos, use them; otherwise use command line/env repos
+	// If config file has repos, use them; otherwise use command line bootstrap values.
 	if len(configRepos) > 0 {
 		for _, repo := range configRepos {
 			if repo.Enabled {
@@ -151,7 +150,7 @@ func main() {
 			}
 		}
 	} else {
-		// Parse git repos from command line/env
+		// Parse git repos from command line bootstrap input.
 		if finalGitRepos != "" {
 			parsedRepos := strings.Split(finalGitRepos, ",")
 			seenCanonicalURLs := make(map[string]struct{}, len(parsedRepos))
@@ -178,7 +177,7 @@ func main() {
 				})
 			}
 
-			// Save to config file if we have repos from command line/env
+			// Save to persisted config if we have repos from command line bootstrap.
 			if len(gitRepoConfigs) > 0 {
 				if err := configManager.SaveConfig(gitRepoConfigs); err != nil && *enableLogging {
 					log.Printf("Warning: Failed to save git repo config: %v", err)
