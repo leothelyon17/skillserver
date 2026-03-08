@@ -26,10 +26,14 @@ async function openMetadataModal(page: Page, title: string) {
 
 function waitForMetadataPatch(page: Page) {
   return page.waitForResponse(
-    (response) =>
-      response.request().method() === "PATCH" &&
-      response.url().includes("/api/catalog/") &&
-      response.url().endsWith("/metadata"),
+    (response) => {
+      const url = new URL(response.url());
+      return (
+        response.request().method() === "PATCH" &&
+        url.pathname.startsWith("/api/catalog/") &&
+        url.pathname.endsWith("/metadata")
+      );
+    },
   );
 }
 
@@ -57,7 +61,7 @@ test.describe("WP-008 metadata overlay editing and mutability UX", () => {
   });
 
   test("keeps metadata modal open when metadata API is unavailable", async ({ page }) => {
-    await page.route("**/api/catalog/*/metadata", async (route) => {
+    await page.route("**/api/catalog/metadata*", async (route) => {
       if (route.request().method() !== "GET") {
         await route.continue();
         return;

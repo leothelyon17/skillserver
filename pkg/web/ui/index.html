@@ -3147,11 +3147,11 @@
                 },
 
                 catalogMetadataEndpoint(itemID) {
-                    return `/api/catalog/${encodeURIComponent(itemID)}/metadata`;
+                    return `/api/catalog/metadata?item_id=${encodeURIComponent(itemID)}`;
                 },
 
                 catalogTaxonomyEndpoint(itemID) {
-                    return `/api/catalog/${encodeURIComponent(itemID)}/taxonomy`;
+                    return `/api/catalog/taxonomy?item_id=${encodeURIComponent(itemID)}`;
                 },
 
                 taxonomyDomainsEndpoint(domainID = '') {

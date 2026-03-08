@@ -250,18 +250,22 @@ test.describe("WP-010 taxonomy manager and assignment UX", () => {
     const updatedName = "additive-skill wp010 taxonomy";
     await metadataModal.locator('[x-model="metadataEditorModal.form.displayName"]').fill(updatedName);
 
-    const taxonomyPatchResponse = page.waitForResponse(
-      (response) =>
+    const taxonomyPatchResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
         response.request().method() === "PATCH" &&
-        response.url().includes("/api/catalog/") &&
-        response.url().endsWith("/taxonomy"),
-    );
-    const metadataPatchResponse = page.waitForResponse(
-      (response) =>
+        url.pathname.startsWith("/api/catalog/") &&
+        url.pathname.endsWith("/taxonomy")
+      );
+    });
+    const metadataPatchResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
         response.request().method() === "PATCH" &&
-        response.url().includes("/api/catalog/") &&
-        response.url().endsWith("/metadata"),
-    );
+        url.pathname.startsWith("/api/catalog/") &&
+        url.pathname.endsWith("/metadata")
+      );
+    });
 
     await metadataModal.getByRole("button", { name: "Save Metadata" }).click();
     await expect((await taxonomyPatchResponse).ok()).toBeTruthy();
