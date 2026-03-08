@@ -605,6 +605,70 @@ func TestCatalogEffectiveService_List_MergesTaxonomyReferencesAndAppliesTaxonomy
 	}
 }
 
+func TestCatalogEffectiveService_List_MapsRuleClassifierAndSupportsRuleFiltering(t *testing.T) {
+	db, ctx := openCatalogSyncServiceTestDB(t)
+	sourceRepo := newCatalogSourceRepositoryForDomainTest(t, db)
+	overlayRepo := newCatalogOverlayRepositoryForDomainTest(t, db)
+
+	syncedAt := time.Date(2026, time.March, 5, 2, 30, 0, 0, time.UTC)
+	ruleItemID := BuildRuleCatalogItemID("repo-a/planner", "imports/rules/agents.md")
+	parentSkillID := "repo-a/planner"
+	resourcePath := "imports/rules/agents.md"
+	repoName := "repo-a"
+
+	mustUpsertCatalogSourceRowForDomainTest(t, ctx, sourceRepo, persistence.CatalogSourceRow{
+		ItemID:           ruleItemID,
+		Classifier:       persistence.CatalogClassifierRule,
+		SourceType:       persistence.CatalogSourceTypeGit,
+		SourceRepo:       &repoName,
+		ParentSkillID:    &parentSkillID,
+		ResourcePath:     &resourcePath,
+		Name:             "agents.md",
+		Description:      "project contributor rules",
+		Content:          "Follow contributor guardrails.",
+		ContentHash:      buildCatalogContentHash("Follow contributor guardrails."),
+		ContentWritable:  false,
+		MetadataWritable: true,
+		LastSyncedAt:     syncedAt,
+	})
+
+	service := newCatalogEffectiveServiceForDomainTest(t, db, sourceRepo, overlayRepo)
+
+	items, err := service.List(ctx, CatalogEffectiveListFilter{})
+	if err != nil {
+		t.Fatalf("expected effective list query to succeed, got %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one effective row, got %d", len(items))
+	}
+
+	ruleItem := items[0]
+	if ruleItem.Classifier != CatalogClassifierRule {
+		t.Fatalf("expected rule classifier, got %q", ruleItem.Classifier)
+	}
+	if ruleItem.ParentSkillID != parentSkillID {
+		t.Fatalf("expected parent skill id %q, got %q", parentSkillID, ruleItem.ParentSkillID)
+	}
+	if ruleItem.ResourcePath != resourcePath {
+		t.Fatalf("expected resource path %q, got %q", resourcePath, ruleItem.ResourcePath)
+	}
+	if ruleItem.ContentWritable {
+		t.Fatalf("expected git-backed rule item content_writable=false")
+	}
+	if !ruleItem.ReadOnly {
+		t.Fatalf("expected git-backed rule item read_only=true")
+	}
+
+	ruleClassifier := CatalogClassifierRule
+	filteredItems, err := service.List(ctx, CatalogEffectiveListFilter{Classifier: &ruleClassifier})
+	if err != nil {
+		t.Fatalf("expected rule-classifier-filtered list query to succeed, got %v", err)
+	}
+	if len(filteredItems) != 1 || filteredItems[0].ID != ruleItemID {
+		t.Fatalf("expected only rule row in classifier-filtered result, got %+v", filteredItems)
+	}
+}
+
 func newCatalogEffectiveServiceForDomainTest(
 	t *testing.T,
 	db *sql.DB,

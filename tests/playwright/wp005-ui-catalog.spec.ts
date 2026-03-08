@@ -77,18 +77,22 @@ test.describe("WP-005 unified catalog rendering and actions", () => {
 
     const showSkills = page.getByLabel("Show Skills");
     const showPrompts = page.getByLabel("Show Prompts");
+    const showRules = page.getByLabel("Show Rules");
 
     await expect(showSkills).toBeChecked();
     await expect(showPrompts).toBeChecked();
+    await expect(showRules).toBeChecked();
 
     await showPrompts.uncheck();
     await expect(catalogCard(page, "system.md")).toHaveCount(0);
+    await expect(catalogCard(page, "agents.md")).toBeVisible();
     await expect(catalogCard(page, "legacy-skill")).toBeVisible();
     await expect(catalogCard(page, "additive-skill")).toBeVisible();
     await expect(catalogCard(page, "fixture-git/git-skill")).toBeVisible();
-    await expect(page.locator(".skill-card")).toHaveCount(3);
+    await expect(page.locator(".skill-card")).toHaveCount(4);
 
     await showSkills.uncheck();
+    await showRules.uncheck();
     await expect(page.locator(".skill-card")).toHaveCount(0);
 
     await showPrompts.check();

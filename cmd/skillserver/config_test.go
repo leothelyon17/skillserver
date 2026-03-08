@@ -31,6 +31,16 @@ func TestMCPConfig_Defaults(t *testing.T) {
 	if cfg.EnableWrites != defaultMCPEnableWrites {
 		t.Fatalf("expected default enable writes %v, got %v", defaultMCPEnableWrites, cfg.EnableWrites)
 	}
+	if cfg.EnableMaterialization != defaultMCPEnableMaterialization {
+		t.Fatalf(
+			"expected default enable materialization %v, got %v",
+			defaultMCPEnableMaterialization,
+			cfg.EnableMaterialization,
+		)
+	}
+	if len(cfg.AllowedDestinationRoots) != 0 {
+		t.Fatalf("expected no default allowed destination roots, got %v", cfg.AllowedDestinationRoots)
+	}
 	if cfg.EnableEventStore != defaultMCPEnableEventStore {
 		t.Fatalf("expected default event store enabled %v, got %v", defaultMCPEnableEventStore, cfg.EnableEventStore)
 	}
@@ -41,13 +51,15 @@ func TestMCPConfig_Defaults(t *testing.T) {
 
 func TestMCPConfig_EnvOverrides(t *testing.T) {
 	env := map[string]string{
-		envMCPTransport:          "http",
-		envMCPHTTPPath:           "/remote-mcp",
-		envMCPSessionTimeout:     "45m",
-		envMCPStateless:          "true",
-		envMCPEnableWrites:       "true",
-		envMCPEnableEventStore:   "false",
-		envMCPEventStoreMaxBytes: "2097152",
+		envMCPTransport:               "http",
+		envMCPHTTPPath:                "/remote-mcp",
+		envMCPSessionTimeout:          "45m",
+		envMCPStateless:               "true",
+		envMCPEnableWrites:            "true",
+		envMCPEnableMaterialization:   "true",
+		envMCPAllowedDestinationRoots: "/workspace,/projects,/workspace",
+		envMCPEnableEventStore:        "false",
+		envMCPEventStoreMaxBytes:      "2097152",
 	}
 
 	cfg, err := parseMCPConfigForTest(nil, env)
@@ -70,6 +82,13 @@ func TestMCPConfig_EnvOverrides(t *testing.T) {
 	if !cfg.EnableWrites {
 		t.Fatalf("expected enable writes true from env")
 	}
+	if !cfg.EnableMaterialization {
+		t.Fatalf("expected enable materialization true from env")
+	}
+	expectedRoots := []string{"/workspace", "/projects"}
+	if !reflect.DeepEqual(cfg.AllowedDestinationRoots, expectedRoots) {
+		t.Fatalf("expected allowed destination roots %v, got %v", expectedRoots, cfg.AllowedDestinationRoots)
+	}
 	if cfg.EnableEventStore {
 		t.Fatalf("expected event store false from env")
 	}
@@ -80,13 +99,15 @@ func TestMCPConfig_EnvOverrides(t *testing.T) {
 
 func TestMCPConfig_FlagPrecedence(t *testing.T) {
 	env := map[string]string{
-		envMCPTransport:          "http",
-		envMCPHTTPPath:           "/env-mcp",
-		envMCPSessionTimeout:     "1h",
-		envMCPStateless:          "false",
-		envMCPEnableWrites:       "false",
-		envMCPEnableEventStore:   "true",
-		envMCPEventStoreMaxBytes: "1024",
+		envMCPTransport:               "http",
+		envMCPHTTPPath:                "/env-mcp",
+		envMCPSessionTimeout:          "1h",
+		envMCPStateless:               "false",
+		envMCPEnableWrites:            "false",
+		envMCPEnableMaterialization:   "false",
+		envMCPAllowedDestinationRoots: "/env-workspace,/env-projects",
+		envMCPEnableEventStore:        "true",
+		envMCPEventStoreMaxBytes:      "1024",
 	}
 
 	args := []string{
@@ -95,6 +116,8 @@ func TestMCPConfig_FlagPrecedence(t *testing.T) {
 		"--mcp-session-timeout=15m",
 		"--mcp-stateless=true",
 		"--mcp-enable-writes=true",
+		"--mcp-enable-materialization=true",
+		"--mcp-allowed-destination-roots=/flag-workspace,/flag-projects,/flag-workspace",
 		"--mcp-enable-event-store=false",
 		"--mcp-event-store-max-bytes=2048",
 	}
@@ -118,6 +141,13 @@ func TestMCPConfig_FlagPrecedence(t *testing.T) {
 	}
 	if !cfg.EnableWrites {
 		t.Fatalf("expected enable writes true from flag")
+	}
+	if !cfg.EnableMaterialization {
+		t.Fatalf("expected enable materialization true from flag")
+	}
+	expectedRoots := []string{"/flag-workspace", "/flag-projects"}
+	if !reflect.DeepEqual(cfg.AllowedDestinationRoots, expectedRoots) {
+		t.Fatalf("expected allowed destination roots %v, got %v", expectedRoots, cfg.AllowedDestinationRoots)
 	}
 	if cfg.EnableEventStore {
 		t.Fatalf("expected event store false from flag")
@@ -187,6 +217,42 @@ func TestMCPConfig_InvalidEnableWritesBoolean(t *testing.T) {
 	}
 }
 
+func TestMCPConfig_InvalidAllowedDestinationRootsRelativePath(t *testing.T) {
+	_, err := parseMCPConfigForTest(nil, map[string]string{
+		envMCPAllowedDestinationRoots: "relative/path",
+	})
+	if err == nil {
+		t.Fatalf("expected invalid allowed destination roots error, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("expected absolute path validation error, got: %v", err)
+	}
+}
+
+func TestMCPConfig_InvalidAllowedDestinationRootsEmptyEntry(t *testing.T) {
+	_, err := parseMCPConfigForTest(nil, map[string]string{
+		envMCPAllowedDestinationRoots: "/workspace, ,/projects",
+	})
+	if err == nil {
+		t.Fatalf("expected empty entry validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty path value") {
+		t.Fatalf("expected empty path validation error, got: %v", err)
+	}
+}
+
+func TestMCPConfig_EnableMaterializationRequiresAllowedDestinationRoots(t *testing.T) {
+	_, err := parseMCPConfigForTest(nil, map[string]string{
+		envMCPEnableMaterialization: "true",
+	})
+	if err == nil {
+		t.Fatalf("expected missing allowed destination roots error, got nil")
+	}
+	if !strings.Contains(err.Error(), "requires at least one allowed destination root") {
+		t.Fatalf("expected materialization roots validation error, got: %v", err)
+	}
+}
+
 func TestCatalogConfig_Defaults(t *testing.T) {
 	cfg, err := parseCatalogConfigForTest(nil, nil)
 	if err != nil {
@@ -199,12 +265,24 @@ func TestCatalogConfig_Defaults(t *testing.T) {
 	if !reflect.DeepEqual(cfg.PromptDirectoryAllowlist, defaultCatalogPromptDirectoryAllowlist) {
 		t.Fatalf("expected default prompt dirs %v, got %v", defaultCatalogPromptDirectoryAllowlist, cfg.PromptDirectoryAllowlist)
 	}
+	if cfg.EnableRules != defaultCatalogEnableRules {
+		t.Fatalf("expected default enable rules %v, got %v", defaultCatalogEnableRules, cfg.EnableRules)
+	}
+	if !reflect.DeepEqual(cfg.RuleDirectoryAllowlist, defaultCatalogRuleDirectoryAllowlist) {
+		t.Fatalf("expected default rule dirs %v, got %v", defaultCatalogRuleDirectoryAllowlist, cfg.RuleDirectoryAllowlist)
+	}
+	if !reflect.DeepEqual(cfg.RuleFilenameAllowlist, defaultCatalogRuleFilenameAllowlist) {
+		t.Fatalf("expected default rule filenames %v, got %v", defaultCatalogRuleFilenameAllowlist, cfg.RuleFilenameAllowlist)
+	}
 }
 
 func TestCatalogConfig_EnvOverrides(t *testing.T) {
 	env := map[string]string{
 		envCatalogEnablePrompts: "false",
 		envCatalogPromptDirs:    " prompts , /agents/ , prompt , prompts ",
+		envCatalogEnableRules:   "false",
+		envCatalogRuleDirs:      " rules , /governance/ , rule , rules ",
+		envCatalogRuleFilenames: " AGENTS.md , claude.md , rules.markdown , agents.md ",
 	}
 
 	cfg, err := parseCatalogConfigForTest(nil, env)
@@ -219,16 +297,33 @@ func TestCatalogConfig_EnvOverrides(t *testing.T) {
 	if !reflect.DeepEqual(cfg.PromptDirectoryAllowlist, expectedDirs) {
 		t.Fatalf("expected prompt dirs %v, got %v", expectedDirs, cfg.PromptDirectoryAllowlist)
 	}
+	if cfg.EnableRules {
+		t.Fatalf("expected env enable rules false")
+	}
+	expectedRuleDirs := []string{"rules", "governance", "rule"}
+	if !reflect.DeepEqual(cfg.RuleDirectoryAllowlist, expectedRuleDirs) {
+		t.Fatalf("expected rule dirs %v, got %v", expectedRuleDirs, cfg.RuleDirectoryAllowlist)
+	}
+	expectedRuleFilenames := []string{"agents.md", "claude.md", "rules.markdown"}
+	if !reflect.DeepEqual(cfg.RuleFilenameAllowlist, expectedRuleFilenames) {
+		t.Fatalf("expected rule filenames %v, got %v", expectedRuleFilenames, cfg.RuleFilenameAllowlist)
+	}
 }
 
 func TestCatalogConfig_FlagPrecedence(t *testing.T) {
 	env := map[string]string{
 		envCatalogEnablePrompts: "true",
 		envCatalogPromptDirs:    "prompts,agents",
+		envCatalogEnableRules:   "true",
+		envCatalogRuleDirs:      "rules,policy",
+		envCatalogRuleFilenames: "agents.md,rules.md",
 	}
 	args := []string{
 		"--catalog-enable-prompts=false",
 		"--catalog-prompt-dirs=agent,prompt",
+		"--catalog-enable-rules=false",
+		"--catalog-rule-dirs=governance,rule",
+		"--catalog-rule-filenames=claude.md,gemini.md",
 	}
 
 	cfg, err := parseCatalogConfigForTest(args, env)
@@ -242,6 +337,17 @@ func TestCatalogConfig_FlagPrecedence(t *testing.T) {
 	expectedDirs := []string{"agent", "prompt"}
 	if !reflect.DeepEqual(cfg.PromptDirectoryAllowlist, expectedDirs) {
 		t.Fatalf("expected prompt dirs %v, got %v", expectedDirs, cfg.PromptDirectoryAllowlist)
+	}
+	if cfg.EnableRules {
+		t.Fatalf("expected enable rules false from flag")
+	}
+	expectedRuleDirs := []string{"governance", "rule"}
+	if !reflect.DeepEqual(cfg.RuleDirectoryAllowlist, expectedRuleDirs) {
+		t.Fatalf("expected rule dirs %v, got %v", expectedRuleDirs, cfg.RuleDirectoryAllowlist)
+	}
+	expectedRuleFilenames := []string{"claude.md", "gemini.md"}
+	if !reflect.DeepEqual(cfg.RuleFilenameAllowlist, expectedRuleFilenames) {
+		t.Fatalf("expected rule filenames %v, got %v", expectedRuleFilenames, cfg.RuleFilenameAllowlist)
 	}
 }
 
@@ -266,6 +372,42 @@ func TestCatalogConfig_EmptyPromptDirs(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "must include at least one directory name") {
 		t.Fatalf("expected empty prompt dirs validation error, got: %v", err)
+	}
+}
+
+func TestCatalogConfig_InvalidRuleDirs(t *testing.T) {
+	_, err := parseCatalogConfigForTest(nil, map[string]string{
+		envCatalogRuleDirs: "rules,nested/path",
+	})
+	if err == nil {
+		t.Fatalf("expected invalid rule dirs error, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be a single directory name") {
+		t.Fatalf("expected actionable rule dirs validation error, got: %v", err)
+	}
+}
+
+func TestCatalogConfig_InvalidRuleFilenames(t *testing.T) {
+	_, err := parseCatalogConfigForTest(nil, map[string]string{
+		envCatalogRuleFilenames: "AGENTS.md,not-markdown.txt",
+	})
+	if err == nil {
+		t.Fatalf("expected invalid rule filenames error, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be a markdown filename") {
+		t.Fatalf("expected actionable rule filename validation error, got: %v", err)
+	}
+}
+
+func TestCatalogConfig_EmptyRuleFilenames(t *testing.T) {
+	_, err := parseCatalogConfigForTest(nil, map[string]string{
+		envCatalogRuleFilenames: " , ",
+	})
+	if err == nil {
+		t.Fatalf("expected empty rule filenames error, got nil")
+	}
+	if !strings.Contains(err.Error(), "must include at least one markdown filename") {
+		t.Fatalf("expected empty rule filename validation error, got: %v", err)
 	}
 }
 

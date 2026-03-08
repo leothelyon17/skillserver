@@ -15,7 +15,7 @@
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
 <body class="bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors">
-    <div x-data="skillServer()" x-init="initTheme(); loadSkills(); initKeyboardShortcuts()" @keydown.window="handleKeyboardShortcut($event)" class="container">
+    <div x-data="skillServer()" x-init="initTheme(); loadRuntimeCapabilities(); loadSkills(); initKeyboardShortcuts()" @keydown.window="handleKeyboardShortcut($event)" class="container">
         <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-gray-800 rounded-lg shadow p-5">
             <div class="flex items-center gap-3 cursor-pointer hover:opacity-80 transition-opacity" @click="cancelEdit()">
                 <img src="/images/logo.png" alt="SkillServer Logo" class="h-20 sm:h-24 w-auto dark:brightness-150 dark:contrast-125 dark:drop-shadow-lg">
@@ -72,7 +72,7 @@
                 type="text" 
                 x-model="searchQuery" 
                 @input="queueSearchSkills()"
-                placeholder="Search skills and prompts..."
+                placeholder="Search skills, prompts, and rules..."
                 class="search-input pl-10 pr-20 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
                 id="search-input"
             >
@@ -95,6 +95,10 @@
             <label class="inline-flex items-center gap-2 cursor-pointer select-none">
                 <input type="checkbox" x-model="showPrompts" @change="searchSkills()" class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800">
                 <span>Show Prompts</span>
+            </label>
+            <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" x-model="showRules" @change="searchSkills()" class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800">
+                <span>Show Rules</span>
             </label>
             <button
                 @click="toggleTaxonomyFilters()"
@@ -222,7 +226,7 @@
                                 :class="classifierBadgeClass(item.classifier)"
                                 x-text="normalizeClassifier(item.classifier)"
                             ></span>
-                            <span x-show="isItemReadOnly(item) || normalizeClassifier(item.classifier) === 'prompt'" class="read-only-badge bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300">
+                            <span x-show="isItemReadOnly(item) || normalizeClassifier(item.classifier) === 'prompt' || normalizeClassifier(item.classifier) === 'rule'" class="read-only-badge bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300">
                             <i class="fas fa-lock mr-1"></i>Read-only
                         </span>
                         </div>
@@ -259,13 +263,28 @@
                         <button x-show="isSkillCatalogItem(item)" @click.stop="exportSkill(catalogSkillIdentifier(item))" class="btn btn-small btn-secondary">
                             <i class="fas fa-download mr-1"></i>Export
                         </button>
+                        <button
+                            x-show="isMaterializableCatalogItem(item)"
+                            @click.stop="openMaterializationModal(item)"
+                            :disabled="!isMaterializationEnabled()"
+                            :title="materializationDisabledReason()"
+                            :class="isMaterializationEnabled() ? 'btn btn-small btn-secondary' : 'btn btn-small btn-secondary opacity-50 cursor-not-allowed'"
+                        >
+                            <i class="fas fa-folder-tree mr-1"></i>Materialize
+                        </button>
                         <button x-show="isSkillCatalogItem(item) && canEditItemContent(item)" @click.stop="deleteSkill(catalogSkillIdentifier(item))" class="btn btn-small btn-danger">
                             <i class="fas fa-trash mr-1"></i>Delete
                         </button>
-                        <button x-show="normalizeClassifier(item.classifier) === 'prompt'" @click.stop="openPromptPreview(item)" class="btn btn-small btn-secondary">
+                        <button x-show="isFileBackedCatalogItem(item)" @click.stop="openCatalogContentPreview(item)" class="btn btn-small btn-secondary">
                             <i class="fas fa-eye mr-1"></i>View
                         </button>
                     </div>
+                    <p
+                        x-show="isMaterializableCatalogItem(item) && !isMaterializationEnabled()"
+                        class="mt-2 text-xs text-amber-700 dark:text-amber-300"
+                    >
+                        Materialization is disabled by runtime capability settings.
+                    </p>
                 </div>
             </template>
             <div x-show="filteredSkills.length === 0" class="empty-state">
@@ -557,6 +576,12 @@
                     >
                         Prompt catalog entries are read-only. Open the parent skill to edit: <span class="font-semibold" x-text="resourceEditorModal.parentSkillID || 'n/a'"></span>.
                     </div>
+                    <div
+                        x-show="resourceEditorModal.classifier === 'rule'"
+                        class="mb-3 text-sm rounded border border-blue-200 bg-blue-50 px-3 py-2 text-blue-700 dark:border-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
+                    >
+                        Rule catalog entries are read-only. Open the parent skill to manage this rule: <span class="font-semibold" x-text="resourceEditorModal.parentSkillID || 'n/a'"></span>.
+                    </div>
                     <textarea 
                         x-model="resourceEditorModal.content"
                         :readonly="!resourceEditorModal.writable"
@@ -782,6 +807,175 @@
                         <i x-show="!metadataEditorModal.saving" class="fas fa-save mr-2"></i>
                         <i x-show="metadataEditorModal.saving" class="fas fa-spinner fa-spin mr-2"></i>
                         Save Metadata
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Catalog Materialization Modal -->
+        <div
+            x-show="materializationModal.show"
+            @keydown.escape.window="closeMaterializationModal()"
+            class="fixed inset-0 bg-black bg-opacity-50 z-[70] flex items-center justify-center p-4"
+            style="display: none;"
+        >
+            <div
+                @click.stop
+                class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-4xl max-h-[92vh] flex flex-col"
+            >
+                <div class="flex justify-between items-center p-4 border-b border-gray-200 dark:border-gray-700">
+                    <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                        <i class="fas fa-folder-tree mr-2"></i>Materialize Catalog Item
+                    </h3>
+                    <button
+                        @click="closeMaterializationModal()"
+                        class="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
+                    >
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+
+                <div class="flex-1 overflow-auto p-4 space-y-4">
+                    <div class="text-sm rounded border border-gray-200 bg-gray-50 px-3 py-2 text-gray-700 dark:border-gray-700 dark:bg-gray-900/50 dark:text-gray-300">
+                        Item:
+                        <span class="font-semibold" x-text="materializationModal.itemName || materializationModal.itemID"></span>
+                        <span class="mx-2">•</span>
+                        Classifier:
+                        <span class="uppercase font-semibold" x-text="materializationModal.classifier || 'n/a'"></span>
+                        <span class="mx-2">•</span>
+                        ID:
+                        <span class="font-mono text-xs" x-text="materializationModal.itemID"></span>
+                    </div>
+
+                    <div
+                        x-show="!isMaterializationEnabled()"
+                        class="text-sm rounded border border-amber-200 bg-amber-50 px-3 py-2 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300"
+                    >
+                        <i class="fas fa-ban mr-1"></i>Materialization is disabled by runtime capability settings.
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div class="md:col-span-2">
+                            <label class="form-label">Destination Directory</label>
+                            <input
+                                type="text"
+                                x-model="materializationModal.destinationDir"
+                                :disabled="materializationModal.loading || materializationModal.writing || !isMaterializationEnabled()"
+                                class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                placeholder="/absolute/project/path"
+                            >
+                        </div>
+                        <div>
+                            <label class="form-label">Conflict Policy</label>
+                            <select
+                                x-model="materializationModal.conflictPolicy"
+                                :disabled="materializationModal.loading || materializationModal.writing || !isMaterializationEnabled()"
+                                class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                            >
+                                <option value="error">error (stop on conflict)</option>
+                                <option value="overwrite">overwrite</option>
+                                <option value="skip">skip</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="form-label">Allowed Roots</label>
+                            <div class="max-h-24 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 text-xs dark:border-gray-700 dark:bg-gray-900/40">
+                                <template x-if="runtimeCapabilities.mcp.allowedDestinationRoots.length === 0">
+                                    <p class="text-gray-500 dark:text-gray-400">No runtime allowlist roots exposed.</p>
+                                </template>
+                                <template x-for="root in runtimeCapabilities.mcp.allowedDestinationRoots" :key="`materialize-root-${root}`">
+                                    <p class="font-mono text-gray-700 dark:text-gray-200" x-text="root"></p>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+
+                    <p
+                        x-show="materializationModal.errorMessage"
+                        class="text-sm rounded border border-red-200 bg-red-50 px-3 py-2 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+                        x-text="materializationModal.errorMessage"
+                    ></p>
+
+                    <div x-show="materializationModal.previewLoaded" class="space-y-3">
+                        <div class="rounded border border-gray-200 dark:border-gray-700 p-3">
+                            <p class="text-sm text-gray-700 dark:text-gray-300">
+                                <span class="font-semibold">Resolved destination:</span>
+                                <span class="font-mono" x-text="materializationModal.resolvedDestinationDir || materializationModal.destinationDir"></span>
+                            </p>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                Preview shows planned file actions. No writes occur until you click Materialize.
+                            </p>
+                        </div>
+
+                        <template x-for="itemResult in materializationModal.results" :key="`materialize-item-${itemResult.item_id}`">
+                            <div class="rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
+                                <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 text-sm flex flex-wrap items-center gap-2">
+                                    <span class="font-semibold text-gray-900 dark:text-gray-100" x-text="itemResult.item_id"></span>
+                                    <span
+                                        class="text-xs px-2 py-0.5 rounded-full font-medium"
+                                        :class="materializationStatusClass(itemResult.status)"
+                                        x-text="itemResult.status"
+                                    ></span>
+                                </div>
+                                <div class="overflow-auto max-h-64">
+                                    <table class="w-full text-xs">
+                                        <thead class="bg-gray-100 dark:bg-gray-900 text-gray-700 dark:text-gray-300">
+                                            <tr>
+                                                <th class="px-3 py-2 text-left">Action</th>
+                                                <th class="px-3 py-2 text-left">Target</th>
+                                                <th class="px-3 py-2 text-left">Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <template x-for="fileResult in itemResult.files" :key="`${itemResult.item_id}-${fileResult.resolved_path}`">
+                                                <tr class="border-t border-gray-200 dark:border-gray-700">
+                                                    <td class="px-3 py-2">
+                                                        <span
+                                                            class="text-[11px] px-2 py-0.5 rounded-full font-medium uppercase"
+                                                            :class="materializationActionClass(fileResult.action)"
+                                                            x-text="fileResult.action"
+                                                        ></span>
+                                                    </td>
+                                                    <td class="px-3 py-2 font-mono break-all text-gray-700 dark:text-gray-200" x-text="fileResult.resolved_path || fileResult.target_path"></td>
+                                                    <td class="px-3 py-2 text-gray-600 dark:text-gray-300">
+                                                        <span x-show="fileResult.error" class="text-red-600 dark:text-red-300" x-text="fileResult.error"></span>
+                                                        <span x-show="!fileResult.error && fileResult.exists">exists</span>
+                                                        <span x-show="!fileResult.error && !fileResult.exists">new</span>
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-3 p-4 border-t border-gray-200 dark:border-gray-700">
+                    <button
+                        @click="closeMaterializationModal()"
+                        class="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        @click="previewMaterialization()"
+                        class="px-4 py-2 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 transition"
+                        :disabled="materializationModal.loading || materializationModal.writing || !isMaterializationEnabled()"
+                    >
+                        <i x-show="!materializationModal.loading" class="fas fa-list-check mr-2"></i>
+                        <i x-show="materializationModal.loading" class="fas fa-spinner fa-spin mr-2"></i>
+                        Preview Dry-Run
+                    </button>
+                    <button
+                        @click="executeMaterialization()"
+                        class="px-4 py-2 bg-green-600 dark:bg-green-500 text-white rounded hover:bg-green-700 dark:hover:bg-green-600 transition"
+                        :disabled="materializationModal.loading || materializationModal.writing || !materializationModal.previewLoaded || !isMaterializationEnabled()"
+                    >
+                        <i x-show="!materializationModal.writing" class="fas fa-folder-open mr-2"></i>
+                        <i x-show="materializationModal.writing" class="fas fa-spinner fa-spin mr-2"></i>
+                        Materialize
                     </button>
                 </div>
             </div>
@@ -1993,6 +2187,7 @@
                 searchQuery: '',
                 showSkills: true,
                 showPrompts: true,
+                showRules: true,
                 showOptionsMenu: false,
                 showTaxonomyFilters: false,
                 taxonomyFilters: {
@@ -2096,6 +2291,34 @@
                     },
                     taxonomyErrorMessage: '',
                     errorMessage: ''
+                },
+                materializationModal: {
+                    show: false,
+                    loading: false,
+                    writing: false,
+                    previewLoaded: false,
+                    itemID: '',
+                    itemName: '',
+                    classifier: '',
+                    destinationDir: '',
+                    conflictPolicy: 'error',
+                    resolvedDestinationDir: '',
+                    results: [],
+                    errorMessage: ''
+                },
+                runtimeCapabilities: {
+                    loading: false,
+                    loaded: false,
+                    errorMessage: '',
+                    catalog: {
+                        rulesEnabled: false,
+                        ruleDirectoryAllowlist: [],
+                        ruleFilenameAllowlist: []
+                    },
+                    mcp: {
+                        materializationEnabled: false,
+                        allowedDestinationRoots: []
+                    }
                 },
                 toasts: [],
                 isLoading: false,
@@ -2239,7 +2462,9 @@
 
                     // Esc to cancel
                     if (event.key === 'Escape') {
-                        if (this.resourceEditorModal.show) {
+                        if (this.materializationModal.show) {
+                            this.closeMaterializationModal();
+                        } else if (this.resourceEditorModal.show) {
                             this.resourceEditorModal.show = false;
                         } else if (this.confirmModal.show) {
                             this.confirmModal.show = false;
@@ -2271,14 +2496,28 @@
 
                 normalizeClassifier(classifier) {
                     const value = String(classifier || '').trim().toLowerCase();
-                    if (value === 'prompt') {
-                        return 'prompt';
+                    if (value === 'prompt' || value === 'rule' || value === 'skill') {
+                        return value;
                     }
                     return 'skill';
                 },
 
                 hasVisibleClassifierSelection() {
-                    return this.showSkills || this.showPrompts;
+                    return this.showSkills || this.showPrompts || this.showRules;
+                },
+
+                selectedClassifierFilters() {
+                    const selected = [];
+                    if (this.showSkills) {
+                        selected.push('skill');
+                    }
+                    if (this.showPrompts) {
+                        selected.push('prompt');
+                    }
+                    if (this.showRules) {
+                        selected.push('rule');
+                    }
+                    return selected;
                 },
 
                 hasActiveTaxonomyFilters() {
@@ -2529,15 +2768,16 @@
                     if (classifier === 'prompt') {
                         return this.showPrompts;
                     }
+                    if (classifier === 'rule') {
+                        return this.showRules;
+                    }
                     return this.showSkills;
                 },
 
                 classifierFilterParam() {
-                    if (this.showSkills && !this.showPrompts) {
-                        return 'skill';
-                    }
-                    if (!this.showSkills && this.showPrompts) {
-                        return 'prompt';
+                    const selected = this.selectedClassifierFilters();
+                    if (selected.length === 1) {
+                        return selected[0];
                     }
                     return '';
                 },
@@ -2614,6 +2854,26 @@
                     return this.normalizeClassifier(item && item.classifier) === 'skill';
                 },
 
+                isFileBackedCatalogItem(item) {
+                    const classifier = this.normalizeClassifier(item && item.classifier);
+                    return classifier === 'prompt' || classifier === 'rule';
+                },
+
+                isMaterializableCatalogItem(item) {
+                    return this.isFileBackedCatalogItem(item);
+                },
+
+                isMaterializationEnabled() {
+                    return !!this.runtimeCapabilities.mcp.materializationEnabled;
+                },
+
+                materializationDisabledReason() {
+                    if (this.isMaterializationEnabled()) {
+                        return '';
+                    }
+                    return 'Materialization is disabled by runtime capability settings';
+                },
+
                 catalogSkillIdentifier(item) {
                     if (!item || typeof item !== 'object') {
                         return '';
@@ -2688,8 +2948,12 @@
                 },
 
                 classifierBadgeClass(classifier) {
-                    if (this.normalizeClassifier(classifier) === 'prompt') {
+                    const normalized = this.normalizeClassifier(classifier);
+                    if (normalized === 'prompt') {
                         return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-200';
+                    }
+                    if (normalized === 'rule') {
+                        return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200';
                     }
                     return 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200';
                 },
@@ -2845,8 +3109,8 @@
                     }
 
                     const classifier = this.normalizeClassifier(item.classifier);
-                    if (classifier === 'prompt') {
-                        this.openPromptPreview(item);
+                    if (classifier === 'prompt' || classifier === 'rule') {
+                        this.openCatalogContentPreview(item);
                         return;
                     }
 
@@ -3658,18 +3922,22 @@
                     }
                 },
 
-                openPromptPreview(item) {
+                openCatalogContentPreview(item) {
                     this.resourceEditorModal = {
                         show: true,
                         content: item.content || '',
                         originalContent: item.content || '',
                         path: item.resource_path || item.id || '',
-                        name: item.name || 'Prompt',
+                        name: item.name || (this.normalizeClassifier(item.classifier) === 'rule' ? 'Rule' : 'Prompt'),
                         writable: false,
                         origin: this.isItemReadOnly(item) ? 'imported' : 'direct',
-                        classifier: 'prompt',
+                        classifier: this.normalizeClassifier(item.classifier),
                         parentSkillID: item.parent_skill_id || ''
                     };
+                },
+
+                openPromptPreview(item) {
+                    this.openCatalogContentPreview(item);
                 },
 
                 validateName() {
@@ -4028,6 +4296,7 @@
                         taxonomyErrorMessage: '',
                         errorMessage: ''
                     };
+                    this.resetMaterializationModal();
                 },
 
                 async loadResources() {
@@ -4260,6 +4529,215 @@
                     }
                 },
 
+                resetMaterializationModal() {
+                    this.materializationModal = {
+                        show: false,
+                        loading: false,
+                        writing: false,
+                        previewLoaded: false,
+                        itemID: '',
+                        itemName: '',
+                        classifier: '',
+                        destinationDir: '',
+                        conflictPolicy: 'error',
+                        resolvedDestinationDir: '',
+                        results: [],
+                        errorMessage: ''
+                    };
+                },
+
+                closeMaterializationModal() {
+                    this.resetMaterializationModal();
+                },
+
+                suggestMaterializationDestination(item) {
+                    const roots = this.runtimeCapabilities.mcp.allowedDestinationRoots || [];
+                    if (!Array.isArray(roots) || roots.length === 0) {
+                        return '';
+                    }
+
+                    const root = String(roots[0] || '').trim().replace(/[\\]+/g, '/').replace(/\/+$/, '');
+                    if (!root) {
+                        return '';
+                    }
+
+                    const classifier = this.normalizeClassifier(item && item.classifier);
+                    const skillID = String((item && item.parent_skill_id) || '').trim();
+                    const sourceName = skillID || String((item && item.name) || '').trim() || 'catalog-item';
+                    const safeToken = sourceName.replace(/[^a-zA-Z0-9._-]+/g, '-');
+                    return `${root}/${classifier}s/${safeToken}`;
+                },
+
+                openMaterializationModal(item) {
+                    if (!this.isMaterializableCatalogItem(item)) {
+                        return;
+                    }
+
+                    this.materializationModal.show = true;
+                    this.materializationModal.loading = false;
+                    this.materializationModal.writing = false;
+                    this.materializationModal.previewLoaded = false;
+                    this.materializationModal.itemID = String((item && item.id) || '').trim();
+                    this.materializationModal.itemName = String((item && item.name) || '').trim();
+                    this.materializationModal.classifier = this.normalizeClassifier(item && item.classifier);
+                    this.materializationModal.destinationDir = this.suggestMaterializationDestination(item);
+                    this.materializationModal.conflictPolicy = 'error';
+                    this.materializationModal.resolvedDestinationDir = '';
+                    this.materializationModal.results = [];
+                    this.materializationModal.errorMessage = '';
+                },
+
+                buildCatalogMaterializePayload(dryRun) {
+                    return {
+                        item_ids: [this.materializationModal.itemID],
+                        destination_dir: this.materializationModal.destinationDir,
+                        conflict_policy: this.materializationModal.conflictPolicy,
+                        dry_run: dryRun
+                    };
+                },
+
+                validateMaterializationInputs() {
+                    if (!this.materializationModal.itemID) {
+                        return 'Catalog item id is required';
+                    }
+                    const destination = String(this.materializationModal.destinationDir || '').trim();
+                    if (!destination) {
+                        return 'Destination directory is required';
+                    }
+                    if (!destination.startsWith('/')) {
+                        return 'Destination directory must be an absolute path';
+                    }
+                    return '';
+                },
+
+                materializationStatusClass(status) {
+                    const normalized = String(status || '').trim().toLowerCase();
+                    if (normalized === 'written') {
+                        return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300';
+                    }
+                    if (normalized === 'conflict') {
+                        return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300';
+                    }
+                    if (normalized === 'skipped') {
+                        return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300';
+                    }
+                    return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300';
+                },
+
+                materializationActionClass(action) {
+                    const normalized = String(action || '').trim().toLowerCase();
+                    if (normalized === 'overwrite') {
+                        return 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300';
+                    }
+                    if (normalized === 'conflict') {
+                        return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300';
+                    }
+                    if (normalized === 'skip') {
+                        return 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300';
+                    }
+                    return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300';
+                },
+
+                async previewMaterialization() {
+                    if (!this.isMaterializationEnabled()) {
+                        this.materializationModal.errorMessage = this.materializationDisabledReason();
+                        return;
+                    }
+
+                    const validationError = this.validateMaterializationInputs();
+                    if (validationError) {
+                        this.materializationModal.errorMessage = validationError;
+                        return;
+                    }
+
+                    this.materializationModal.errorMessage = '';
+                    this.materializationModal.loading = true;
+                    this.materializationModal.previewLoaded = false;
+                    this.materializationModal.results = [];
+                    this.materializationModal.resolvedDestinationDir = '';
+
+                    try {
+                        const response = await fetch('/api/catalog/materialize', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify(this.buildCatalogMaterializePayload(true)),
+                        });
+
+                        if (!response.ok) {
+                            this.materializationModal.errorMessage = await this.responseErrorMessage(
+                                response,
+                                'Materialization preview failed'
+                            );
+                            this.showToast(`Materialization preview failed: ${this.materializationModal.errorMessage}`, 'error');
+                            return;
+                        }
+
+                        const payload = await response.json();
+                        this.materializationModal.previewLoaded = true;
+                        this.materializationModal.resolvedDestinationDir = payload.resolved_destination_dir || '';
+                        this.materializationModal.results = Array.isArray(payload.items) ? payload.items : [];
+                        this.showToast('Materialization preview ready', 'success');
+                    } catch (error) {
+                        console.error('Materialization preview failed:', error);
+                        this.materializationModal.errorMessage = 'Materialization preview failed';
+                        this.showToast('Materialization preview failed', 'error');
+                    } finally {
+                        this.materializationModal.loading = false;
+                    }
+                },
+
+                async executeMaterialization() {
+                    if (!this.isMaterializationEnabled()) {
+                        this.materializationModal.errorMessage = this.materializationDisabledReason();
+                        return;
+                    }
+                    if (!this.materializationModal.previewLoaded) {
+                        this.materializationModal.errorMessage = 'Run dry-run preview before materializing';
+                        return;
+                    }
+
+                    const validationError = this.validateMaterializationInputs();
+                    if (validationError) {
+                        this.materializationModal.errorMessage = validationError;
+                        return;
+                    }
+
+                    this.materializationModal.errorMessage = '';
+                    this.materializationModal.writing = true;
+                    try {
+                        const response = await fetch('/api/catalog/materialize', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify(this.buildCatalogMaterializePayload(false)),
+                        });
+
+                        if (!response.ok) {
+                            this.materializationModal.errorMessage = await this.responseErrorMessage(
+                                response,
+                                'Materialization failed'
+                            );
+                            this.showToast(`Materialization failed: ${this.materializationModal.errorMessage}`, 'error');
+                            return;
+                        }
+
+                        const payload = await response.json();
+                        this.materializationModal.previewLoaded = true;
+                        this.materializationModal.resolvedDestinationDir = payload.resolved_destination_dir || '';
+                        this.materializationModal.results = Array.isArray(payload.items) ? payload.items : [];
+                        this.showToast('Catalog item materialized successfully', 'success');
+                    } catch (error) {
+                        console.error('Materialization failed:', error);
+                        this.materializationModal.errorMessage = 'Materialization failed';
+                        this.showToast('Materialization failed', 'error');
+                    } finally {
+                        this.materializationModal.writing = false;
+                    }
+                },
+
                 handleImportFile(event) {
                     const file = event.target.files[0];
                     if (!file) {
@@ -4390,14 +4868,56 @@
                     }
                 },
 
-                async loadGitRuntimeCapabilities() {
+                async loadRuntimeCapabilities() {
+                    if (this.runtimeCapabilities.loading) {
+                        return;
+                    }
+
+                    this.runtimeCapabilities.loading = true;
                     try {
                         const response = await fetch('/api/runtime/capabilities');
                         if (!response.ok) {
+                            this.runtimeCapabilities.errorMessage = `HTTP ${response.status}`;
                             return;
                         }
 
                         const payload = await response.json();
+                        this.runtimeCapabilities.loaded = true;
+                        this.runtimeCapabilities.errorMessage = '';
+
+                        this.runtimeCapabilities.catalog.rulesEnabled = !!(
+                            payload &&
+                            payload.catalog &&
+                            payload.catalog.rules_enabled
+                        );
+                        this.runtimeCapabilities.catalog.ruleDirectoryAllowlist = Array.isArray(
+                            payload &&
+                                payload.catalog &&
+                                payload.catalog.rule_directory_allowlist
+                        )
+                            ? payload.catalog.rule_directory_allowlist
+                            : [];
+                        this.runtimeCapabilities.catalog.ruleFilenameAllowlist = Array.isArray(
+                            payload &&
+                                payload.catalog &&
+                                payload.catalog.rule_filename_allowlist
+                        )
+                            ? payload.catalog.rule_filename_allowlist
+                            : [];
+
+                        this.runtimeCapabilities.mcp.materializationEnabled = !!(
+                            payload &&
+                            payload.mcp &&
+                            payload.mcp.materialization_enabled
+                        );
+                        this.runtimeCapabilities.mcp.allowedDestinationRoots = Array.isArray(
+                            payload &&
+                                payload.mcp &&
+                                payload.mcp.allowed_destination_roots
+                        )
+                            ? payload.mcp.allowed_destination_roots
+                            : [];
+
                         this.gitCapabilities.storedCredentialsEnabled = !!(
                             payload &&
                             payload.git &&
@@ -4405,6 +4925,17 @@
                         );
                     } catch (error) {
                         console.error('Failed to load runtime capabilities:', error);
+                        this.runtimeCapabilities.errorMessage = 'Failed to load runtime capabilities';
+                    } finally {
+                        this.runtimeCapabilities.loading = false;
+                    }
+                },
+
+                async loadGitRuntimeCapabilities() {
+                    try {
+                        await this.loadRuntimeCapabilities();
+                    } catch (error) {
+                        console.error('Failed to sync git runtime capabilities:', error);
                     }
                 },
 

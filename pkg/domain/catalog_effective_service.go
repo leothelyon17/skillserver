@@ -704,6 +704,8 @@ func mapEffectiveClassifier(classifier CatalogClassifier) (persistence.CatalogCl
 		return persistence.CatalogClassifierSkill, nil
 	case CatalogClassifierPrompt:
 		return persistence.CatalogClassifierPrompt, nil
+	case CatalogClassifierRule:
+		return persistence.CatalogClassifierRule, nil
 	default:
 		return "", fmt.Errorf("catalog classifier %q is invalid", classifier)
 	}
@@ -715,6 +717,8 @@ func mapEffectiveDomainClassifier(classifier persistence.CatalogClassifier) (Cat
 		return CatalogClassifierSkill, nil
 	case persistence.CatalogClassifierPrompt:
 		return CatalogClassifierPrompt, nil
+	case persistence.CatalogClassifierRule:
+		return CatalogClassifierRule, nil
 	default:
 		return "", fmt.Errorf("catalog classifier %q is invalid", classifier)
 	}

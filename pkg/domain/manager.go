@@ -32,7 +32,10 @@ type FileSystemManager struct {
 	gitRepos                 []string // List of git repo directory names (for read-only detection)
 	enableImportDiscovery    bool
 	enablePromptCatalog      bool
+	enableRuleCatalog        bool
 	promptDirectoryAllowlist []string
+	ruleDirectoryAllowlist   []string
+	ruleFilenameAllowlist    []string
 }
 
 // NewFileSystemManager creates a new FileSystemManager
@@ -52,7 +55,10 @@ func NewFileSystemManager(skillsDir string, gitRepos []string) (*FileSystemManag
 		gitRepos:                 gitRepos,
 		enableImportDiscovery:    true,
 		enablePromptCatalog:      true,
+		enableRuleCatalog:        true,
 		promptDirectoryAllowlist: DefaultPromptDirectoryAllowlist(),
+		ruleDirectoryAllowlist:   DefaultRuleDirectoryAllowlist(),
+		ruleFilenameAllowlist:    DefaultRuleFilenameAllowlist(),
 	}
 
 	// Initial index build
@@ -359,6 +365,11 @@ func (m *FileSystemManager) SetPromptCatalogEnabled(enabled bool) {
 	m.enablePromptCatalog = enabled
 }
 
+// SetRuleCatalogEnabled toggles rule catalog item classification/indexing.
+func (m *FileSystemManager) SetRuleCatalogEnabled(enabled bool) {
+	m.enableRuleCatalog = enabled
+}
+
 // SetPromptCatalogDirectoryAllowlist sets allowed directory names for prompt catalog detection.
 // Empty or invalid input falls back to domain defaults.
 func (m *FileSystemManager) SetPromptCatalogDirectoryAllowlist(promptDirs []string) {
@@ -369,6 +380,26 @@ func (m *FileSystemManager) SetPromptCatalogDirectoryAllowlist(promptDirs []stri
 	m.promptDirectoryAllowlist = append([]string(nil), normalized...)
 }
 
+// SetRuleCatalogDirectoryAllowlist sets allowed directory names for rule catalog detection.
+// Empty or invalid input falls back to domain defaults.
+func (m *FileSystemManager) SetRuleCatalogDirectoryAllowlist(ruleDirs []string) {
+	normalized := NormalizeRuleDirectoryAllowlist(ruleDirs)
+	if len(normalized) == 0 {
+		normalized = DefaultRuleDirectoryAllowlist()
+	}
+	m.ruleDirectoryAllowlist = append([]string(nil), normalized...)
+}
+
+// SetRuleCatalogFilenameAllowlist sets allowlisted project-root markdown filenames for rule detection.
+// Empty or invalid input falls back to domain defaults.
+func (m *FileSystemManager) SetRuleCatalogFilenameAllowlist(ruleFilenames []string) {
+	normalized := NormalizeRuleFilenameAllowlist(ruleFilenames)
+	if len(normalized) == 0 {
+		normalized = DefaultRuleFilenameAllowlist()
+	}
+	m.ruleFilenameAllowlist = append([]string(nil), normalized...)
+}
+
 // PromptCatalogDirectoryAllowlist returns a defensive copy of the prompt directory allowlist.
 func (m *FileSystemManager) PromptCatalogDirectoryAllowlist() []string {
 	if len(m.promptDirectoryAllowlist) == 0 {
@@ -376,6 +407,26 @@ func (m *FileSystemManager) PromptCatalogDirectoryAllowlist() []string {
 	}
 	copied := make([]string, len(m.promptDirectoryAllowlist))
 	copy(copied, m.promptDirectoryAllowlist)
+	return copied
+}
+
+// RuleCatalogDirectoryAllowlist returns a defensive copy of the rule directory allowlist.
+func (m *FileSystemManager) RuleCatalogDirectoryAllowlist() []string {
+	if len(m.ruleDirectoryAllowlist) == 0 {
+		return DefaultRuleDirectoryAllowlist()
+	}
+	copied := make([]string, len(m.ruleDirectoryAllowlist))
+	copy(copied, m.ruleDirectoryAllowlist)
+	return copied
+}
+
+// RuleCatalogFilenameAllowlist returns a defensive copy of the rule filename allowlist.
+func (m *FileSystemManager) RuleCatalogFilenameAllowlist() []string {
+	if len(m.ruleFilenameAllowlist) == 0 {
+		return DefaultRuleFilenameAllowlist()
+	}
+	copied := make([]string, len(m.ruleFilenameAllowlist))
+	copy(copied, m.ruleFilenameAllowlist)
 	return copied
 }
 

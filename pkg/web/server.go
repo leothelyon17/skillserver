@@ -27,21 +27,36 @@ type GitRuntimeCapabilities struct {
 	StoredCredentialsEnabled bool `json:"stored_credentials_enabled"`
 }
 
+// CatalogRuntimeCapabilities describes catalog classifier/runtime gates exposed to API/UI consumers.
+type CatalogRuntimeCapabilities struct {
+	RulesEnabled           bool     `json:"rules_enabled"`
+	RuleDirectoryAllowlist []string `json:"rule_directory_allowlist"`
+	RuleFilenameAllowlist  []string `json:"rule_filename_allowlist"`
+}
+
+// MCPRuntimeCapabilities describes MCP write/runtime gates exposed to API/UI consumers.
+type MCPRuntimeCapabilities struct {
+	MaterializationEnabled  bool     `json:"materialization_enabled"`
+	AllowedDestinationRoots []string `json:"allowed_destination_roots"`
+}
+
 // Server wraps the Echo server
 type Server struct {
-	echo                   *echo.Echo
-	httpServer             *http.Server
-	skillManager           domain.SkillManager
-	fsManager              *domain.FileSystemManager
-	catalogMetadataService *domain.CatalogMetadataService
-	taxonomyAssignment     *domain.CatalogTaxonomyAssignmentService
-	taxonomyRegistry       *domain.CatalogTaxonomyRegistryService
-	gitRepos               []string
-	gitSyncer              gitSyncer
-	gitCredentialStore     gitCredentialStore
-	configManager          *git.ConfigManager
-	manualRepoSyncHook     func(repo git.GitRepoConfig) error
-	gitRuntimeCapabilities GitRuntimeCapabilities
+	echo                       *echo.Echo
+	httpServer                 *http.Server
+	skillManager               domain.SkillManager
+	fsManager                  *domain.FileSystemManager
+	catalogMetadataService     *domain.CatalogMetadataService
+	taxonomyAssignment         *domain.CatalogTaxonomyAssignmentService
+	taxonomyRegistry           *domain.CatalogTaxonomyRegistryService
+	gitRepos                   []string
+	gitSyncer                  gitSyncer
+	gitCredentialStore         gitCredentialStore
+	configManager              *git.ConfigManager
+	manualRepoSyncHook         func(repo git.GitRepoConfig) error
+	gitRuntimeCapabilities     GitRuntimeCapabilities
+	catalogRuntimeCapabilities CatalogRuntimeCapabilities
+	mcpRuntimeCapabilities     MCPRuntimeCapabilities
 }
 
 type gitSyncer interface {
@@ -102,6 +117,8 @@ func NewServer(
 	api := e.Group("/api")
 	api.GET("/catalog", server.listCatalog)
 	api.GET("/catalog/search", server.searchCatalog)
+	api.POST("/catalog/export", server.exportCatalog)
+	api.POST("/catalog/materialize", server.materializeCatalog)
 	api.GET("/catalog/:id/metadata", server.getCatalogMetadata)
 	api.PATCH("/catalog/:id/metadata", server.patchCatalogMetadata)
 	api.GET("/catalog/:id/taxonomy", server.getCatalogItemTaxonomy)
@@ -202,6 +219,19 @@ func (s *Server) SetManualGitRepoSyncHook(hook func(repo git.GitRepoConfig) erro
 // SetGitRuntimeCapabilities configures git runtime capability visibility for API/UI consumers.
 func (s *Server) SetGitRuntimeCapabilities(capabilities GitRuntimeCapabilities) {
 	s.gitRuntimeCapabilities = capabilities
+}
+
+// SetCatalogRuntimeCapabilities configures catalog runtime capability visibility for API/UI consumers.
+func (s *Server) SetCatalogRuntimeCapabilities(capabilities CatalogRuntimeCapabilities) {
+	capabilities.RuleDirectoryAllowlist = append([]string(nil), capabilities.RuleDirectoryAllowlist...)
+	capabilities.RuleFilenameAllowlist = append([]string(nil), capabilities.RuleFilenameAllowlist...)
+	s.catalogRuntimeCapabilities = capabilities
+}
+
+// SetMCPRuntimeCapabilities configures MCP runtime capability visibility for API/UI consumers.
+func (s *Server) SetMCPRuntimeCapabilities(capabilities MCPRuntimeCapabilities) {
+	capabilities.AllowedDestinationRoots = append([]string(nil), capabilities.AllowedDestinationRoots...)
+	s.mcpRuntimeCapabilities = capabilities
 }
 
 // SetGitCredentialStore configures optional persisted stored-credential writes/lookups for repo APIs.

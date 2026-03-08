@@ -24,7 +24,7 @@ echo "echo legacy" >"$SKILLS_DIR/legacy-skill/scripts/legacy.sh"
 echo "# Legacy Reference" >"$SKILLS_DIR/legacy-skill/references/guide.md"
 printf '\x89PNG\r\n\x1a\n' >"$SKILLS_DIR/legacy-skill/assets/logo.png"
 
-mkdir -p "$SKILLS_DIR/additive-skill/scripts" "$SKILLS_DIR/additive-skill/references" "$SKILLS_DIR/additive-skill/assets" "$SKILLS_DIR/additive-skill/prompts" "$SKILLS_DIR/additive-skill/shared"
+mkdir -p "$SKILLS_DIR/additive-skill/scripts" "$SKILLS_DIR/additive-skill/references" "$SKILLS_DIR/additive-skill/assets" "$SKILLS_DIR/additive-skill/prompts" "$SKILLS_DIR/additive-skill/rules" "$SKILLS_DIR/additive-skill/shared"
 cat >"$SKILLS_DIR/additive-skill/SKILL.md" <<'EOF'
 ---
 name: additive-skill
@@ -38,6 +38,7 @@ echo "echo additive" >"$SKILLS_DIR/additive-skill/scripts/additive.sh"
 echo "# Additive Reference" >"$SKILLS_DIR/additive-skill/references/guide.md"
 printf '\x89PNG\r\n\x1a\n' >"$SKILLS_DIR/additive-skill/assets/logo.png"
 echo "You are a helpful assistant." >"$SKILLS_DIR/additive-skill/prompts/system.md"
+echo "# Additive Rule Fixture" >"$SKILLS_DIR/additive-skill/rules/agents.md"
 echo "Shared imported context." >"$SKILLS_DIR/additive-skill/shared/context.md"
 
 # Git-backed fixture skill (directory prefix matches --git-repos extracted repo name).

@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,6 +30,7 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 			"search_skills",
 			"list_catalog",
 			"search_catalog",
+			"export_catalog_items",
 			"list_taxonomy_domains",
 			"list_taxonomy_subdomains",
 			"list_taxonomy_tags",
@@ -53,6 +56,11 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 				t.Fatalf("expected write tool %q to be absent when write gate is disabled", writeTool)
 			}
 		}
+		for _, writeTool := range materializationWriteToolNames() {
+			if _, ok := registered[writeTool]; ok {
+				t.Fatalf("expected materialization tool %q to be absent when materialization gate is disabled", writeTool)
+			}
+		}
 	})
 
 	t.Run("registers taxonomy write tools when enabled", func(t *testing.T) {
@@ -76,6 +84,77 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 			if _, ok := registered[writeTool]; !ok {
 				t.Fatalf("expected write tool %q to be registered", writeTool)
 			}
+		}
+		for _, writeTool := range materializationWriteToolNames() {
+			if _, ok := registered[writeTool]; ok {
+				t.Fatalf("expected materialization tool %q to remain gated when materialization capability is disabled", writeTool)
+			}
+		}
+	})
+
+	t.Run("registers materialization write tools only when enabled", func(t *testing.T) {
+		disabledServer := NewServer(newFakeSkillManager())
+		disabledSession, disabledCleanup := connectMCPClientSession(t, disabledServer)
+		defer disabledCleanup()
+
+		disabledTools, err := disabledSession.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("list tools failed: %v", err)
+		}
+		disabledRegistered := make(map[string]struct{}, len(disabledTools.Tools))
+		for _, tool := range disabledTools.Tools {
+			disabledRegistered[tool.Name] = struct{}{}
+		}
+		for _, writeTool := range materializationWriteToolNames() {
+			if _, ok := disabledRegistered[writeTool]; ok {
+				t.Fatalf("expected materialization tool %q to be absent when gate is disabled", writeTool)
+			}
+		}
+
+		enabledServer := NewServer(newFakeSkillManager(), ServerOptions{
+			EnableMaterializationTools:             true,
+			AllowedMaterializationDestinationRoots: []string{"/workspace"},
+		})
+		enabledSession, enabledCleanup := connectMCPClientSession(t, enabledServer)
+		defer enabledCleanup()
+
+		enabledTools, err := enabledSession.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("list tools failed: %v", err)
+		}
+		enabledRegistered := make(map[string]struct{}, len(enabledTools.Tools))
+		for _, tool := range enabledTools.Tools {
+			enabledRegistered[tool.Name] = struct{}{}
+		}
+		for _, writeTool := range materializationWriteToolNames() {
+			if _, ok := enabledRegistered[writeTool]; !ok {
+				t.Fatalf("expected materialization tool %q to be registered when gate is enabled", writeTool)
+			}
+		}
+	})
+
+	t.Run("materialization capability gate defaults to disabled and requires explicit enablement", func(t *testing.T) {
+		disabledServer := NewServer(newFakeSkillManager())
+		if disabledServer.MaterializationToolsEnabled() {
+			t.Fatalf("expected materialization tools disabled by default")
+		}
+		if len(disabledServer.AllowedMaterializationDestinationRoots()) != 0 {
+			t.Fatalf(
+				"expected no default materialization destination roots, got %v",
+				disabledServer.AllowedMaterializationDestinationRoots(),
+			)
+		}
+
+		enabledServer := NewServer(newFakeSkillManager(), ServerOptions{
+			EnableMaterializationTools:             true,
+			AllowedMaterializationDestinationRoots: []string{"/workspace", "/projects"},
+		})
+		if !enabledServer.MaterializationToolsEnabled() {
+			t.Fatalf("expected materialization tools enabled when explicitly configured")
+		}
+		roots := enabledServer.AllowedMaterializationDestinationRoots()
+		if len(roots) != 2 || roots[0] != "/workspace" || roots[1] != "/projects" {
+			t.Fatalf("expected configured materialization destination roots, got %v", roots)
 		}
 	})
 
@@ -208,6 +287,40 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 			t.Fatalf("expected filtered classifier %q, got %q", domain.CatalogClassifierPrompt, filteredClassifier)
 		}
 
+		ruleFilteredResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "list_catalog",
+			Arguments: map[string]any{
+				"classifier": "rule",
+			},
+		})
+		if err != nil {
+			t.Fatalf("list_catalog with rule classifier call failed: %v", err)
+		}
+		if ruleFilteredResult.IsError {
+			t.Fatalf("list_catalog with rule classifier returned tool error")
+		}
+		ruleStructured, ok := ruleFilteredResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected rule-filtered list_catalog structured content map, got %T", ruleFilteredResult.StructuredContent)
+		}
+		ruleItems, ok := ruleStructured["items"].([]any)
+		if !ok {
+			t.Fatalf("expected rule-filtered items array, got %T", ruleStructured["items"])
+		}
+		if len(ruleItems) != 1 {
+			t.Fatalf("expected 1 rule-filtered item, got %d", len(ruleItems))
+		}
+		ruleItem, ok := ruleItems[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected rule-filtered item object, got %T", ruleItems[0])
+		}
+		if classifier, _ := ruleItem["classifier"].(string); classifier != string(domain.CatalogClassifierRule) {
+			t.Fatalf("expected rule-filtered classifier %q, got %q", domain.CatalogClassifierRule, classifier)
+		}
+		if resourcePath, _ := ruleItem["resource_path"].(string); resourcePath != "imports/rules/agents.md" {
+			t.Fatalf("expected rule resource_path imports/rules/agents.md, got %q", resourcePath)
+		}
+
 		searchResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
 			Name: "search_catalog",
 			Arguments: map[string]any{
@@ -241,6 +354,206 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		}
 		if classifier, _ := searchPrompt["classifier"].(string); classifier != string(domain.CatalogClassifierPrompt) {
 			t.Fatalf("expected search result classifier %q, got %q", domain.CatalogClassifierPrompt, classifier)
+		}
+	})
+
+	t.Run("invokes export and materialization tools with dry-run planning and explicit failures", func(t *testing.T) {
+		manager := newFakeSkillManager()
+		allowedRoot := t.TempDir()
+		server := NewServer(manager, ServerOptions{
+			EnableMaterializationTools:             true,
+			AllowedMaterializationDestinationRoots: []string{allowedRoot},
+		})
+		session, cleanup := connectMCPClientSession(t, server)
+		defer cleanup()
+
+		promptItemID := domain.BuildPromptCatalogItemID("sample-skill", "imports/prompts/system.md")
+		ruleItemID := domain.BuildRuleCatalogItemID("sample-skill", "imports/rules/agents.md")
+
+		exportDryRunResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "export_catalog_items",
+			Arguments: map[string]any{
+				"item_ids": []string{promptItemID, ruleItemID},
+				"dry_run":  true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("export_catalog_items dry-run call failed: %v", err)
+		}
+		if exportDryRunResult.IsError {
+			t.Fatalf("export_catalog_items dry-run returned tool error: %s", toolResultErrorText(exportDryRunResult))
+		}
+
+		exportDryRunStructured, ok := exportDryRunResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected export dry-run structured content map, got %T", exportDryRunResult.StructuredContent)
+		}
+		if dryRun, _ := exportDryRunStructured["dry_run"].(bool); !dryRun {
+			t.Fatalf("expected export dry_run=true, got %v", exportDryRunStructured["dry_run"])
+		}
+		manifest, ok := exportDryRunStructured["manifest"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected export manifest object, got %T", exportDryRunStructured["manifest"])
+		}
+		manifestItems, ok := manifest["items"].([]any)
+		if !ok || len(manifestItems) != 2 {
+			t.Fatalf("expected 2 export manifest items, got %v", manifest["items"])
+		}
+		for _, rawManifestItem := range manifestItems {
+			item, ok := rawManifestItem.(map[string]any)
+			if !ok {
+				t.Fatalf("expected export manifest item object, got %T", rawManifestItem)
+			}
+			if archiveRoot, _ := item["archive_root"].(string); strings.TrimSpace(archiveRoot) == "" {
+				t.Fatalf("expected manifest archive_root to be populated, got %v", item)
+			}
+		}
+		if _, hasDownload := exportDryRunStructured["download"]; hasDownload {
+			t.Fatalf("expected no download metadata on dry-run export response")
+		}
+
+		exportResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "export_catalog_items",
+			Arguments: map[string]any{
+				"item_ids": []string{promptItemID},
+			},
+		})
+		if err != nil {
+			t.Fatalf("export_catalog_items call failed: %v", err)
+		}
+		if exportResult.IsError {
+			t.Fatalf("export_catalog_items returned tool error: %s", toolResultErrorText(exportResult))
+		}
+
+		exportStructured, ok := exportResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected export structured content map, got %T", exportResult.StructuredContent)
+		}
+		download, ok := exportStructured["download"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected export download metadata object, got %T", exportStructured["download"])
+		}
+		if archiveBase64, _ := download["archive_base64"].(string); strings.TrimSpace(archiveBase64) == "" {
+			t.Fatalf("expected archive_base64 payload in non-dry-run export response, got %v", download["archive_base64"])
+		}
+		if contentType, _ := download["content_type"].(string); contentType != "application/gzip" {
+			t.Fatalf("expected content_type application/gzip, got %q", contentType)
+		}
+
+		dryRunDestination := filepath.Join(allowedRoot, "workspace")
+		materializeDryRunResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "materialize_catalog_items",
+			Arguments: map[string]any{
+				"item_ids":        []string{promptItemID},
+				"destination_dir": dryRunDestination,
+				"conflict_policy": "overwrite",
+				"dry_run":         true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("materialize_catalog_items dry-run call failed: %v", err)
+		}
+		if materializeDryRunResult.IsError {
+			t.Fatalf("materialize_catalog_items dry-run returned tool error: %s", toolResultErrorText(materializeDryRunResult))
+		}
+
+		materializeStructured, ok := materializeDryRunResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected materialize dry-run structured content map, got %T", materializeDryRunResult.StructuredContent)
+		}
+		items, ok := materializeStructured["items"].([]any)
+		if !ok || len(items) != 1 {
+			t.Fatalf("expected one materialization item result, got %v", materializeStructured["items"])
+		}
+		firstItem, ok := items[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected materialization item object, got %T", items[0])
+		}
+		files, ok := firstItem["files"].([]any)
+		if !ok || len(files) != 1 {
+			t.Fatalf("expected one materialization file result, got %v", firstItem["files"])
+		}
+		fileResult, ok := files[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected materialization file object, got %T", files[0])
+		}
+		resolvedPath, _ := fileResult["resolved_path"].(string)
+		if strings.TrimSpace(resolvedPath) == "" {
+			t.Fatalf("expected resolved_path to be populated, got %v", fileResult)
+		}
+		if _, statErr := os.Stat(resolvedPath); !os.IsNotExist(statErr) {
+			t.Fatalf("expected no file write during dry-run, path=%q statErr=%v", resolvedPath, statErr)
+		}
+
+		invalidPolicyResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "materialize_catalog_items",
+			Arguments: map[string]any{
+				"item_ids":        []string{promptItemID},
+				"destination_dir": dryRunDestination,
+				"conflict_policy": "replace",
+			},
+		})
+		if err != nil {
+			t.Fatalf("materialize_catalog_items invalid conflict policy call failed: %v", err)
+		}
+		if !invalidPolicyResult.IsError {
+			t.Fatalf("expected materialize_catalog_items invalid conflict policy to return tool error")
+		}
+		if !strings.Contains(strings.ToLower(toolResultErrorText(invalidPolicyResult)), "conflict policy") {
+			t.Fatalf("expected conflict policy error, got %s", toolResultErrorText(invalidPolicyResult))
+		}
+
+		outsideDestination := t.TempDir()
+		outsideRootResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "materialize_catalog_items",
+			Arguments: map[string]any{
+				"item_ids":        []string{promptItemID},
+				"destination_dir": outsideDestination,
+			},
+		})
+		if err != nil {
+			t.Fatalf("materialize_catalog_items outside-root call failed: %v", err)
+		}
+		if !outsideRootResult.IsError {
+			t.Fatalf("expected materialize_catalog_items outside-root call to return tool error")
+		}
+		if !strings.Contains(strings.ToLower(toolResultErrorText(outsideRootResult)), "outside allowed roots") {
+			t.Fatalf("expected outside allowed roots error, got %s", toolResultErrorText(outsideRootResult))
+		}
+
+		relativeDestinationResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "materialize_catalog_items",
+			Arguments: map[string]any{
+				"item_ids":        []string{promptItemID},
+				"destination_dir": "relative/path",
+			},
+		})
+		if err != nil {
+			t.Fatalf("materialize_catalog_items relative-path call failed: %v", err)
+		}
+		if !relativeDestinationResult.IsError {
+			t.Fatalf("expected materialize_catalog_items relative-path call to return tool error")
+		}
+		if !strings.Contains(strings.ToLower(toolResultErrorText(relativeDestinationResult)), "destination_dir must be absolute") {
+			t.Fatalf("expected absolute destination_dir error, got %s", toolResultErrorText(relativeDestinationResult))
+		}
+
+		missingItemResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "materialize_catalog_items",
+			Arguments: map[string]any{
+				"item_ids":        []string{"rule:sample-skill:imports/rules/missing.md"},
+				"destination_dir": dryRunDestination,
+				"dry_run":         true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("materialize_catalog_items missing item call failed: %v", err)
+		}
+		if !missingItemResult.IsError {
+			t.Fatalf("expected materialize_catalog_items missing item call to return tool error")
+		}
+		if !strings.Contains(strings.ToLower(toolResultErrorText(missingItemResult)), "item not found") {
+			t.Fatalf("expected item-not-found error, got %s", toolResultErrorText(missingItemResult))
 		}
 	})
 
@@ -747,6 +1060,32 @@ func taxonomyWriteToolNames() []string {
 	}
 }
 
+func materializationWriteToolNames() []string {
+	return []string{
+		"materialize_catalog_items",
+	}
+}
+
+func toolResultErrorText(result *mcpsdk.CallToolResult) string {
+	if result == nil {
+		return ""
+	}
+
+	parts := make([]string, 0, len(result.Content))
+	for _, content := range result.Content {
+		switch typed := content.(type) {
+		case *mcpsdk.TextContent:
+			parts = append(parts, typed.Text)
+		default:
+			parts = append(parts, fmt.Sprintf("%v", typed))
+		}
+	}
+	if len(parts) == 0 && result.StructuredContent != nil {
+		parts = append(parts, fmt.Sprintf("%v", result.StructuredContent))
+	}
+	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
 func connectMCPClientSession(t *testing.T, server *Server) (*mcpsdk.ClientSession, func()) {
 	t.Helper()
 
@@ -889,6 +1228,16 @@ func newFakeSkillManager() *fakeSkillManager {
 					{ID: "tag-metrics", Key: "metrics", Name: "Metrics"},
 				},
 				ReadOnly: true,
+			},
+			{
+				ID:            domain.BuildRuleCatalogItemID("sample-skill", "imports/rules/agents.md"),
+				Classifier:    domain.CatalogClassifierRule,
+				Name:          "agents.md",
+				Description:   "Repository agent guardrails",
+				Content:       "# AGENTS\nFollow project rules.",
+				ParentSkillID: "sample-skill",
+				ResourcePath:  "imports/rules/agents.md",
+				ReadOnly:      true,
 			},
 		},
 		resources:             resources,

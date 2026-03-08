@@ -127,7 +127,7 @@ func searchSkills(ctx context.Context, req *mcp.CallToolRequest, input SearchSki
 
 // ListCatalogInput is the input for list_catalog tool.
 type ListCatalogInput struct {
-	Classifier        string   `json:"classifier,omitempty" jsonschema:"Optional catalog classifier filter ('skill' or 'prompt')"`
+	Classifier        string   `json:"classifier,omitempty" jsonschema:"Optional catalog classifier filter ('skill', 'prompt', or 'rule')"`
 	PrimaryDomainID   string   `json:"primary_domain_id,omitempty" jsonschema:"Optional primary domain selector"`
 	SecondaryDomainID string   `json:"secondary_domain_id,omitempty" jsonschema:"Optional secondary domain selector"`
 	SubdomainID       string   `json:"subdomain_id,omitempty" jsonschema:"Optional subdomain selector (matches primary or secondary subdomain)"`
@@ -143,7 +143,7 @@ type ListCatalogOutput struct {
 // SearchCatalogInput is the input for search_catalog tool.
 type SearchCatalogInput struct {
 	Query             string   `json:"query" jsonschema:"The search query"`
-	Classifier        string   `json:"classifier,omitempty" jsonschema:"Optional catalog classifier filter ('skill' or 'prompt')"`
+	Classifier        string   `json:"classifier,omitempty" jsonschema:"Optional catalog classifier filter ('skill', 'prompt', or 'rule')"`
 	PrimaryDomainID   string   `json:"primary_domain_id,omitempty" jsonschema:"Optional primary domain selector"`
 	SecondaryDomainID string   `json:"secondary_domain_id,omitempty" jsonschema:"Optional secondary domain selector"`
 	SubdomainID       string   `json:"subdomain_id,omitempty" jsonschema:"Optional subdomain selector (matches primary or secondary subdomain)"`

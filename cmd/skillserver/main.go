@@ -205,6 +205,9 @@ func main() {
 	skillManager.SetImportDiscoveryEnabled(*enableImportDiscovery)
 	skillManager.SetPromptCatalogEnabled(catalogRuntimeConfig.EnablePrompts)
 	skillManager.SetPromptCatalogDirectoryAllowlist(catalogRuntimeConfig.PromptDirectoryAllowlist)
+	skillManager.SetRuleCatalogEnabled(catalogRuntimeConfig.EnableRules)
+	skillManager.SetRuleCatalogDirectoryAllowlist(catalogRuntimeConfig.RuleDirectoryAllowlist)
+	skillManager.SetRuleCatalogFilenameAllowlist(catalogRuntimeConfig.RuleFilenameAllowlist)
 	if err := skillManager.RebuildIndex(); err != nil {
 		log.Fatalf("Failed to apply runtime catalog configuration: %v", err)
 	}
@@ -235,9 +238,12 @@ func main() {
 
 	if *enableLogging {
 		log.Printf(
-			"Resolved catalog runtime options: enable_prompts=%t prompt_dirs=%s",
+			"Resolved catalog runtime options: enable_prompts=%t prompt_dirs=%s enable_rules=%t rule_dirs=%s rule_filenames=%s",
 			catalogRuntimeConfig.EnablePrompts,
 			strings.Join(catalogRuntimeConfig.PromptDirectoryAllowlist, ","),
+			catalogRuntimeConfig.EnableRules,
+			strings.Join(catalogRuntimeConfig.RuleDirectoryAllowlist, ","),
+			strings.Join(catalogRuntimeConfig.RuleFilenameAllowlist, ","),
 		)
 		if persistenceRuntimeConfig.Enabled {
 			log.Printf(
@@ -286,7 +292,9 @@ func main() {
 
 	// Create MCP server and optional HTTP transport handler.
 	mcpServer := mcp.NewServer(skillManager, mcp.ServerOptions{
-		EnableTaxonomyWriteTools: mcpRuntimeConfig.EnableWrites,
+		EnableTaxonomyWriteTools:               mcpRuntimeConfig.EnableWrites,
+		EnableMaterializationTools:             mcpRuntimeConfig.EnableMaterialization,
+		AllowedMaterializationDestinationRoots: mcpRuntimeConfig.AllowedDestinationRoots,
 	})
 
 	var mcpHandler http.Handler
@@ -318,6 +326,15 @@ func main() {
 	)
 	webServer.SetGitRuntimeCapabilities(web.GitRuntimeCapabilities{
 		StoredCredentialsEnabled: gitStoredCredentialsEnabled,
+	})
+	webServer.SetCatalogRuntimeCapabilities(web.CatalogRuntimeCapabilities{
+		RulesEnabled:           catalogRuntimeConfig.EnableRules,
+		RuleDirectoryAllowlist: append([]string(nil), catalogRuntimeConfig.RuleDirectoryAllowlist...),
+		RuleFilenameAllowlist:  append([]string(nil), catalogRuntimeConfig.RuleFilenameAllowlist...),
+	})
+	webServer.SetMCPRuntimeCapabilities(web.MCPRuntimeCapabilities{
+		MaterializationEnabled:  mcpRuntimeConfig.EnableMaterialization,
+		AllowedDestinationRoots: append([]string(nil), mcpRuntimeConfig.AllowedDestinationRoots...),
 	})
 	webServer.SetGitCredentialStore(gitCredentialStore)
 	if persistenceRuntime != nil {

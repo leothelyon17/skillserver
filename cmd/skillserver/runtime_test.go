@@ -177,13 +177,15 @@ func TestRuntime_GracefulShutdown(t *testing.T) {
 
 func defaultRuntimeMCPConfig(mode MCPTransportMode) MCPRuntimeConfig {
 	return MCPRuntimeConfig{
-		Transport:          mode,
-		HTTPPath:           defaultMCPHTTPPath,
-		SessionTimeout:     defaultMCPSessionTimeout,
-		Stateless:          defaultMCPStateless,
-		EnableWrites:       defaultMCPEnableWrites,
-		EnableEventStore:   defaultMCPEnableEventStore,
-		EventStoreMaxBytes: defaultMCPEventStoreMaxBytes,
+		Transport:               mode,
+		HTTPPath:                defaultMCPHTTPPath,
+		SessionTimeout:          defaultMCPSessionTimeout,
+		Stateless:               defaultMCPStateless,
+		EnableWrites:            defaultMCPEnableWrites,
+		EnableMaterialization:   defaultMCPEnableMaterialization,
+		AllowedDestinationRoots: nil,
+		EnableEventStore:        defaultMCPEnableEventStore,
+		EventStoreMaxBytes:      defaultMCPEventStoreMaxBytes,
 	}
 }
 

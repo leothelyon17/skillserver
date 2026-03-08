@@ -326,4 +326,114 @@ Catalog runtime config test skill
 		Expect(byID).To(HaveKey(domain.BuildPromptCatalogItemID("planner", "agents/coach.md")))
 		Expect(byID).NotTo(HaveKey(domain.BuildPromptCatalogItemID("planner", "prompts/system.md")))
 	})
+
+	It("should discover direct and imported rules and support classifier filtering", func() {
+		repoName := "demo-repo"
+		skillPath := filepath.Join(tempDir, repoName, "plugins", "rule-teams", "skills", "planner")
+		sharedRulesPath := filepath.Join(tempDir, repoName, "plugins", "rule-teams", "rules")
+		repoRootRulePath := filepath.Join(tempDir, repoName, "AGENTS.md")
+		outsideRulePath := filepath.Join(tempDir, "outside.md")
+
+		Expect(os.MkdirAll(filepath.Join(skillPath, "rules"), 0755)).To(Succeed())
+		Expect(os.MkdirAll(filepath.Join(skillPath, "governance"), 0755)).To(Succeed())
+		Expect(os.MkdirAll(sharedRulesPath, 0755)).To(Succeed())
+
+		skillMarkdown := `---
+name: planner
+description: Planner skill
+---
+# Planner
+[Local Rule](rules/local.md)
+[Shared Rule](../../rules/team.md)
+[Repo Root Rule](/AGENTS.md)
+[False Positive](governance/guide.md)
+[Escaped Rule](../../../../outside.md)
+`
+		Expect(os.WriteFile(filepath.Join(skillPath, "SKILL.md"), []byte(skillMarkdown), 0644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(skillPath, "rules", "local.md"), []byte("# Local Rule\nLocal policy for planner workflows."), 0644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(sharedRulesPath, "team.md"), []byte("# Team Rule\nTeam contributor guardrails."), 0644)).To(Succeed())
+		Expect(os.WriteFile(repoRootRulePath, []byte("# AGENTS\nRepository-level contributor guardrails."), 0644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(skillPath, "governance", "guide.md"), []byte("# Governance\nNot an allowlisted rule path."), 0644)).To(Succeed())
+		Expect(os.WriteFile(outsideRulePath, []byte("# Outside\nShould never be imported."), 0644)).To(Succeed())
+
+		manager.UpdateGitRepos([]string{repoName})
+
+		catalogItems, err := manager.ListCatalogItems()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(catalogItems).To(HaveLen(4))
+
+		skillID := "demo-repo/planner"
+		skillCatalogID := domain.BuildSkillCatalogItemID(skillID)
+		localRuleID := domain.BuildRuleCatalogItemID(skillID, "rules/local.md")
+		sharedRuleID := domain.BuildRuleCatalogItemID(skillID, "imports/plugins/rule-teams/rules/team.md")
+		repoRootRuleID := domain.BuildRuleCatalogItemID(skillID, "imports/AGENTS.md")
+
+		byID := catalogItemsByID(catalogItems)
+		Expect(byID).To(HaveKey(skillCatalogID))
+		Expect(byID).To(HaveKey(localRuleID))
+		Expect(byID).To(HaveKey(sharedRuleID))
+		Expect(byID).To(HaveKey(repoRootRuleID))
+		Expect(byID).NotTo(HaveKey(domain.BuildRuleCatalogItemID(skillID, "governance/guide.md")))
+		Expect(byID).NotTo(HaveKey(domain.BuildRuleCatalogItemID(skillID, "imports/outside.md")))
+
+		localRule := byID[localRuleID]
+		Expect(localRule.Classifier).To(Equal(domain.CatalogClassifierRule))
+		Expect(localRule.ParentSkillID).To(Equal(skillID))
+		Expect(localRule.ResourcePath).To(Equal("rules/local.md"))
+		Expect(localRule.ReadOnly).To(BeTrue())
+
+		repoRootRule := byID[repoRootRuleID]
+		Expect(repoRootRule.Classifier).To(Equal(domain.CatalogClassifierRule))
+		Expect(repoRootRule.ParentSkillID).To(Equal(skillID))
+		Expect(repoRootRule.ResourcePath).To(Equal("imports/AGENTS.md"))
+		Expect(repoRootRule.ReadOnly).To(BeTrue())
+
+		Expect(manager.RebuildIndex()).To(Succeed())
+		ruleClassifier := domain.CatalogClassifierRule
+		ruleResults, err := manager.SearchCatalogItems("contributor guardrails", &ruleClassifier)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ruleResults).To(HaveLen(2))
+		Expect(sortedIDs(ruleResults)).To(Equal(sortedIDs([]domain.CatalogItem{
+			{ID: repoRootRuleID},
+			{ID: sharedRuleID},
+		})))
+	})
+
+	It("should honor runtime rule catalog enablement and allowlists", func() {
+		skillPath := filepath.Join(tempDir, "planner")
+		Expect(os.MkdirAll(filepath.Join(skillPath, "rules"), 0755)).To(Succeed())
+		Expect(os.MkdirAll(filepath.Join(skillPath, "governance"), 0755)).To(Succeed())
+
+		skillMarkdown := `---
+name: planner
+description: Planning skill
+---
+# Planner
+Catalog runtime config test skill
+`
+		Expect(os.WriteFile(filepath.Join(skillPath, "SKILL.md"), []byte(skillMarkdown), 0644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(skillPath, "rules", "default.md"), []byte("# Default Rule"), 0644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(skillPath, "governance", "guide.md"), []byte("# Governance Rule"), 0644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(skillPath, "AGENTS.md"), []byte("# Agents Rule"), 0644)).To(Succeed())
+
+		manager.SetRuleCatalogEnabled(false)
+		catalogItems, err := manager.ListCatalogItems()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(catalogItems).To(HaveLen(1))
+		Expect(catalogItems[0].Classifier).To(Equal(domain.CatalogClassifierSkill))
+
+		manager.SetRuleCatalogEnabled(true)
+		manager.SetRuleCatalogDirectoryAllowlist([]string{"governance"})
+		manager.SetRuleCatalogFilenameAllowlist([]string{"RULES.md"})
+
+		catalogItems, err = manager.ListCatalogItems()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(catalogItems).To(HaveLen(2))
+
+		byID := catalogItemsByID(catalogItems)
+		Expect(byID).To(HaveKey(domain.BuildSkillCatalogItemID("planner")))
+		Expect(byID).To(HaveKey(domain.BuildRuleCatalogItemID("planner", "governance/guide.md")))
+		Expect(byID).NotTo(HaveKey(domain.BuildRuleCatalogItemID("planner", "rules/default.md")))
+		Expect(byID).NotTo(HaveKey(domain.BuildRuleCatalogItemID("planner", "AGENTS.md")))
+	})
 })
