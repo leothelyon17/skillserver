@@ -2581,6 +2581,7 @@ func (s *Server) addGitRepo(c *echo.Context) error {
 		})
 	}
 	configRepos = append(configRepos, newRepo)
+	enabledGitRepoNames := enabledGitRepoCheckoutNames(configRepos)
 
 	// Save config
 	if err := s.configManager.SaveConfig(configRepos); err != nil {
@@ -2603,6 +2604,12 @@ func (s *Server) addGitRepo(c *echo.Context) error {
 
 	// Add repo to syncer and update FileSystemManager
 	if s.gitSyncer != nil {
+		// Update git repo visibility before AddRepo so sync-triggered rebuilds in persistence mode
+		// discover newly enabled repositories in the same request.
+		if s.fsManager != nil {
+			s.fsManager.UpdateGitRepos(enabledGitRepoNames)
+		}
+
 		if err := s.gitSyncer.AddRepo(newRepo); err != nil {
 			// Remove from config if sync failed
 			rollbackRepos := removeRepoByID(configRepos, newRepo.ID)
@@ -2610,24 +2617,12 @@ func (s *Server) addGitRepo(c *echo.Context) error {
 			if createdStoredCredential {
 				_ = s.deleteStoredCredentialByReferenceID(resolveStoredCredentialReferenceID(newRepo.Auth, newRepo.ID))
 			}
+			if s.fsManager != nil {
+				s.fsManager.UpdateGitRepos(enabledGitRepoCheckoutNames(rollbackRepos))
+			}
 			return c.JSON(http.StatusBadRequest, map[string]string{
 				"error": git.RedactGitAuthError(err),
 			})
-		}
-
-		// Update FileSystemManager's git repos list for read-only detection
-		if s.fsManager != nil {
-			enabledRepos := make([]git.GitRepoConfig, 0)
-			for _, repo := range configRepos {
-				if repo.Enabled {
-					enabledRepos = append(enabledRepos, repo)
-				}
-			}
-			gitRepoNames := make([]string, len(enabledRepos))
-			for i, repo := range enabledRepos {
-				gitRepoNames[i] = git.ResolveRepoCheckoutName(repo)
-			}
-			s.fsManager.UpdateGitRepos(gitRepoNames)
 		}
 
 		// Ensure the catalog index reflects the newly enabled repo set.
@@ -3451,6 +3446,17 @@ func removeRepoByID(repos []git.GitRepoConfig, repoID string) []git.GitRepoConfi
 		filtered = append(filtered, repo)
 	}
 	return filtered
+}
+
+func enabledGitRepoCheckoutNames(repos []git.GitRepoConfig) []string {
+	enabledRepoNames := make([]string, 0, len(repos))
+	for _, repo := range repos {
+		if !repo.Enabled {
+			continue
+		}
+		enabledRepoNames = append(enabledRepoNames, git.ResolveRepoCheckoutName(repo))
+	}
+	return enabledRepoNames
 }
 
 // Helper functions
