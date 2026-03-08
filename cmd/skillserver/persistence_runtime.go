@@ -19,6 +19,7 @@ const (
 	defaultPersistenceDir              = ""
 	defaultPersistenceDBPath           = ""
 	defaultPersistenceDatabaseFileName = "skillserver.db"
+	defaultImplicitPersistenceDirName  = ".skillserver-state"
 )
 
 // PersistenceRuntimeConfig defines runtime configuration for durable persistence.
@@ -121,6 +122,53 @@ func parsePersistenceRuntimeConfig(
 	return PersistenceRuntimeConfig{
 		Enabled: true,
 		Dir:     dir,
+		DBPath:  dbPath,
+	}, nil
+}
+
+// shouldAutoEnablePersistenceRuntime reports whether runtime should auto-provision
+// a default persistence store. Explicit persistence-data settings always win.
+func shouldAutoEnablePersistenceRuntime(
+	cfg PersistenceRuntimeConfig,
+	fs *flag.FlagSet,
+	lookupEnv func(string) (string, bool),
+) bool {
+	if cfg.Enabled {
+		return false
+	}
+	if fs != nil && isFlagSet(fs, "persistence-data") {
+		return false
+	}
+	if hasNonEmptyEnv(lookupEnv, envPersistenceData) {
+		return false
+	}
+	return true
+}
+
+func resolveImplicitPersistenceRuntimeConfig(skillsDir string) (PersistenceRuntimeConfig, error) {
+	trimmedSkillsDir := strings.TrimSpace(skillsDir)
+	if trimmedSkillsDir == "" {
+		return PersistenceRuntimeConfig{}, fmt.Errorf("skills directory is required")
+	}
+
+	resolvedSkillsDir, err := filepath.Abs(filepath.Clean(trimmedSkillsDir))
+	if err != nil {
+		return PersistenceRuntimeConfig{}, fmt.Errorf("resolve skills directory %q: %w", skillsDir, err)
+	}
+
+	implicitDir := filepath.Join(resolvedSkillsDir, defaultImplicitPersistenceDirName)
+	if err := os.MkdirAll(implicitDir, 0o755); err != nil {
+		return PersistenceRuntimeConfig{}, fmt.Errorf("create implicit persistence directory %q: %w", implicitDir, err)
+	}
+
+	dbPath, err := parsePersistenceDBPath("", implicitDir)
+	if err != nil {
+		return PersistenceRuntimeConfig{}, fmt.Errorf("resolve implicit persistence DB path: %w", err)
+	}
+
+	return PersistenceRuntimeConfig{
+		Enabled: true,
+		Dir:     implicitDir,
 		DBPath:  dbPath,
 	}, nil
 }

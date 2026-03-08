@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,5 +116,103 @@ func TestValidatePersistenceStartupConfig_ValidConfiguration(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("expected valid persistence configuration to pass startup guardrails, got %v", err)
+	}
+}
+
+func TestShouldAutoEnablePersistenceRuntime_DefaultDisabledConfig_ReturnsTrue(t *testing.T) {
+	fs := flag.NewFlagSet("auto-persistence-default", flag.ContinueOnError)
+	flagValues := registerPersistenceRuntimeFlags(fs)
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatalf("expected parse to succeed, got %v", err)
+	}
+
+	cfg, err := parsePersistenceRuntimeConfig(fs, flagValues, func(string) (string, bool) {
+		return "", false
+	})
+	if err != nil {
+		t.Fatalf("expected parse to succeed, got %v", err)
+	}
+
+	if !shouldAutoEnablePersistenceRuntime(cfg, fs, func(string) (string, bool) {
+		return "", false
+	}) {
+		t.Fatalf("expected default disabled persistence config to auto-enable at runtime")
+	}
+}
+
+func TestShouldAutoEnablePersistenceRuntime_ExplicitFalseFlag_ReturnsFalse(t *testing.T) {
+	fs := flag.NewFlagSet("auto-persistence-flag-false", flag.ContinueOnError)
+	flagValues := registerPersistenceRuntimeFlags(fs)
+	if err := fs.Parse([]string{"--persistence-data=false"}); err != nil {
+		t.Fatalf("expected parse to succeed, got %v", err)
+	}
+
+	cfg, err := parsePersistenceRuntimeConfig(fs, flagValues, func(string) (string, bool) {
+		return "", false
+	})
+	if err != nil {
+		t.Fatalf("expected parse to succeed, got %v", err)
+	}
+
+	if shouldAutoEnablePersistenceRuntime(cfg, fs, func(string) (string, bool) {
+		return "", false
+	}) {
+		t.Fatalf("expected explicit --persistence-data=false to disable auto-enable fallback")
+	}
+}
+
+func TestShouldAutoEnablePersistenceRuntime_ExplicitFalseEnv_ReturnsFalse(t *testing.T) {
+	fs := flag.NewFlagSet("auto-persistence-env-false", flag.ContinueOnError)
+	flagValues := registerPersistenceRuntimeFlags(fs)
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatalf("expected parse to succeed, got %v", err)
+	}
+
+	cfg, err := parsePersistenceRuntimeConfig(fs, flagValues, func(key string) (string, bool) {
+		if key == envPersistenceData {
+			return "false", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatalf("expected parse to succeed, got %v", err)
+	}
+
+	if shouldAutoEnablePersistenceRuntime(cfg, fs, func(key string) (string, bool) {
+		if key == envPersistenceData {
+			return "false", true
+		}
+		return "", false
+	}) {
+		t.Fatalf("expected explicit %s=false to disable auto-enable fallback", envPersistenceData)
+	}
+}
+
+func TestResolveImplicitPersistenceRuntimeConfig_UsesSkillsDirStateSubdirectory(t *testing.T) {
+	skillsDir := t.TempDir()
+
+	cfg, err := resolveImplicitPersistenceRuntimeConfig(skillsDir)
+	if err != nil {
+		t.Fatalf("expected implicit persistence config resolution to succeed, got %v", err)
+	}
+
+	expectedDir := filepath.Join(skillsDir, defaultImplicitPersistenceDirName)
+	if cfg.Dir != expectedDir {
+		t.Fatalf("expected implicit persistence dir %q, got %q", expectedDir, cfg.Dir)
+	}
+	if cfg.DBPath != filepath.Join(expectedDir, defaultPersistenceDatabaseFileName) {
+		t.Fatalf(
+			"expected implicit persistence db path %q, got %q",
+			filepath.Join(expectedDir, defaultPersistenceDatabaseFileName),
+			cfg.DBPath,
+		)
+	}
+
+	info, statErr := os.Stat(cfg.Dir)
+	if statErr != nil {
+		t.Fatalf("expected implicit persistence dir to exist, got %v", statErr)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected implicit persistence path %q to be a directory", cfg.Dir)
 	}
 }

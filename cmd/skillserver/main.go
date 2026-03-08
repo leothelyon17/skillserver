@@ -73,6 +73,11 @@ func main() {
 	gitCredentialFlagValues := registerGitCredentialRuntimeFlags(flag.CommandLine)
 	flag.Parse()
 
+	// Resolve final startup values after parsing flags.
+	finalDir := *skillsDir
+	finalPort := *port
+	finalGitRepos := *gitReposFlag
+
 	// Parse and validate MCP runtime config (flags > env > defaults).
 	// Runtime wiring will consume this in later work packages.
 	mcpRuntimeConfig, err := parseMCPRuntimeConfig(flag.CommandLine, mcpFlagValues, os.LookupEnv)
@@ -94,6 +99,20 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Invalid persistence runtime configuration: %v\n", err)
 		os.Exit(2)
 	}
+
+	if shouldAutoEnablePersistenceRuntime(persistenceRuntimeConfig, flag.CommandLine, os.LookupEnv) {
+		implicitConfig, implicitErr := resolveImplicitPersistenceRuntimeConfig(finalDir)
+		if implicitErr != nil {
+			fmt.Fprintf(
+				os.Stderr,
+				"Invalid implicit persistence runtime configuration: %v\n",
+				implicitErr,
+			)
+			os.Exit(2)
+		}
+		persistenceRuntimeConfig = implicitConfig
+	}
+
 	if err := validatePersistenceStartupConfig(persistenceRuntimeConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "Invalid persistence runtime configuration: %v\n", err)
 		os.Exit(2)
@@ -122,11 +141,6 @@ func main() {
 	logger := setupLogger(*enableLogging)
 	log.SetOutput(logger.Writer())
 	log.SetFlags(logger.Flags())
-
-	// Resolve final startup values after parsing flags.
-	finalDir := *skillsDir
-	finalPort := *port
-	finalGitRepos := *gitReposFlag
 
 	configManager := git.NewConfigManagerWithPath(
 		resolveGitRepoConfigPath(finalDir, persistenceRuntimeConfig),
