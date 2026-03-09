@@ -82,6 +82,7 @@ type CatalogMetadataEffectiveView struct {
 	ContentWritable    bool                       `json:"content_writable"`
 	MetadataWritable   bool                       `json:"metadata_writable"`
 	ReadOnly           bool                       `json:"read_only"`
+	CatalogClassificationState
 }
 
 // CatalogMetadataView combines source, overlay, and effective metadata views.
@@ -336,6 +337,11 @@ func mapCatalogMetadataView(
 		ContentWritable:    effectiveItem.ContentWritable,
 		MetadataWritable:   effectiveItem.MetadataWritable,
 		ReadOnly:           effectiveItem.ReadOnly,
+		CatalogClassificationState: CatalogClassificationState{
+			HasAssignment:     effectiveItem.HasAssignment,
+			IsFullyClassified: effectiveItem.IsFullyClassified,
+			MissingFields:     append([]string{}, effectiveItem.MissingFields...),
+		},
 	}
 	if effective.CustomMetadata == nil {
 		effective.CustomMetadata = map[string]any{}
@@ -358,6 +364,8 @@ func mapCatalogMetadataClassifier(classifier persistence.CatalogClassifier) (Cat
 		return CatalogClassifierSkill, nil
 	case persistence.CatalogClassifierPrompt:
 		return CatalogClassifierPrompt, nil
+	case persistence.CatalogClassifierRule:
+		return CatalogClassifierRule, nil
 	default:
 		return "", fmt.Errorf("catalog classifier %q is invalid", classifier)
 	}

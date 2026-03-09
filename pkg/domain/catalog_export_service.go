@@ -154,20 +154,20 @@ func (s *CatalogExportService) Export(ctx context.Context, request CatalogExport
 }
 
 func (s *CatalogExportService) resolveSkillExportItem(itemID string) (CatalogExportManifestItem, *Skill, error) {
-	classifier, reference, err := parseCatalogExportItemReference(itemID)
+	reference, err := NormalizeCatalogItemReference(itemID)
 	if err != nil {
-		return CatalogExportManifestItem{}, nil, err
+		return CatalogExportManifestItem{}, nil, fmt.Errorf("%w: %v", ErrCatalogExportInvalidRequest, err)
 	}
 
-	if classifier != CatalogClassifierSkill {
+	if reference.Classifier != CatalogClassifierSkill {
 		return CatalogExportManifestItem{}, nil, fmt.Errorf(
 			"%w: classifier %q",
 			ErrCatalogExportUnsupportedClassifier,
-			classifier,
+			reference.Classifier,
 		)
 	}
 
-	skill, err := s.skillReader.ReadSkill(reference)
+	skill, err := s.skillReader.ReadSkill(reference.SkillID)
 	if err != nil {
 		return CatalogExportManifestItem{}, nil, fmt.Errorf(
 			"%w: %q",
@@ -178,64 +178,16 @@ func (s *CatalogExportService) resolveSkillExportItem(itemID string) (CatalogExp
 
 	archiveRoot := filepath.Base(skill.SourcePath)
 	if archiveRoot == "." || archiveRoot == string(filepath.Separator) {
-		archiveRoot = filepath.Base(reference)
+		archiveRoot = filepath.Base(reference.SkillID)
 	}
 
 	return CatalogExportManifestItem{
-		ItemID:          BuildSkillCatalogItemID(skill.ID),
+		ItemID:          reference.ItemID,
 		Classifier:      CatalogClassifierSkill,
-		SourceRef:       skill.ID,
+		SourceRef:       reference.SkillID,
 		ArchiveRoot:     archiveRoot,
 		ArchiveFileName: buildSkillArchiveFileName(skill.ID),
 	}, skill, nil
-}
-
-func parseCatalogExportItemReference(itemID string) (CatalogClassifier, string, error) {
-	normalized := strings.TrimSpace(itemID)
-	if normalized == "" {
-		return "", "", fmt.Errorf("%w: item id is required", ErrCatalogExportInvalidRequest)
-	}
-
-	if strings.Contains(normalized, ":") {
-		classifierToken, payload, _ := strings.Cut(normalized, ":")
-		classifier, err := ParseCatalogClassifier(classifierToken)
-		if err != nil {
-			return "", "", fmt.Errorf(
-				"%w: invalid catalog item id %q",
-				ErrCatalogExportInvalidRequest,
-				itemID,
-			)
-		}
-
-		payload = strings.TrimSpace(payload)
-		if payload == "" {
-			return "", "", fmt.Errorf(
-				"%w: catalog item id %q has an empty payload",
-				ErrCatalogExportInvalidRequest,
-				itemID,
-			)
-		}
-
-		if classifier == CatalogClassifierSkill {
-			payload = CanonicalSkillCatalogKey(payload)
-		}
-		if payload == "" {
-			return "", "", fmt.Errorf(
-				"%w: catalog item id %q has an empty payload",
-				ErrCatalogExportInvalidRequest,
-				itemID,
-			)
-		}
-		return classifier, payload, nil
-	}
-
-	skillID := CanonicalSkillCatalogKey(normalized)
-	if skillID == "" {
-		return "", "", fmt.Errorf("%w: item id %q is invalid", ErrCatalogExportInvalidRequest, itemID)
-	}
-
-	// Backward-compatible fallback for legacy skill-only callers.
-	return CatalogClassifierSkill, skillID, nil
 }
 
 func normalizeCatalogExportItemIDs(itemIDs []string) []string {

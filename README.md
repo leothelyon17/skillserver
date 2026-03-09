@@ -15,6 +15,272 @@ An MCP/REST server with WebUI serving as a centralized skills database for AI Ag
 
 <img width="580" alt="Screenshot 2026-01-28 at 11-08-16 skillserver" src="https://github.com/user-attachments/assets/c8db8890-b888-4354-8e7e-0d2a8c37af04" />
 
+## Catalog Contract Rollout Notes
+
+The catalog-ID and taxonomy ergonomics rollout is tracked in
+`docs/implementation-plans/catalog-id-taxonomy-and-materialization-ergonomics/`.
+The sections below capture the shipped and verified contract surface for that
+rollout, plus the release-readiness gate operators should use before promotion.
+
+### ID Compatibility Matrix
+
+| Surface | Emits | Accepts | Notes |
+|---------|-------|---------|-------|
+| MCP `list_skills`, `search_skills` | Canonical skill item IDs in `id` (`skill:<skill-id>`); populated `name`. | N/A | Bare skill IDs stop being emitted after rollout. |
+| MCP `read_skill` and skill-resource tools | N/A | Bare `<skill-id>` and canonical `skill:<skill-id>`. | Normalized to the same parent skill; prompt/rule item IDs are rejected. |
+| MCP taxonomy, export, and materialization item tools | Canonical `item_id` values. | Bare skill IDs only for skill items; prompt/rule IDs are canonical-only. | Legacy fallback is intentionally bounded to skill items. |
+| REST `/api/catalog` and `/api/catalog/search` | Canonical `id` values only. | N/A | These remain the canonical catalog list/search surfaces. |
+| REST `/api/catalog/:id/taxonomy` and `PATCH /api/catalog/taxonomy/batch` | Canonical `item_id` values. | Bare skill IDs or canonical `skill:<skill-id>` for skill items; prompt/rule IDs are canonical-only. | Batch results preserve canonical `item_id` values and keep the original input in `requested_item_id`. |
+| REST `/api/catalog/:id/metadata` and `/api/catalog/metadata?item_id=...` | Canonical `item_id` values. | Canonical item IDs only. | Bare skill fallback is intentionally not enabled on the metadata surface. |
+| REST `/api/catalog/export` and `/api/catalog/materialize` request bodies | Canonical `item_id` values in manifests/results. | Bare skill IDs or canonical `skill:<skill-id>` for skill items; prompt/rule IDs are canonical-only. | Shared export/materialization normalization is bounded to skill items for legacy compatibility. |
+| Legacy `/api/skills*` routes | Existing skill-name/path semantics. | Existing skill-name/path semantics. | Explicitly outside the catalog-item ID migration. |
+
+### Classification-State Semantics
+
+- `has_assignment` is `true` when any taxonomy field is populated.
+- `is_fully_classified` is `true` when `primary_domain` exists and the item has
+  at least one tag.
+- `missing_fields` is an ordered list drawn only from:
+  `primary_domain`, `primary_subdomain`, `secondary_domain`,
+  `secondary_subdomain`, `tags`.
+- Secondary domain and subdomain gaps remain visible in `missing_fields` even
+  when `is_fully_classified=true`.
+
+### List/Search and Export Defaults
+
+- `include_content=false` is the default for REST and MCP list/search payloads.
+- Canonical list/search ordering is ascending `item_id`.
+- Pagination uses `limit` and `cursor`, with response metadata
+  `next_cursor` and `has_more`.
+- Default `limit` is `50`; maximum `limit` is `200`.
+- REST `/api/catalog` and `/api/catalog/search` keep the legacy array response
+  shape when callers omit both `limit` and `cursor`; paginated REST calls
+  return `{items, next_cursor, has_more}`.
+- MCP `list_catalog` and `search_catalog` always return structured envelopes
+  (`items` or `results`, plus pagination metadata).
+- `unclassified=true` maps to `has_assignment=false`;
+  `missing_primary_domain=true` and `missing_tags=true` target those specific
+  missing states.
+- MCP `export_catalog_items` adds `archive_root_mode=flat|materialized`, with
+  `flat` as the default, and `include_archive_base64=false` by default.
+- REST `POST /api/catalog/export` returns materialized archive roots in the
+  manifest plus download metadata for non-dry-run responses; it never includes
+  inline archive bytes.
+- `POST /api/catalog/materialize` and `materialize_catalog_items` remain the
+  only caller-directed write paths.
+
+### Verified Examples
+
+#### Canonical Skill IDs on MCP
+
+`list_skills` and `search_skills` now emit canonical skill item IDs:
+
+```json
+{
+  "skills": [
+    {
+      "id": "skill:demo-skill",
+      "name": "demo-skill"
+    }
+  ]
+}
+```
+
+`read_skill`, `list_skill_resources`, `read_skill_resource`, and
+`get_skill_resource_info` accept either `demo-skill` or `skill:demo-skill`.
+Taxonomy, export, and materialization surfaces keep that fallback only for
+`skill` items.
+
+#### REST Metadata-First Catalog Page
+
+Paginated REST list/search calls return metadata-first item payloads plus
+explicit classification state:
+
+```bash
+curl -sS "http://127.0.0.1:8080/api/catalog?limit=1"
+```
+
+```json
+{
+  "items": [
+    {
+      "id": "skill:demo-skill",
+      "classifier": "skill",
+      "name": "demo-skill",
+      "has_assignment": false,
+      "is_fully_classified": false,
+      "missing_fields": [
+        "primary_domain",
+        "primary_subdomain",
+        "secondary_domain",
+        "secondary_subdomain",
+        "tags"
+      ]
+    }
+  ],
+  "next_cursor": "skill:demo-skill",
+  "has_more": true
+}
+```
+
+If you omit both `limit` and `cursor`, REST keeps the legacy array response
+shape while returning the same metadata-first item fields.
+
+#### REST Taxonomy Patch and Batch Dry-Run
+
+Single-item taxonomy reads and writes return the same explicit classification
+state fields:
+
+```bash
+curl -sS -X PATCH "http://127.0.0.1:8080/api/catalog/skill%3Ademo-skill/taxonomy" \
+  -H "Content-Type: application/json" \
+  --data '{"primary_domain_id":"domain-platform","tag_ids":["tag-backend"]}'
+```
+
+```json
+{
+  "item_id": "skill:demo-skill",
+  "has_assignment": true,
+  "is_fully_classified": true,
+  "missing_fields": [
+    "primary_subdomain",
+    "secondary_domain",
+    "secondary_subdomain"
+  ]
+}
+```
+
+Batch mutation keeps canonical output IDs and distinguishes dry-run planning
+from apply behavior:
+
+```bash
+curl -sS -X PATCH "http://127.0.0.1:8080/api/catalog/taxonomy/batch" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "dry_run": true,
+    "items": [
+      {
+        "item_id": "skill:demo-skill",
+        "primary_domain_id": "domain-platform",
+        "tag_ids": ["tag-backend"]
+      },
+      {
+        "item_id": "skill:missing-item",
+        "primary_domain_id": "domain-platform"
+      }
+    ]
+  }'
+```
+
+```json
+{
+  "dry_run": true,
+  "items": [
+    {
+      "item_id": "skill:demo-skill",
+      "status": "planned"
+    },
+    {
+      "item_id": "skill:missing-item",
+      "status": "not_found"
+    }
+  ]
+}
+```
+
+For compatibility, `/api/catalog/:id/taxonomy` and batch `item_id` fields also
+accept bare skill IDs such as `demo-skill`; batch results preserve that raw
+input in `requested_item_id` while keeping `item_id` canonical.
+
+#### Usage / Preflight Response
+
+REST usage endpoints and MCP usage tools share the same summary shape:
+
+```json
+{
+  "object_type": "tag",
+  "object_id": "tag-backend",
+  "assignment_count": 1,
+  "distinct_item_count": 1,
+  "preview_item_ids": ["skill:taxonomy-assigned-item"],
+  "blocking_reason": "in_use"
+}
+```
+
+REST endpoints:
+- `GET /api/catalog/taxonomy/domains/:id/usage`
+- `GET /api/catalog/taxonomy/subdomains/:id/usage`
+- `GET /api/catalog/taxonomy/tags/:id/usage`
+
+MCP tools:
+- `get_taxonomy_domain_usage`
+- `get_taxonomy_subdomain_usage`
+- `get_taxonomy_tag_usage`
+
+#### MCP Export Options
+
+`export_catalog_items` defaults to flattened archive roots and omits inline
+archive bytes:
+
+```json
+{
+  "item_ids": ["prompt:sample-skill:imports/prompts/system.md"],
+  "dry_run": true
+}
+```
+
+```json
+{
+  "manifest": {
+    "items": [
+      {
+        "item_id": "prompt:sample-skill:imports/prompts/system.md",
+        "archive_root": "system.md"
+      }
+    ]
+  }
+}
+```
+
+Callers that want materialization-style archive roots and inline bytes must opt
+in explicitly:
+
+```json
+{
+  "item_ids": ["prompt:sample-skill:imports/prompts/system.md"],
+  "archive_root_mode": "materialized",
+  "include_archive_base64": true
+}
+```
+
+```json
+{
+  "manifest": {
+    "items": [
+      {
+        "archive_root": "prompts/system.md"
+      }
+    ]
+  },
+  "download": {
+    "archive_base64": "<base64 omitted>"
+  }
+}
+```
+
+REST `POST /api/catalog/export` stays download-oriented: non-dry-run responses
+return manifest plus `download.file_name`, `download.content_type`, and
+`download.content_length`, but never inline bytes.
+
+### Release Guidance
+
+- Use the `WP-008` section in [`tests/README.md`](/home/jeff/skillserver/tests/README.md) as the go/no-go regression gate for this rollout.
+- Release notes and operator caveats live in [`docs/releases/2026-03-09-catalog-id-taxonomy-and-materialization-ergonomics-release-notes.md`](/home/jeff/skillserver/docs/releases/2026-03-09-catalog-id-taxonomy-and-materialization-ergonomics-release-notes.md).
+- Existing ADR-specific rollback runbooks remain the operational fallback:
+  [`docs/operations/domain-taxonomy-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/domain-taxonomy-rollout-rollback.md)
+  and
+  [`docs/operations/rule-catalog-materialization-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/rule-catalog-materialization-rollout-rollback.md).
+
 ## Installation
 
 ### From Source
@@ -731,9 +997,10 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 - `GET /api/runtime/capabilities` - Return runtime capability gates (for example `git.stored_credentials_enabled`, `catalog.rules_enabled`, `mcp.materialization_enabled`, `mcp.allowed_destination_roots`)
 
 #### Catalog (ADR-003 + ADR-007, additive)
-- `GET /api/catalog` - List unified catalog items (`skill` + `prompt` + `rule`) with fields `id`, `classifier`, `name`, `description`, `content`, `parent_skill_id`, `resource_path`, `custom_metadata`, `labels`, `content_writable`, `metadata_writable`, `read_only`
-- `GET /api/catalog/search?q=query&classifier=skill|prompt|rule` - Search unified catalog items with optional classifier filter
-- `POST /api/catalog/export` - Export one or more catalog items as a `tar.gz` archive with optional dry-run planning (`item_ids`, optional `format`, optional `dry_run`)
+- `GET /api/catalog` - List unified catalog items (`skill` + `prompt` + `rule`) with metadata-first fields including `id`, `classifier`, `name`, `description`, `parent_skill_id`, `resource_path`, `custom_metadata`, `labels`, `content_writable`, `metadata_writable`, `read_only`, `has_assignment`, `is_fully_classified`, and `missing_fields`
+- `GET /api/catalog/search?q=query&classifier=skill|prompt|rule` - Search unified catalog items with optional classifier filter and the same metadata-first item fields
+- REST list/search compatibility note: omitting both `limit` and `cursor` keeps the legacy array response shape; paginated calls return `{items, next_cursor, has_more}`
+- `POST /api/catalog/export` - Export one or more catalog items as a `tar.gz` archive with optional dry-run planning (`item_ids`, optional `format`, optional `dry_run`); accepts bare skill IDs only for `skill` items
 - `POST /api/catalog/materialize` - Plan or materialize one or more catalog items into an absolute destination directory (`item_ids`, `destination_dir`, optional `conflict_policy=error|overwrite|skip`, optional `dry_run`)
 - Optional taxonomy filters for both list/search:
   - `primary_domain_id`
@@ -741,28 +1008,36 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
   - `subdomain_id` (matches primary or secondary subdomain)
   - `tag_ids` (comma-separated IDs)
   - `tag_match=any|all` (defaults to `any`)
+- Optional classification-state filters for both list/search:
+  - `unclassified`
+  - `missing_primary_domain`
+  - `missing_tags`
 - `classifier` is case-insensitive at input and normalized to `skill`, `prompt`, or `rule` in responses
 - Invalid classifier values return `400` (`invalid catalog classifier ...`)
 - Empty or missing `q` for `/api/catalog/search` returns `400` (`query parameter 'q' is required`)
 - `POST /api/catalog/materialize` returns `403` (`catalog materialization capability is disabled`) when materialization capability is disabled.
-- `GET /api/catalog/:id/metadata` - Return source + overlay + effective metadata projections for one catalog item
+- `GET /api/catalog/:id/metadata` - Return source + overlay + effective metadata projections for one catalog item (canonical item IDs only)
 - `PATCH /api/catalog/:id/metadata` - Update metadata overlays for one catalog item (`display_name`, `description`, `labels`, `custom_metadata`, optional `updated_by`)
 
 #### Taxonomy (ADR-005, additive; persistence mode required)
-- `GET /api/catalog/:id/taxonomy` - Get taxonomy assignment metadata for one catalog item
-- `PATCH /api/catalog/:id/taxonomy` - Patch taxonomy assignment metadata for one catalog item
+- `GET /api/catalog/:id/taxonomy` - Get taxonomy assignment metadata for one catalog item (`has_assignment`, `is_fully_classified`, `missing_fields`, bare skill IDs accepted for `skill` items)
+- `PATCH /api/catalog/:id/taxonomy` - Patch taxonomy assignment metadata for one catalog item (`tag_ids`, additive `add_tag_ids`, `remove_tag_ids`, `clear_tags`, optional `updated_by`)
+- `PATCH /api/catalog/taxonomy/batch` - Dry-run or apply batch taxonomy mutations (`dry_run`, `items[].item_id`, taxonomy selectors, additive tag mutation fields)
 - `GET /api/catalog/taxonomy/domains` - List taxonomy domains (`domain_id`, `domain_ids`, `key`, `keys`, `active` filters)
 - `POST /api/catalog/taxonomy/domains` - Create taxonomy domain
 - `PATCH /api/catalog/taxonomy/domains/:id` - Update taxonomy domain
 - `DELETE /api/catalog/taxonomy/domains/:id` - Delete taxonomy domain
+- `GET /api/catalog/taxonomy/domains/:id/usage` - Get domain usage/preflight summary (`assignment_count`, `distinct_item_count`, `preview_item_ids`, optional `blocking_reason`)
 - `GET /api/catalog/taxonomy/subdomains` - List taxonomy subdomains (`subdomain_id`, `subdomain_ids`, `domain_id`, `domain_ids`, `key`, `keys`, `active` filters)
 - `POST /api/catalog/taxonomy/subdomains` - Create taxonomy subdomain
 - `PATCH /api/catalog/taxonomy/subdomains/:id` - Update taxonomy subdomain
 - `DELETE /api/catalog/taxonomy/subdomains/:id` - Delete taxonomy subdomain
+- `GET /api/catalog/taxonomy/subdomains/:id/usage` - Get subdomain usage/preflight summary
 - `GET /api/catalog/taxonomy/tags` - List taxonomy tags (`tag_id`, `tag_ids`, `key`, `keys`, `active` filters)
 - `POST /api/catalog/taxonomy/tags` - Create taxonomy tag
 - `PATCH /api/catalog/taxonomy/tags/:id` - Update taxonomy tag
 - `DELETE /api/catalog/taxonomy/tags/:id` - Delete taxonomy tag
+- `GET /api/catalog/taxonomy/tags/:id/usage` - Get tag usage/preflight summary
 - Taxonomy endpoints return `503` when persistence runtime is disabled/unavailable.
 
 #### Resources
@@ -775,25 +1050,29 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 ### MCP Tools
 
 #### Skills
-- `list_skills` - List all available skills (returns skill IDs for use with read_skill)
-- `read_skill` - Read the full content of a skill by its ID
-- `search_skills` - Search for skills by query string
+- `list_skills` - List all available skills (returns canonical skill item IDs and populated names)
+- `read_skill` - Read the full content of a skill by its ID (accepts bare or canonical skill IDs)
+- `search_skills` - Search for skills by query string (returns canonical skill item IDs and populated names)
 
 #### Catalog (ADR-003 + ADR-007, additive)
-- `list_catalog` - List unified catalog items with optional `classifier` filter (`skill`, `prompt`, or `rule`) and optional taxonomy filters (`primary_domain_id`, `secondary_domain_id`, `subdomain_id`, `tag_ids`, `tag_match`)
-- `search_catalog` - Search unified catalog items by `query`, with optional `classifier` + taxonomy filters
-- `export_catalog_items` - Export one or more catalog items as `tar.gz` with optional dry-run planning output
+- `list_catalog` - List unified catalog items with optional `classifier` filter (`skill`, `prompt`, or `rule`), optional taxonomy filters (`primary_domain_id`, `secondary_domain_id`, `subdomain_id`, `tag_ids`, `tag_match`), optional classification-state filters (`unclassified`, `missing_primary_domain`, `missing_tags`), and optional `include_content`
+- `search_catalog` - Search unified catalog items by `query`, with optional classifier/taxonomy/classification-state filters and optional `include_content`
+- `export_catalog_items` - Export one or more catalog items as `tar.gz` with optional dry-run planning output, optional `archive_root_mode=flat|materialized`, and optional `include_archive_base64=true`
 - `materialize_catalog_items` - Materialize one or more catalog items into an allowed destination directory (registered only when materialization gate is enabled)
 - Taxonomy read tools (always registered):
   - `list_taxonomy_domains`
   - `list_taxonomy_subdomains`
   - `list_taxonomy_tags`
   - `get_catalog_item_taxonomy`
+  - `get_taxonomy_domain_usage`
+  - `get_taxonomy_subdomain_usage`
+  - `get_taxonomy_tag_usage`
 - Taxonomy write tools (registered only when `--mcp-enable-writes=true` or `SKILLSERVER_MCP_ENABLE_WRITES=true`):
   - `create_taxonomy_domain`, `update_taxonomy_domain`, `delete_taxonomy_domain`
   - `create_taxonomy_subdomain`, `update_taxonomy_subdomain`, `delete_taxonomy_subdomain`
   - `create_taxonomy_tag`, `update_taxonomy_tag`, `delete_taxonomy_tag`
   - `patch_catalog_item_taxonomy`
+  - `patch_catalog_items_taxonomy`
 - Optional migration strategy:
   - Existing clients can keep using `list_skills`/`search_skills`
   - New mixed-item clients should adopt `list_catalog`/`search_catalog` for classifier-aware behavior

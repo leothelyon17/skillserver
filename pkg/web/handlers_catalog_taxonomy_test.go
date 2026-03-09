@@ -39,6 +39,11 @@ func TestCatalogTaxonomyRegistryEndpoints_ServiceUnavailable_Returns503(t *testi
 			method: http.MethodDelete,
 			target: "/api/catalog/taxonomy/tags/tag-backend",
 		},
+		{
+			name:   "tag usage",
+			method: http.MethodGet,
+			target: "/api/catalog/taxonomy/tags/tag-backend/usage",
+		},
 	}
 
 	for _, tc := range tests {
@@ -333,6 +338,18 @@ func TestCatalogTaxonomyRegistryEndpoints_TagCRUD_MapsConflictAndInUseDelete(t *
 	if !strings.Contains(strings.ToLower(deleteInUseRec.Body.String()), "assigned to catalog items") {
 		t.Fatalf("expected actionable in-use conflict message, got %q", deleteInUseRec.Body.String())
 	}
+	conflictPayload := decodeJSONObject(t, deleteInUseRec.Body.Bytes())
+	conflict, ok := conflictPayload["conflict"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured conflict payload, got %+v", conflictPayload)
+	}
+	if reason, _ := conflict["reason"].(string); reason != "in_use" {
+		t.Fatalf("expected conflict reason in_use, got %+v", conflict)
+	}
+	referencedItemIDs, ok := conflict["referenced_item_ids"].([]any)
+	if !ok || len(referencedItemIDs) != 1 {
+		t.Fatalf("expected referenced_item_ids in conflict payload, got %+v", conflict["referenced_item_ids"])
+	}
 
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/catalog/taxonomy/tags/tag-automation", nil)
 	deleteRec := httptest.NewRecorder()
@@ -342,9 +359,85 @@ func TestCatalogTaxonomyRegistryEndpoints_TagCRUD_MapsConflictAndInUseDelete(t *
 	}
 }
 
+func TestCatalogTaxonomyUsageEndpoints_ReturnStructuredPreflight(t *testing.T) {
+	t.Parallel()
+
+	fixture := newCatalogTaxonomyFixtureServer(t)
+
+	requests := []struct {
+		target string
+		body   string
+	}{
+		{
+			target: "/api/catalog/taxonomy/domains",
+			body:   `{"domain_id":"domain-platform","key":"platform","name":"Platform"}`,
+		},
+		{
+			target: "/api/catalog/taxonomy/subdomains",
+			body:   `{"subdomain_id":"subdomain-platform-api","domain_id":"domain-platform","key":"api","name":"API"}`,
+		},
+		{
+			target: "/api/catalog/taxonomy/tags",
+			body:   `{"tag_id":"tag-backend","key":"backend","name":"Backend"}`,
+		},
+	}
+	for _, request := range requests {
+		req := httptest.NewRequest(http.MethodPost, request.target, strings.NewReader(request.body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		fixture.server.echo.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected status %d for %q, got %d body=%q", http.StatusCreated, request.target, rec.Code, rec.Body.String())
+		}
+	}
+
+	itemID := "skill:taxonomy-assigned-item"
+	seedCatalogTaxonomyTagAssignment(t, fixture, itemID, []string{"tag-backend"})
+
+	primaryDomainID := "domain-platform"
+	primarySubdomainID := "subdomain-platform-api"
+	if err := fixture.assignmentRepo.Upsert(context.Background(), persistence.CatalogItemTaxonomyAssignmentRow{
+		ItemID:             itemID,
+		PrimaryDomainID:    &primaryDomainID,
+		PrimarySubdomainID: &primarySubdomainID,
+		UpdatedAt:          time.Date(2026, time.March, 5, 8, 5, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("expected taxonomy assignment seed to succeed, got %v", err)
+	}
+
+	for _, target := range []string{
+		"/api/catalog/taxonomy/domains/domain-platform/usage?preview_limit=1",
+		"/api/catalog/taxonomy/subdomains/subdomain-platform-api/usage?preview_limit=1",
+		"/api/catalog/taxonomy/tags/tag-backend/usage?preview_limit=1",
+	} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		rec := httptest.NewRecorder()
+		fixture.server.echo.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status %d for %q, got %d body=%q", http.StatusOK, target, rec.Code, rec.Body.String())
+		}
+
+		payload := decodeJSONObject(t, rec.Body.Bytes())
+		if assignmentCount, ok := payload["assignment_count"].(float64); !ok || assignmentCount != 1 {
+			t.Fatalf("expected assignment_count=1 for %q, got %+v", target, payload)
+		}
+		if distinctItemCount, ok := payload["distinct_item_count"].(float64); !ok || distinctItemCount != 1 {
+			t.Fatalf("expected distinct_item_count=1 for %q, got %+v", target, payload)
+		}
+		if blockingReason, _ := payload["blocking_reason"].(string); blockingReason != "in_use" {
+			t.Fatalf("expected blocking_reason=in_use for %q, got %+v", target, payload)
+		}
+		previewItemIDs, ok := payload["preview_item_ids"].([]any)
+		if !ok || len(previewItemIDs) != 1 {
+			t.Fatalf("expected preview_item_ids for %q, got %+v", target, payload["preview_item_ids"])
+		}
+	}
+}
+
 type catalogTaxonomyFixture struct {
 	server            *Server
 	sourceRepo        *persistence.CatalogSourceRepository
+	assignmentRepo    *persistence.CatalogItemTaxonomyAssignmentRepository
 	tagAssignmentRepo *persistence.CatalogItemTagAssignmentRepository
 }
 
@@ -400,12 +493,24 @@ func newCatalogTaxonomyFixtureServer(t *testing.T) catalogTaxonomyFixture {
 	if err != nil {
 		t.Fatalf("expected taxonomy registry service creation to succeed, got %v", err)
 	}
+	taxonomyUsageService, err := domain.NewCatalogTaxonomyUsageService(
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+	)
+	if err != nil {
+		t.Fatalf("expected taxonomy usage service creation to succeed, got %v", err)
+	}
 
 	server.SetCatalogTaxonomyRegistryService(taxonomyRegistry)
+	server.SetCatalogTaxonomyUsageService(taxonomyUsageService)
 
 	return catalogTaxonomyFixture{
 		server:            server,
 		sourceRepo:        sourceRepo,
+		assignmentRepo:    taxonomyAssignmentRepo,
 		tagAssignmentRepo: tagAssignmentRepo,
 	}
 }

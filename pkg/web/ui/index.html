@@ -194,6 +194,39 @@
             </div>
 
             <div class="mt-3">
+                <label class="form-label">Classification State</label>
+                <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <label class="flex items-center gap-3 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                            x-model="taxonomyFilters.unclassified"
+                            @change="searchSkills()"
+                        >
+                        <span>Unclassified</span>
+                    </label>
+                    <label class="flex items-center gap-3 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                            x-model="taxonomyFilters.missingPrimaryDomain"
+                            @change="searchSkills()"
+                        >
+                        <span>Missing Primary Domain</span>
+                    </label>
+                    <label class="flex items-center gap-3 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
+                            x-model="taxonomyFilters.missingTags"
+                            @change="searchSkills()"
+                        >
+                        <span>Missing Tags</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="mt-3">
                 <label class="form-label">Tags</label>
                 <div class="max-h-40 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 dark:border-gray-700 dark:bg-gray-900/40">
                     <template x-if="taxonomyCatalog.tags.length === 0">
@@ -232,23 +265,35 @@
                         </div>
                     </div>
                     <p x-text="item.description || 'No description'" class="skill-description text-gray-600 dark:text-gray-400"></p>
-                    <div class="catalog-taxonomy mb-3 space-y-2" x-show="itemHasTaxonomy(item)">
-                        <div class="flex flex-wrap gap-2">
+                    <div class="catalog-classification mb-3 space-y-2" x-show="itemNeedsClassificationAttention(item) || itemHasTaxonomy(item)">
+                        <div class="flex flex-wrap gap-2" x-show="itemNeedsClassificationAttention(item)">
                             <span
-                                x-show="item.primary_domain"
-                                class="catalog-taxonomy-chip catalog-taxonomy-chip-primary"
-                                x-text="formatDomainChip(item.primary_domain, item.primary_subdomain, 'Primary')"
+                                class="catalog-classification-chip"
+                                :class="classificationStateChipClass(item)"
+                                x-text="classificationStateLabel(item)"
                             ></span>
-                            <span
-                                x-show="item.secondary_domain"
-                                class="catalog-taxonomy-chip catalog-taxonomy-chip-secondary"
-                                x-text="formatDomainChip(item.secondary_domain, item.secondary_subdomain, 'Secondary')"
-                            ></span>
-                        </div>
-                        <div class="flex flex-wrap gap-2" x-show="Array.isArray(item.tags) && item.tags.length > 0">
-                            <template x-for="tag in (Array.isArray(item.tags) ? item.tags : []).slice(0, 5)" :key="`${item.id || item.name}-taxonomy-tag-${tag.id}`">
-                                <span class="catalog-taxonomy-chip catalog-taxonomy-chip-tag" x-text="`#${tag.name}`"></span>
+                            <template x-for="gapLabel in classificationGapLabels(item)" :key="`${item.id || item.name}-classification-gap-${gapLabel}`">
+                                <span class="catalog-classification-chip catalog-classification-chip-gap" x-text="gapLabel"></span>
                             </template>
+                        </div>
+                        <div class="catalog-taxonomy space-y-2" x-show="itemHasTaxonomy(item)">
+                            <div class="flex flex-wrap gap-2">
+                                <span
+                                    x-show="item.primary_domain"
+                                    class="catalog-taxonomy-chip catalog-taxonomy-chip-primary"
+                                    x-text="formatDomainChip(item.primary_domain, item.primary_subdomain, 'Primary')"
+                                ></span>
+                                <span
+                                    x-show="item.secondary_domain"
+                                    class="catalog-taxonomy-chip catalog-taxonomy-chip-secondary"
+                                    x-text="formatDomainChip(item.secondary_domain, item.secondary_subdomain, 'Secondary')"
+                                ></span>
+                            </div>
+                            <div class="flex flex-wrap gap-2" x-show="Array.isArray(item.tags) && item.tags.length > 0">
+                                <template x-for="tag in (Array.isArray(item.tags) ? item.tags : []).slice(0, 5)" :key="`${item.id || item.name}-taxonomy-tag-${tag.id}`">
+                                    <span class="catalog-taxonomy-chip catalog-taxonomy-chip-tag" x-text="`#${tag.name}`"></span>
+                                </template>
+                            </div>
                         </div>
                     </div>
                     <div class="skill-tags" x-show="Array.isArray(item.labels) && item.labels.length > 0">
@@ -293,6 +338,31 @@
                 <p class="text-gray-500 dark:text-gray-400 mb-4">Try adjusting your search or create a new skill.</p>
                 <button @click="showEditor = true; editingSkill = null; skillContent = ''; skillName = ''; skillDescription = ''; skillLicense = ''; skillCompatibility = ''; nameValidationError = ''" class="btn btn-primary">
                     <i class="fas fa-plus mr-2"></i>Create Skill
+                </button>
+            </div>
+        </div>
+        <div
+            x-show="!showEditor && shouldShowCatalogPagination() && filteredSkills.length > 0"
+            class="catalog-pagination mt-4 flex flex-col gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm dark:border-gray-700 dark:bg-gray-800 sm:flex-row sm:items-center sm:justify-between"
+            style="display: none;"
+        >
+            <div class="text-gray-700 dark:text-gray-300">
+                <span class="font-semibold" x-text="catalogPaginationSummary()"></span>
+            </div>
+            <div class="flex items-center gap-2">
+                <button
+                    @click="loadPreviousCatalogPage()"
+                    class="btn btn-small btn-secondary"
+                    :disabled="!canLoadPreviousCatalogPage()"
+                >
+                    <i class="fas fa-arrow-left mr-1"></i>Previous
+                </button>
+                <button
+                    @click="loadNextCatalogPage()"
+                    class="btn btn-small btn-secondary"
+                    :disabled="!canLoadNextCatalogPage()"
+                >
+                    Next<i class="fas fa-arrow-right ml-1"></i>
                 </button>
             </div>
         </div>
@@ -519,7 +589,7 @@
         <!-- Confirmation Modal -->
         <div 
             x-show="confirmModal.show"
-            @keydown.escape.window="confirmModal.show = false; if (confirmModal.callback) { confirmModal.callback(false); confirmModal.callback = null; }"
+            @keydown.escape.window="resolveConfirmModal(false)"
             class="fixed inset-0 bg-black bg-opacity-50 z-[90] flex items-center justify-center"
             style="display: none;"
         >
@@ -527,20 +597,58 @@
                 @click.stop
                 class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 max-w-md w-full mx-4"
             >
-                <h3 class="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">Confirm</h3>
+                <h3 class="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100" x-text="confirmModal.title || 'Confirm'"></h3>
                 <p class="text-gray-700 dark:text-gray-300 mb-6" x-text="confirmModal.message"></p>
+                <div
+                    x-show="confirmModal.usage"
+                    class="mb-6 rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm dark:border-gray-700 dark:bg-gray-900/40"
+                    style="display: none;"
+                >
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Assignments</p>
+                            <p class="font-semibold text-gray-900 dark:text-gray-100" x-text="confirmModal.usage ? confirmModal.usage.assignment_count : 0"></p>
+                        </div>
+                        <div>
+                            <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Catalog Items</p>
+                            <p class="font-semibold text-gray-900 dark:text-gray-100" x-text="confirmModal.usage ? confirmModal.usage.distinct_item_count : 0"></p>
+                        </div>
+                    </div>
+                    <p
+                        x-show="confirmModal.blocking"
+                        class="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200"
+                    >
+                        <i class="fas fa-link mr-1"></i>This taxonomy object is still referenced and cannot be deleted until those assignments are removed.
+                    </p>
+                    <div
+                        x-show="confirmModal.usage && Array.isArray(confirmModal.usage.preview_item_ids) && confirmModal.usage.preview_item_ids.length > 0"
+                        class="mt-3"
+                    >
+                        <p class="mb-2 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Impacted Catalog Items</p>
+                        <ul class="space-y-1">
+                            <template x-for="itemID in (confirmModal.usage ? confirmModal.usage.preview_item_ids : [])" :key="`confirm-usage-${itemID}`">
+                                <li class="rounded bg-white px-2 py-1 font-mono text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-200" x-text="itemID"></li>
+                            </template>
+                        </ul>
+                    </div>
+                </div>
                 <div class="flex gap-3 justify-end">
                     <button 
-                        @click="confirmModal.show = false; if (confirmModal.callback) { confirmModal.callback(false); confirmModal.callback = null; }"
+                        @click="resolveConfirmModal(false)"
                         class="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                        x-text="confirmModal.cancelLabel || 'Cancel'"
                     >
-                        Cancel
                     </button>
                     <button 
-                        @click="confirmModal.show = false; if (confirmModal.callback) { confirmModal.callback(true); confirmModal.callback = null; }"
-                        class="px-4 py-2 bg-red-600 dark:bg-red-500 text-white rounded hover:bg-red-700 dark:hover:bg-red-600 transition"
+                        @click="resolveConfirmModal(true)"
+                        :disabled="confirmModal.blocking"
+                        :class="confirmModal.blocking
+                            ? 'px-4 py-2 rounded bg-gray-300 text-gray-500 cursor-not-allowed dark:bg-gray-700 dark:text-gray-400'
+                            : ((confirmModal.intent || 'danger') === 'primary'
+                                ? 'px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition'
+                                : 'px-4 py-2 rounded bg-red-600 text-white hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600 transition')"
+                        x-text="confirmModal.confirmLabel || 'Confirm'"
                     >
-                        Confirm
                     </button>
                 </div>
             </div>
@@ -2195,7 +2303,10 @@
                     secondaryDomainID: '',
                     subdomainID: '',
                     tagIDs: [],
-                    tagMatch: 'any'
+                    tagMatch: 'any',
+                    unclassified: false,
+                    missingPrimaryDomain: false,
+                    missingTags: false
                 },
                 taxonomyCatalog: {
                     loading: false,
@@ -2278,6 +2389,13 @@
                     itemName: '',
                     contentWritable: true,
                     metadataWritable: true,
+                    originalTaxonomy: {
+                        primaryDomainID: '',
+                        primarySubdomainID: '',
+                        secondaryDomainID: '',
+                        secondarySubdomainID: '',
+                        tagIDs: []
+                    },
                     form: {
                         displayName: '',
                         description: '',
@@ -2325,7 +2443,13 @@
                 confirmModal: {
                     show: false,
                     message: '',
-                    callback: null
+                    callback: null,
+                    title: 'Confirm',
+                    confirmLabel: 'Confirm',
+                    cancelLabel: 'Cancel',
+                    intent: 'danger',
+                    blocking: false,
+                    usage: null
                 },
                 showImportModal: false,
                 showGitReposModal: false,
@@ -2381,6 +2505,14 @@
                 searchDebounceHandle: null,
                 searchAbortController: null,
                 searchRequestVersion: 0,
+                catalogPagination: {
+                    limit: 24,
+                    cursor: '',
+                    nextCursor: '',
+                    previousCursors: [],
+                    hasMore: false,
+                    usedEnvelope: false
+                },
 
                 initTheme() {
                     // Check localStorage or default to dark
@@ -2421,12 +2553,47 @@
                     }, 3000);
                 },
 
-                showConfirm(message) {
+                resetConfirmModal() {
+                    this.confirmModal = {
+                        show: false,
+                        message: '',
+                        callback: null,
+                        title: 'Confirm',
+                        confirmLabel: 'Confirm',
+                        cancelLabel: 'Cancel',
+                        intent: 'danger',
+                        blocking: false,
+                        usage: null
+                    };
+                },
+
+                resolveConfirmModal(result) {
+                    const callback = this.confirmModal.callback;
+                    this.resetConfirmModal();
+                    if (callback) {
+                        callback(result);
+                    }
+                },
+
+                showConfirm(message, options = {}) {
                     return new Promise((resolve) => {
                         this.confirmModal.message = message;
+                        this.confirmModal.title = typeof options.title === 'string' && options.title.trim() !== ''
+                            ? options.title.trim()
+                            : 'Confirm';
+                        this.confirmModal.confirmLabel = typeof options.confirmLabel === 'string' && options.confirmLabel.trim() !== ''
+                            ? options.confirmLabel.trim()
+                            : 'Confirm';
+                        this.confirmModal.cancelLabel = typeof options.cancelLabel === 'string' && options.cancelLabel.trim() !== ''
+                            ? options.cancelLabel.trim()
+                            : 'Cancel';
+                        this.confirmModal.intent = options.intent === 'primary' ? 'primary' : 'danger';
+                        this.confirmModal.blocking = options.blocking === true;
+                        this.confirmModal.usage = options.usage && typeof options.usage === 'object'
+                            ? { ...options.usage }
+                            : null;
                         this.confirmModal.callback = (result) => {
                             resolve(result);
-                            this.confirmModal.callback = null;
                         };
                         this.confirmModal.show = true;
                     });
@@ -2467,11 +2634,7 @@
                         } else if (this.resourceEditorModal.show) {
                             this.resourceEditorModal.show = false;
                         } else if (this.confirmModal.show) {
-                            this.confirmModal.show = false;
-                            if (this.confirmModal.callback) {
-                                this.confirmModal.callback(false);
-                                this.confirmModal.callback = null;
-                            }
+                            this.resolveConfirmModal(false);
                         } else {
                             this.cancelEdit();
                         }
@@ -2524,7 +2687,10 @@
                     return this.taxonomyFilters.primaryDomainID !== '' ||
                         this.taxonomyFilters.secondaryDomainID !== '' ||
                         this.taxonomyFilters.subdomainID !== '' ||
-                        this.taxonomyFilters.tagIDs.length > 0;
+                        this.taxonomyFilters.tagIDs.length > 0 ||
+                        this.taxonomyFilters.unclassified ||
+                        this.taxonomyFilters.missingPrimaryDomain ||
+                        this.taxonomyFilters.missingTags;
                 },
 
                 toggleTaxonomyFilters() {
@@ -2540,7 +2706,10 @@
                         secondaryDomainID: '',
                         subdomainID: '',
                         tagIDs: [],
-                        tagMatch: 'any'
+                        tagMatch: 'any',
+                        unclassified: false,
+                        missingPrimaryDomain: false,
+                        missingTags: false
                     };
                     this.searchSkills();
                 },
@@ -2567,6 +2736,83 @@
                     return !!item.primary_domain ||
                         !!item.secondary_domain ||
                         (Array.isArray(item.tags) && item.tags.length > 0);
+                },
+
+                catalogItemHasAssignment(item) {
+                    return !!(item && typeof item === 'object' && item.has_assignment === true);
+                },
+
+                catalogItemIsFullyClassified(item) {
+                    return !!(item && typeof item === 'object' && item.is_fully_classified === true);
+                },
+
+                catalogItemMissingFields(item) {
+                    if (!item || !Array.isArray(item.missing_fields)) {
+                        return [];
+                    }
+                    return item.missing_fields
+                        .map((field) => String(field || '').trim())
+                        .filter((field) => field !== '');
+                },
+
+                itemNeedsClassificationAttention(item) {
+                    if (!item || typeof item !== 'object') {
+                        return false;
+                    }
+                    if (this.catalogItemHasAssignment(item)) {
+                        return !this.catalogItemIsFullyClassified(item);
+                    }
+                    return this.catalogItemMissingFields(item).length > 0 || !this.itemHasTaxonomy(item);
+                },
+
+                classificationStateLabel(item) {
+                    if (!item || typeof item !== 'object') {
+                        return '';
+                    }
+                    if (!this.catalogItemHasAssignment(item)) {
+                        return 'Unclassified';
+                    }
+                    if (!this.catalogItemIsFullyClassified(item)) {
+                        return 'Partially Classified';
+                    }
+                    return 'Fully Classified';
+                },
+
+                classificationStateChipClass(item) {
+                    if (!this.catalogItemHasAssignment(item)) {
+                        return 'catalog-classification-chip-unclassified';
+                    }
+                    if (!this.catalogItemIsFullyClassified(item)) {
+                        return 'catalog-classification-chip-partial';
+                    }
+                    return 'catalog-classification-chip-complete';
+                },
+
+                classificationGapLabels(item) {
+                    if (!this.catalogItemHasAssignment(item) || this.catalogItemIsFullyClassified(item)) {
+                        return [];
+                    }
+                    const labels = [];
+                    const missingFields = new Set(this.catalogItemMissingFields(item));
+                    const labelMap = {
+                        primary_domain: 'Missing Primary Domain',
+                        primary_subdomain: 'Missing Primary Subdomain',
+                        secondary_domain: 'Missing Secondary Domain',
+                        secondary_subdomain: 'Missing Secondary Subdomain',
+                        tags: 'Missing Tags'
+                    };
+                    for (const field of [
+                        'primary_domain',
+                        'primary_subdomain',
+                        'secondary_domain',
+                        'secondary_subdomain',
+                        'tags'
+                    ]) {
+                        if (missingFields.has(field)) {
+                            labels.push(labelMap[field]);
+                        }
+                    }
+                    return labels.slice(0, 3);
                 },
 
                 formatDomainChip(domain, subdomain, labelPrefix) {
@@ -2718,6 +2964,16 @@
                         }
                     }
 
+                    if (this.taxonomyFilters.unclassified && this.catalogItemHasAssignment(item)) {
+                        return false;
+                    }
+                    if (this.taxonomyFilters.missingPrimaryDomain && item.primary_domain) {
+                        return false;
+                    }
+                    if (this.taxonomyFilters.missingTags && Array.isArray(item.tags) && item.tags.length > 0) {
+                        return false;
+                    }
+
                     return true;
                 },
 
@@ -2736,7 +2992,100 @@
                         params.set('tag_ids', this.taxonomyFilters.tagIDs.join(','));
                         params.set('tag_match', this.taxonomyFilterTagMatchMode());
                     }
+                    if (this.taxonomyFilters.unclassified) {
+                        params.set('unclassified', 'true');
+                    }
+                    if (this.taxonomyFilters.missingPrimaryDomain) {
+                        params.set('missing_primary_domain', 'true');
+                    }
+                    if (this.taxonomyFilters.missingTags) {
+                        params.set('missing_tags', 'true');
+                    }
                     return params;
+                },
+
+                resetCatalogPagination() {
+                    this.catalogPagination.cursor = '';
+                    this.catalogPagination.nextCursor = '';
+                    this.catalogPagination.previousCursors = [];
+                    this.catalogPagination.hasMore = false;
+                    this.catalogPagination.usedEnvelope = false;
+                },
+
+                currentCatalogPageNumber() {
+                    return this.catalogPagination.previousCursors.length + 1;
+                },
+
+                canLoadPreviousCatalogPage() {
+                    return !this.isLoading && this.catalogPagination.previousCursors.length > 0;
+                },
+
+                canLoadNextCatalogPage() {
+                    return !this.isLoading && this.catalogPagination.hasMore && this.catalogPagination.nextCursor !== '';
+                },
+
+                shouldShowCatalogPagination() {
+                    return this.catalogPagination.usedEnvelope && (
+                        this.catalogPagination.previousCursors.length > 0 ||
+                        this.catalogPagination.hasMore
+                    );
+                },
+
+                catalogPaginationSummary() {
+                    const resultCount = this.filteredSkills.length;
+                    const noun = resultCount === 1 ? 'item' : 'items';
+                    const summary = [`Page ${this.currentCatalogPageNumber()}`, `${resultCount} ${noun}`];
+                    if (this.catalogPagination.hasMore) {
+                        summary.push('more available');
+                    }
+                    return summary.join(' • ');
+                },
+
+                normalizeCatalogCollectionPayload(payload) {
+                    if (Array.isArray(payload)) {
+                        return {
+                            items: payload,
+                            nextCursor: '',
+                            hasMore: false,
+                            usedEnvelope: false
+                        };
+                    }
+                    if (payload && typeof payload === 'object' && Array.isArray(payload.items)) {
+                        return {
+                            items: payload.items,
+                            nextCursor: typeof payload.next_cursor === 'string' ? payload.next_cursor.trim() : '',
+                            hasMore: payload.has_more === true,
+                            usedEnvelope: true
+                        };
+                    }
+                    return {
+                        items: [],
+                        nextCursor: '',
+                        hasMore: false,
+                        usedEnvelope: false
+                    };
+                },
+
+                async loadPreviousCatalogPage() {
+                    if (!this.canLoadPreviousCatalogPage()) {
+                        return;
+                    }
+                    const previousCursors = [...this.catalogPagination.previousCursors];
+                    this.catalogPagination.cursor = previousCursors.pop() || '';
+                    this.catalogPagination.previousCursors = previousCursors;
+                    await this.searchSkills({ preserveCursor: true });
+                },
+
+                async loadNextCatalogPage() {
+                    if (!this.canLoadNextCatalogPage()) {
+                        return;
+                    }
+                    this.catalogPagination.previousCursors = [
+                        ...this.catalogPagination.previousCursors,
+                        this.catalogPagination.cursor
+                    ];
+                    this.catalogPagination.cursor = this.catalogPagination.nextCursor;
+                    await this.searchSkills({ preserveCursor: true });
                 },
 
                 queueSearchSkills() {
@@ -2824,6 +3173,10 @@
 
                 buildCatalogListURL() {
                     const params = new URLSearchParams();
+                    params.set('limit', String(this.catalogPagination.limit));
+                    if (this.catalogPagination.cursor !== '') {
+                        params.set('cursor', this.catalogPagination.cursor);
+                    }
                     const classifier = this.classifierFilterParam();
                     if (classifier) {
                         params.set('classifier', classifier);
@@ -2839,6 +3192,10 @@
                 buildCatalogSearchURL(query) {
                     const params = new URLSearchParams();
                     params.set('q', query);
+                    params.set('limit', String(this.catalogPagination.limit));
+                    if (this.catalogPagination.cursor !== '') {
+                        params.set('cursor', this.catalogPagination.cursor);
+                    }
                     const classifier = this.classifierFilterParam();
                     if (classifier) {
                         params.set('classifier', classifier);
@@ -2958,113 +3315,69 @@
                     return 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200';
                 },
 
-                async loadSkills() {
-                    this.cancelSearchDebounce();
-                    this.searchRequestVersion += 1;
-                    this.cancelInFlightSearch();
-                    this.isLoading = true;
-                    try {
-                        const response = await fetch('/api/catalog');
-                        if (!response.ok) {
-                            throw new Error(`HTTP ${response.status}`);
-                        }
-                        this.skills = await response.json();
-                        if (this.searchQuery.trim()) {
-                            await this.searchSkills();
-                        } else {
-                            this.filteredSkills = this.filterCatalogItems(this.skills);
-                        }
-                    } catch (error) {
-                        console.error('Failed to load catalog:', error);
-                        this.showToast('Failed to load catalog', 'error');
-                    } finally {
-                        this.isLoading = false;
-                    }
+                async loadSkills(preserveCursor = true) {
+                    await this.searchSkills({ preserveCursor });
                 },
 
-                async searchSkills() {
+                async searchSkills(options = {}) {
                     this.cancelSearchDebounce();
+                    const preserveCursor = options && options.preserveCursor === true;
 
                     if (!this.hasVisibleClassifierSelection()) {
                         this.searchRequestVersion += 1;
                         this.cancelInFlightSearch();
+                        this.resetCatalogPagination();
+                        this.skills = [];
                         this.filteredSkills = [];
                         this.isLoading = false;
                         return;
                     }
 
-                    const query = this.searchQuery.trim();
-                    if (!query) {
-                        const requestVersion = this.searchRequestVersion + 1;
-                        this.searchRequestVersion = requestVersion;
-                        this.cancelInFlightSearch();
-
-                        if (!this.hasActiveTaxonomyFilters()) {
-                            this.filteredSkills = this.filterCatalogItems(this.skills);
-                            this.isLoading = false;
-                            return;
-                        }
-
-                        const controller = new AbortController();
-                        this.searchAbortController = controller;
-                        this.isLoading = true;
-
-                        try {
-                            const response = await fetch(this.buildCatalogListURL(), {
-                                signal: controller.signal
-                            });
-                            if (!response.ok) {
-                                throw new Error(`HTTP ${response.status}`);
-                            }
-                            const results = await response.json();
-                            if (requestVersion !== this.searchRequestVersion) {
-                                return;
-                            }
-                            this.filteredSkills = this.filterCatalogItems(results);
-                        } catch (error) {
-                            if (error && error.name === 'AbortError') {
-                                return;
-                            }
-                            if (requestVersion !== this.searchRequestVersion) {
-                                return;
-                            }
-                            console.error('Catalog filter request failed:', error);
-                            this.filteredSkills = this.filterCatalogItems(this.skills);
-                            this.showToast('Taxonomy filter request failed', 'error');
-                        } finally {
-                            if (this.searchAbortController === controller) {
-                                this.searchAbortController = null;
-                            }
-                            if (requestVersion === this.searchRequestVersion) {
-                                this.isLoading = false;
-                            }
-                        }
-                        return;
+                    if (!preserveCursor) {
+                        this.resetCatalogPagination();
                     }
 
+                    const query = this.searchQuery.trim();
                     const requestVersion = this.searchRequestVersion + 1;
                     this.searchRequestVersion = requestVersion;
                     this.cancelInFlightSearch();
                     const controller = new AbortController();
                     this.searchAbortController = controller;
+                    const fallbackItems = Array.isArray(this.skills) ? [...this.skills] : [];
 
                     this.isLoading = true;
                     try {
-                        const response = await fetch(this.buildCatalogSearchURL(query), {
+                        const response = await fetch(query ? this.buildCatalogSearchURL(query) : this.buildCatalogListURL(), {
                             signal: controller.signal
                         });
                         if (!response.ok) {
                             throw new Error(`HTTP ${response.status}`);
                         }
-                        const results = await response.json();
+                        const payload = this.normalizeCatalogCollectionPayload(await response.json());
                         if (requestVersion !== this.searchRequestVersion) {
                             return;
                         }
-                        const normalizedResults = this.filterCatalogItems(results);
+                        const normalizedResults = this.filterCatalogItems(payload.items, query);
+                        this.catalogPagination.nextCursor = payload.nextCursor;
+                        this.catalogPagination.hasMore = payload.hasMore;
+                        this.catalogPagination.usedEnvelope = payload.usedEnvelope;
 
                         // Keep UX responsive when index rebuild lags behind list updates.
-                        if (normalizedResults.length === 0) {
-                            this.filteredSkills = this.filterCatalogItems(this.skills, query);
+                        if (query && normalizedResults.length === 0) {
+                            const fallbackResults = this.filterCatalogItems(fallbackItems, query);
+                            if (fallbackResults.length > 0) {
+                                this.filteredSkills = fallbackResults;
+                                return;
+                            }
+                        }
+
+                        this.skills = Array.isArray(payload.items) ? payload.items : [];
+                        if (!query && !payload.usedEnvelope) {
+                            this.catalogPagination.nextCursor = '';
+                            this.catalogPagination.hasMore = false;
+                        }
+                        if (!query && !this.hasActiveTaxonomyFilters() && !payload.usedEnvelope) {
+                            this.filteredSkills = this.filterCatalogItems(this.skills);
                         } else {
                             this.filteredSkills = normalizedResults;
                         }
@@ -3075,9 +3388,9 @@
                         if (requestVersion !== this.searchRequestVersion) {
                             return;
                         }
-                        console.error('Search failed:', error);
+                        console.error(query ? 'Search failed:' : 'Failed to load catalog:', error);
                         this.filteredSkills = this.filterCatalogItems(this.skills, query);
-                        this.showToast('Search failed', 'error');
+                        this.showToast(query ? 'Search failed' : 'Failed to load catalog', 'error');
                     } finally {
                         if (this.searchAbortController === controller) {
                             this.searchAbortController = null;
@@ -3110,7 +3423,7 @@
 
                     const classifier = this.normalizeClassifier(item.classifier);
                     if (classifier === 'prompt' || classifier === 'rule') {
-                        this.openCatalogContentPreview(item);
+                        await this.openCatalogContentPreview(item);
                         return;
                     }
 
@@ -3175,6 +3488,19 @@
                     return `/api/catalog/taxonomy/tags/${encodeURIComponent(tagID)}`;
                 },
 
+                taxonomyUsageEndpoint(objectType, objectID, previewLimit = 5) {
+                    const normalizedObjectID = this.normalizeTaxonomyObjectID(objectID);
+                    const params = new URLSearchParams();
+                    params.set('preview_limit', String(previewLimit));
+                    if (objectType === 'domain') {
+                        return `${this.taxonomyDomainsEndpoint(normalizedObjectID)}/usage?${params.toString()}`;
+                    }
+                    if (objectType === 'subdomain') {
+                        return `${this.taxonomySubdomainsEndpoint(normalizedObjectID)}/usage?${params.toString()}`;
+                    }
+                    return `${this.taxonomyTagsEndpoint(normalizedObjectID)}/usage?${params.toString()}`;
+                },
+
                 async responseErrorMessage(response, fallbackMessage) {
                     const fallback = `${fallbackMessage} (HTTP ${response.status})`;
                     const payload = await response.json().catch(() => null);
@@ -3203,6 +3529,48 @@
                         }
                     }
                     return Array.from(unique);
+                },
+
+                async fetchTaxonomyUsage(objectType, objectID, previewLimit = 5) {
+                    const response = await fetch(this.taxonomyUsageEndpoint(objectType, objectID, previewLimit));
+                    if (!response.ok) {
+                        throw new Error(await this.responseErrorMessage(response, `Failed to load ${objectType} usage`));
+                    }
+                    const payload = await response.json();
+                    return payload && typeof payload === 'object' ? payload : {};
+                },
+
+                async confirmTaxonomyDeletion(objectType, objectID, objectName) {
+                    this.taxonomyManagerModal.saving = true;
+                    this.taxonomyManagerModal.errorMessage = '';
+                    try {
+                        const usage = await this.fetchTaxonomyUsage(objectType, objectID);
+                        const referencedItems = Array.isArray(usage.preview_item_ids) ? usage.preview_item_ids : [];
+                        const distinctItemCount = Number.isFinite(usage.distinct_item_count) ? usage.distinct_item_count : 0;
+                        const blocking = usage.blocking_reason === 'in_use' || distinctItemCount > 0;
+                        const itemLabel = objectName || objectID;
+                        const message = blocking
+                            ? `Delete ${objectType} "${itemLabel}"? This ${objectType} is still assigned to catalog items.`
+                            : `Delete ${objectType} "${itemLabel}"? This action cannot be undone.`;
+                        return await this.showConfirm(message, {
+                            title: `Delete ${objectType.charAt(0).toUpperCase()}${objectType.slice(1)}`,
+                            confirmLabel: `Delete ${objectType.charAt(0).toUpperCase()}${objectType.slice(1)}`,
+                            cancelLabel: blocking ? 'Close' : 'Cancel',
+                            usage: {
+                                assignment_count: Number.isFinite(usage.assignment_count) ? usage.assignment_count : 0,
+                                distinct_item_count: distinctItemCount,
+                                preview_item_ids: referencedItems
+                            },
+                            blocking
+                        });
+                    } catch (error) {
+                        this.taxonomyManagerModal.errorMessage = error && error.message
+                            ? error.message
+                            : `Failed to load ${objectType} usage`;
+                        return false;
+                    } finally {
+                        this.taxonomyManagerModal.saving = false;
+                    }
                 },
 
                 async loadTaxonomyCatalog(force = false) {
@@ -3367,7 +3735,11 @@
                     if (!domain || !domain.domain_id) {
                         return;
                     }
-                    const confirmed = await this.showConfirm(`Delete domain "${domain.name || domain.domain_id}"?`);
+                    const confirmed = await this.confirmTaxonomyDeletion(
+                        'domain',
+                        domain.domain_id,
+                        domain.name || domain.domain_id
+                    );
                     if (!confirmed) {
                         return;
                     }
@@ -3483,7 +3855,11 @@
                     if (!subdomain || !subdomain.subdomain_id) {
                         return;
                     }
-                    const confirmed = await this.showConfirm(`Delete subdomain "${subdomain.name || subdomain.subdomain_id}"?`);
+                    const confirmed = await this.confirmTaxonomyDeletion(
+                        'subdomain',
+                        subdomain.subdomain_id,
+                        subdomain.name || subdomain.subdomain_id
+                    );
                     if (!confirmed) {
                         return;
                     }
@@ -3598,7 +3974,11 @@
                     if (!tag || !tag.tag_id) {
                         return;
                     }
-                    const confirmed = await this.showConfirm(`Delete tag "${tag.name || tag.tag_id}"?`);
+                    const confirmed = await this.confirmTaxonomyDeletion(
+                        'tag',
+                        tag.tag_id,
+                        tag.name || tag.tag_id
+                    );
                     if (!confirmed) {
                         return;
                     }
@@ -3655,6 +4035,59 @@
                     return parsed;
                 },
 
+                metadataTaxonomySnapshotFromForm(form) {
+                    return {
+                        primaryDomainID: this.normalizeTaxonomyObjectID(form && form.primaryDomainID),
+                        primarySubdomainID: this.normalizeTaxonomyObjectID(form && form.primarySubdomainID),
+                        secondaryDomainID: this.normalizeTaxonomyObjectID(form && form.secondaryDomainID),
+                        secondarySubdomainID: this.normalizeTaxonomyObjectID(form && form.secondarySubdomainID),
+                        tagIDs: this.normalizeTaxonomyTagIDs(form && form.tagIDs)
+                    };
+                },
+
+                metadataTaxonomyPatchPayload(originalSnapshot, nextSnapshot) {
+                    const original = originalSnapshot || this.metadataTaxonomySnapshotFromForm({});
+                    const next = nextSnapshot || this.metadataTaxonomySnapshotFromForm({});
+                    const payload = { updated_by: 'web-ui' };
+                    let hasChanges = false;
+
+                    const domainFields = [
+                        ['primaryDomainID', 'primary_domain_id'],
+                        ['primarySubdomainID', 'primary_subdomain_id'],
+                        ['secondaryDomainID', 'secondary_domain_id'],
+                        ['secondarySubdomainID', 'secondary_subdomain_id']
+                    ];
+                    for (const [snapshotKey, apiKey] of domainFields) {
+                        if ((original[snapshotKey] || '') !== (next[snapshotKey] || '')) {
+                            payload[apiKey] = next[snapshotKey] || '';
+                            hasChanges = true;
+                        }
+                    }
+
+                    const originalTagIDs = this.normalizeTaxonomyTagIDs(original.tagIDs);
+                    const nextTagIDs = this.normalizeTaxonomyTagIDs(next.tagIDs);
+                    const originalTagSet = new Set(originalTagIDs);
+                    const nextTagSet = new Set(nextTagIDs);
+                    const addTagIDs = nextTagIDs.filter((tagID) => !originalTagSet.has(tagID));
+                    const removeTagIDs = originalTagIDs.filter((tagID) => !nextTagSet.has(tagID));
+
+                    if (originalTagIDs.length > 0 && nextTagIDs.length === 0) {
+                        payload.clear_tags = true;
+                        hasChanges = true;
+                    } else {
+                        if (addTagIDs.length > 0) {
+                            payload.add_tag_ids = addTagIDs;
+                            hasChanges = true;
+                        }
+                        if (removeTagIDs.length > 0) {
+                            payload.remove_tag_ids = removeTagIDs;
+                            hasChanges = true;
+                        }
+                    }
+
+                    return hasChanges ? payload : null;
+                },
+
                 async openMetadataEditor(item) {
                     if (!item || !item.id) {
                         this.showToast('Cannot edit metadata: catalog item id is missing', 'error');
@@ -3674,6 +4107,13 @@
                         itemName: item.name || itemID,
                         contentWritable: this.itemContentWritable(item),
                         metadataWritable: this.itemMetadataWritable(item),
+                        originalTaxonomy: {
+                            primaryDomainID: '',
+                            primarySubdomainID: '',
+                            secondaryDomainID: '',
+                            secondarySubdomainID: '',
+                            tagIDs: []
+                        },
                         form: {
                             displayName: '',
                             description: '',
@@ -3757,6 +4197,7 @@
                             ),
                             customMetadataJSON: JSON.stringify(resolvedCustomMetadata || {}, null, 2)
                         };
+                        this.metadataEditorModal.originalTaxonomy = this.metadataTaxonomySnapshotFromForm(this.metadataEditorModal.form);
                         this.handleMetadataDomainChange('primary');
                         this.handleMetadataDomainChange('secondary');
                         this.metadataEditorModal.taxonomyErrorMessage = this.taxonomyCatalog.available
@@ -3818,6 +4259,15 @@
                         if (typeof effective.metadata_writable === 'boolean') {
                             updated.metadata_writable = effective.metadata_writable;
                         }
+                        if (typeof effective.has_assignment === 'boolean') {
+                            updated.has_assignment = effective.has_assignment;
+                        }
+                        if (typeof effective.is_fully_classified === 'boolean') {
+                            updated.is_fully_classified = effective.is_fully_classified;
+                        }
+                        if (Array.isArray(effective.missing_fields)) {
+                            updated.missing_fields = [...effective.missing_fields];
+                        }
 
                         return updated;
                     };
@@ -3856,20 +4306,18 @@
                     this.metadataEditorModal.saving = true;
 
                     try {
-                        if (this.taxonomyCatalog.available) {
+                        const taxonomySnapshot = this.metadataTaxonomySnapshotFromForm(this.metadataEditorModal.form);
+                        const taxonomyPatchPayload = this.taxonomyCatalog.available
+                            ? this.metadataTaxonomyPatchPayload(this.metadataEditorModal.originalTaxonomy, taxonomySnapshot)
+                            : null;
+
+                        if (this.taxonomyCatalog.available && taxonomyPatchPayload) {
                             const taxonomyResponse = await fetch(this.catalogTaxonomyEndpoint(itemID), {
                                 method: 'PATCH',
                                 headers: {
                                     'Content-Type': 'application/json',
                                 },
-                                body: JSON.stringify({
-                                    primary_domain_id: this.normalizeTaxonomyObjectID(this.metadataEditorModal.form.primaryDomainID),
-                                    primary_subdomain_id: this.normalizeTaxonomyObjectID(this.metadataEditorModal.form.primarySubdomainID),
-                                    secondary_domain_id: this.normalizeTaxonomyObjectID(this.metadataEditorModal.form.secondaryDomainID),
-                                    secondary_subdomain_id: this.normalizeTaxonomyObjectID(this.metadataEditorModal.form.secondarySubdomainID),
-                                    tag_ids: this.normalizeTaxonomyTagIDs(this.metadataEditorModal.form.tagIDs),
-                                    updated_by: 'web-ui'
-                                }),
+                                body: JSON.stringify(taxonomyPatchPayload),
                             });
 
                             if (!taxonomyResponse.ok) {
@@ -3922,18 +4370,49 @@
                     }
                 },
 
-                openCatalogContentPreview(item) {
-                    this.resourceEditorModal = {
-                        show: true,
-                        content: item.content || '',
-                        originalContent: item.content || '',
-                        path: item.resource_path || item.id || '',
-                        name: item.name || (this.normalizeClassifier(item.classifier) === 'rule' ? 'Rule' : 'Prompt'),
-                        writable: false,
-                        origin: this.isItemReadOnly(item) ? 'imported' : 'direct',
-                        classifier: this.normalizeClassifier(item.classifier),
-                        parentSkillID: item.parent_skill_id || ''
-                    };
+                async readCatalogItemPreviewContent(item) {
+                    if (item && typeof item.content === 'string' && item.content !== '') {
+                        return item.content;
+                    }
+
+                    const parentSkillID = typeof item.parent_skill_id === 'string' ? item.parent_skill_id.trim() : '';
+                    const resourcePath = typeof item.resource_path === 'string' ? item.resource_path.trim() : '';
+                    if (!parentSkillID || !resourcePath) {
+                        throw new Error('Catalog content preview is unavailable for this item');
+                    }
+
+                    const response = await fetch(this.buildSkillResourceApiPath(parentSkillID, resourcePath));
+                    if (!response.ok) {
+                        throw new Error(await this.responseErrorMessage(response, 'Failed to load catalog content preview'));
+                    }
+                    return await response.text();
+                },
+
+                async openCatalogContentPreview(item) {
+                    if (!item) {
+                        return;
+                    }
+
+                    this.isLoading = true;
+                    try {
+                        const content = await this.readCatalogItemPreviewContent(item);
+                        this.resourceEditorModal = {
+                            show: true,
+                            content: content,
+                            originalContent: content,
+                            path: item.resource_path || item.id || '',
+                            name: item.name || (this.normalizeClassifier(item.classifier) === 'rule' ? 'Rule' : 'Prompt'),
+                            writable: false,
+                            origin: this.isItemReadOnly(item) ? 'imported' : 'direct',
+                            classifier: this.normalizeClassifier(item.classifier),
+                            parentSkillID: item.parent_skill_id || ''
+                        };
+                    } catch (error) {
+                        console.error('Failed to load catalog content preview:', error);
+                        this.showToast(error && error.message ? error.message : 'Failed to load catalog content preview', 'error');
+                    } finally {
+                        this.isLoading = false;
+                    }
                 },
 
                 openPromptPreview(item) {
@@ -4282,6 +4761,13 @@
                         itemName: '',
                         contentWritable: true,
                         metadataWritable: true,
+                        originalTaxonomy: {
+                            primaryDomainID: '',
+                            primarySubdomainID: '',
+                            secondaryDomainID: '',
+                            secondarySubdomainID: '',
+                            tagIDs: []
+                        },
                         form: {
                             displayName: '',
                             description: '',

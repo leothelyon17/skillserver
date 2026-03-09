@@ -60,6 +60,51 @@ func TestCatalogMaterializationService_DryRunPlansTargetsWithoutFilesystemSideEf
 	}
 }
 
+func TestCatalogMaterializationService_DryRunBareAndCanonicalSkillIDsResolveToSameCanonicalItemID(t *testing.T) {
+	t.Parallel()
+
+	skillsDir := t.TempDir()
+	writeSkillFixture(t, skillsDir, "planner", map[string]string{
+		"prompts/system.md": "# System\nUse deterministic output.\n",
+	})
+
+	manager := newCatalogExportServiceTestManager(t, skillsDir, nil)
+	allowedRoot := t.TempDir()
+	destinationDir := filepath.Join(allowedRoot, "project")
+	service := newCatalogMaterializationServiceForTest(t, manager, []string{allowedRoot})
+
+	bareResult, err := service.Materialize(context.Background(), CatalogMaterializationRequest{
+		ItemIDs:        []string{"planner"},
+		DestinationDir: destinationDir,
+		DryRun:         true,
+	})
+	if err != nil {
+		t.Fatalf("expected bare skill materialization dry-run to succeed, got %v", err)
+	}
+
+	canonicalResult, err := service.Materialize(context.Background(), CatalogMaterializationRequest{
+		ItemIDs:        []string{BuildSkillCatalogItemID("planner")},
+		DestinationDir: destinationDir,
+		DryRun:         true,
+	})
+	if err != nil {
+		t.Fatalf("expected canonical skill materialization dry-run to succeed, got %v", err)
+	}
+
+	if len(bareResult.Items) != 1 || len(canonicalResult.Items) != 1 {
+		t.Fatalf("expected one item result per materialization plan")
+	}
+
+	bareItem := bareResult.Items[0]
+	canonicalItem := canonicalResult.Items[0]
+	if bareItem.ItemID != BuildSkillCatalogItemID("planner") {
+		t.Fatalf("expected canonical bare item id %q, got %q", BuildSkillCatalogItemID("planner"), bareItem.ItemID)
+	}
+	if bareItem.ItemID != canonicalItem.ItemID || bareItem.TargetPath != canonicalItem.TargetPath {
+		t.Fatalf("expected bare/canonical plans to match, bare=%+v canonical=%+v", bareItem, canonicalItem)
+	}
+}
+
 func TestCatalogMaterializationService_ConflictPolicies(t *testing.T) {
 	t.Parallel()
 

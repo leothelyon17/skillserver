@@ -141,6 +141,27 @@ func boolPointer(value bool) *bool {
 	return &value
 }
 
+func assertStringSliceEqual(t *testing.T, actual []string, expected []string, label string) {
+	t.Helper()
+
+	if len(actual) != len(expected) {
+		t.Fatalf("expected %s length %d, got %d (%v)", label, len(expected), len(actual), actual)
+	}
+
+	for index, expectedValue := range expected {
+		if actual[index] != expectedValue {
+			t.Fatalf(
+				"expected %s[%d] = %q, got %q (%v)",
+				label,
+				index,
+				expectedValue,
+				actual[index],
+				actual,
+			)
+		}
+	}
+}
+
 func mustUpsertCatalogSourceRow(t *testing.T, ctx context.Context, repo *CatalogSourceRepository, row CatalogSourceRow) {
 	t.Helper()
 

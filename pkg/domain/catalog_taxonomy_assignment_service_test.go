@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -57,6 +58,22 @@ func TestCatalogTaxonomyAssignmentService_Get_UnassignedItem_ReturnsEmptyAssignm
 	}
 	if len(view.Tags) != 0 {
 		t.Fatalf("expected no tag assignments, got %+v", view.Tags)
+	}
+	if view.HasAssignment {
+		t.Fatalf("expected has_assignment=false for unassigned item")
+	}
+	if view.IsFullyClassified {
+		t.Fatalf("expected is_fully_classified=false for unassigned item")
+	}
+	expectedMissingFields := []string{
+		CatalogClassificationMissingPrimaryDomain,
+		CatalogClassificationMissingPrimarySubdomain,
+		CatalogClassificationMissingSecondaryDomain,
+		CatalogClassificationMissingSecondarySubdomain,
+		CatalogClassificationMissingTags,
+	}
+	if !reflect.DeepEqual(view.MissingFields, expectedMissingFields) {
+		t.Fatalf("expected missing_fields %+v, got %+v", expectedMissingFields, view.MissingFields)
 	}
 }
 
@@ -114,6 +131,15 @@ func TestCatalogTaxonomyAssignmentService_Patch_ValidAssignmentsAndTags_RoundTri
 	if view.UpdatedBy == nil || *view.UpdatedBy != "tester" {
 		t.Fatalf("expected updated_by tester, got %+v", view.UpdatedBy)
 	}
+	if !view.HasAssignment {
+		t.Fatalf("expected has_assignment=true after taxonomy patch")
+	}
+	if !view.IsFullyClassified {
+		t.Fatalf("expected is_fully_classified=true when primary_domain and tags are present")
+	}
+	if len(view.MissingFields) != 0 {
+		t.Fatalf("expected no missing fields for fully populated assignment, got %+v", view.MissingFields)
+	}
 
 	roundTrip, err := service.Get(ctx, itemID)
 	if err != nil {
@@ -124,6 +150,51 @@ func TestCatalogTaxonomyAssignmentService_Patch_ValidAssignmentsAndTags_RoundTri
 	}
 	if len(roundTrip.Tags) != 2 {
 		t.Fatalf("expected round-trip tags length 2, got %+v", roundTrip.Tags)
+	}
+	if !roundTrip.HasAssignment || !roundTrip.IsFullyClassified {
+		t.Fatalf("expected round-trip classification state to remain fully classified, got %+v", roundTrip)
+	}
+}
+
+func TestCatalogTaxonomyAssignmentService_PatchBareSkillID_PrimaryDomainOnlyReturnsPartialClassificationState(t *testing.T) {
+	service, ctx, _ := newCatalogTaxonomyAssignmentServiceForDomainTest(t)
+
+	view, err := service.Patch(ctx, CatalogItemTaxonomyAssignmentPatchInput{
+		ItemID:          "taxonomy-item",
+		PrimaryDomainID: stringPointer("domain-platform"),
+	})
+	if err != nil {
+		t.Fatalf("expected bare skill item patch to succeed, got %v", err)
+	}
+
+	if view.ItemID != BuildSkillCatalogItemID("taxonomy-item") {
+		t.Fatalf("expected canonical item_id %q, got %q", BuildSkillCatalogItemID("taxonomy-item"), view.ItemID)
+	}
+	if !view.HasAssignment {
+		t.Fatalf("expected has_assignment=true for partial taxonomy assignment")
+	}
+	if view.IsFullyClassified {
+		t.Fatalf("expected is_fully_classified=false when tags are absent")
+	}
+	expectedMissingFields := []string{
+		CatalogClassificationMissingPrimarySubdomain,
+		CatalogClassificationMissingSecondaryDomain,
+		CatalogClassificationMissingSecondarySubdomain,
+		CatalogClassificationMissingTags,
+	}
+	if !reflect.DeepEqual(view.MissingFields, expectedMissingFields) {
+		t.Fatalf("expected missing_fields %+v, got %+v", expectedMissingFields, view.MissingFields)
+	}
+
+	roundTrip, err := service.Get(ctx, "taxonomy-item")
+	if err != nil {
+		t.Fatalf("expected bare skill item get to succeed, got %v", err)
+	}
+	if roundTrip.ItemID != BuildSkillCatalogItemID("taxonomy-item") {
+		t.Fatalf("expected canonical round-trip item_id %q, got %q", BuildSkillCatalogItemID("taxonomy-item"), roundTrip.ItemID)
+	}
+	if !reflect.DeepEqual(roundTrip.MissingFields, expectedMissingFields) {
+		t.Fatalf("expected round-trip missing_fields %+v, got %+v", expectedMissingFields, roundTrip.MissingFields)
 	}
 }
 
@@ -144,6 +215,233 @@ func TestCatalogTaxonomyAssignmentService_Patch_MissingItemAndTag_ReturnsNotFoun
 	})
 	if !errors.Is(err, ErrCatalogTaxonomyTagNotFound) {
 		t.Fatalf("expected missing tag not found error, got %v", err)
+	}
+}
+
+func TestCatalogTaxonomyAssignmentService_Patch_AddRemoveAndClearTags_RoundTrip(t *testing.T) {
+	service, ctx, itemID := newCatalogTaxonomyAssignmentServiceForDomainTest(t)
+
+	initial, err := service.Patch(ctx, CatalogItemTaxonomyAssignmentPatchInput{
+		ItemID:    itemID,
+		TagIDs:    &[]string{"tag-backend"},
+		UpdatedBy: stringPointer("tester"),
+	})
+	if err != nil {
+		t.Fatalf("expected initial tag replacement to succeed, got %v", err)
+	}
+	if len(initial.Tags) != 1 || initial.Tags[0].ID != "tag-backend" {
+		t.Fatalf("expected initial tags [tag-backend], got %+v", initial.Tags)
+	}
+
+	added, err := service.Patch(ctx, CatalogItemTaxonomyAssignmentPatchInput{
+		ItemID:    itemID,
+		AddTagIDs: &[]string{"tag-metrics"},
+		UpdatedBy: stringPointer("tester"),
+	})
+	if err != nil {
+		t.Fatalf("expected additive tag patch to succeed, got %v", err)
+	}
+	if len(added.Tags) != 2 || added.Tags[0].ID != "tag-backend" || added.Tags[1].ID != "tag-metrics" {
+		t.Fatalf("expected additive tags [tag-backend tag-metrics], got %+v", added.Tags)
+	}
+
+	removed, err := service.Patch(ctx, CatalogItemTaxonomyAssignmentPatchInput{
+		ItemID:       itemID,
+		RemoveTagIDs: &[]string{"tag-backend"},
+	})
+	if err != nil {
+		t.Fatalf("expected remove tag patch to succeed, got %v", err)
+	}
+	if len(removed.Tags) != 1 || removed.Tags[0].ID != "tag-metrics" {
+		t.Fatalf("expected remaining tags [tag-metrics], got %+v", removed.Tags)
+	}
+
+	clearTags := true
+	cleared, err := service.Patch(ctx, CatalogItemTaxonomyAssignmentPatchInput{
+		ItemID:    itemID,
+		ClearTags: &clearTags,
+	})
+	if err != nil {
+		t.Fatalf("expected clear tag patch to succeed, got %v", err)
+	}
+	if len(cleared.Tags) != 0 {
+		t.Fatalf("expected cleared tags, got %+v", cleared.Tags)
+	}
+	if cleared.IsFullyClassified {
+		t.Fatalf("expected cleared tag assignment to no longer be fully classified")
+	}
+}
+
+func TestCatalogTaxonomyAssignmentService_Patch_RejectsAmbiguousTagMutationInputs(t *testing.T) {
+	service, ctx, itemID := newCatalogTaxonomyAssignmentServiceForDomainTest(t)
+
+	_, err := service.Patch(ctx, CatalogItemTaxonomyAssignmentPatchInput{
+		ItemID:    itemID,
+		TagIDs:    &[]string{"tag-backend"},
+		AddTagIDs: &[]string{"tag-metrics"},
+	})
+	if !errors.Is(err, ErrCatalogTaxonomyValidation) {
+		t.Fatalf("expected tag_ids + add_tag_ids to fail validation, got %v", err)
+	}
+
+	clearTags := true
+	_, err = service.Patch(ctx, CatalogItemTaxonomyAssignmentPatchInput{
+		ItemID:       itemID,
+		ClearTags:    &clearTags,
+		RemoveTagIDs: &[]string{"tag-backend"},
+	})
+	if !errors.Is(err, ErrCatalogTaxonomyValidation) {
+		t.Fatalf("expected clear_tags + remove_tag_ids to fail validation, got %v", err)
+	}
+
+	_, err = service.Patch(ctx, CatalogItemTaxonomyAssignmentPatchInput{
+		ItemID:       itemID,
+		AddTagIDs:    &[]string{"tag-backend"},
+		RemoveTagIDs: &[]string{"tag-backend"},
+	})
+	if !errors.Is(err, ErrCatalogTaxonomyValidation) {
+		t.Fatalf("expected overlapping add/remove tags to fail validation, got %v", err)
+	}
+}
+
+func TestCatalogTaxonomyAssignmentService_PatchBatch_DryRunAndApply_ReturnDeterministicStatuses(t *testing.T) {
+	service, ctx, itemID := newCatalogTaxonomyAssignmentServiceForDomainTest(t)
+	secondItemID := seedCatalogTaxonomyAssignmentServiceTestSourceItem(t, ctx, service, "taxonomy-second-item")
+	thirdItemID := seedCatalogTaxonomyAssignmentServiceTestSourceItem(t, ctx, service, "taxonomy-third-item")
+
+	if _, err := service.Patch(ctx, CatalogItemTaxonomyAssignmentPatchInput{
+		ItemID: secondItemID,
+		TagIDs: &[]string{"tag-backend"},
+	}); err != nil {
+		t.Fatalf("expected baseline second-item patch to succeed, got %v", err)
+	}
+
+	dryRunResult, err := service.PatchBatch(ctx, CatalogItemTaxonomyBatchPatchRequest{
+		DryRun: true,
+		Items: []CatalogItemTaxonomyAssignmentPatchInput{
+			{
+				ItemID:    itemID,
+				AddTagIDs: &[]string{"tag-metrics"},
+			},
+			{
+				ItemID:    secondItemID,
+				AddTagIDs: &[]string{"tag-backend"},
+			},
+			{
+				ItemID:    "skill:missing-item",
+				AddTagIDs: &[]string{"tag-backend"},
+			},
+			{
+				ItemID:    thirdItemID,
+				TagIDs:    &[]string{"tag-backend"},
+				AddTagIDs: &[]string{"tag-metrics"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected dry-run batch patch to succeed, got %v", err)
+	}
+	if !dryRunResult.DryRun {
+		t.Fatalf("expected dry_run=true result")
+	}
+	if len(dryRunResult.Items) != 4 {
+		t.Fatalf("expected 4 dry-run item results, got %d", len(dryRunResult.Items))
+	}
+	if dryRunResult.Items[0].Status != CatalogItemTaxonomyBatchPatchStatusPlanned {
+		t.Fatalf("expected first dry-run item status planned, got %q", dryRunResult.Items[0].Status)
+	}
+	if dryRunResult.Items[1].Status != CatalogItemTaxonomyBatchPatchStatusUnchanged {
+		t.Fatalf("expected second dry-run item status unchanged, got %q", dryRunResult.Items[1].Status)
+	}
+	if dryRunResult.Items[2].Status != CatalogItemTaxonomyBatchPatchStatusNotFound {
+		t.Fatalf("expected third dry-run item status not_found, got %q", dryRunResult.Items[2].Status)
+	}
+	if dryRunResult.Items[3].Status != CatalogItemTaxonomyBatchPatchStatusInvalid {
+		t.Fatalf("expected fourth dry-run item status invalid, got %q", dryRunResult.Items[3].Status)
+	}
+
+	afterDryRun, err := service.Get(ctx, itemID)
+	if err != nil {
+		t.Fatalf("expected get after dry-run to succeed, got %v", err)
+	}
+	if len(afterDryRun.Tags) != 0 {
+		t.Fatalf("expected dry-run to avoid writes for first item, got %+v", afterDryRun.Tags)
+	}
+
+	applyResult, err := service.PatchBatch(ctx, CatalogItemTaxonomyBatchPatchRequest{
+		Items: []CatalogItemTaxonomyAssignmentPatchInput{
+			{
+				ItemID:    itemID,
+				AddTagIDs: &[]string{"tag-metrics"},
+			},
+			{
+				ItemID:    secondItemID,
+				AddTagIDs: &[]string{"tag-backend"},
+			},
+			{
+				ItemID:    "skill:missing-item",
+				AddTagIDs: &[]string{"tag-backend"},
+			},
+			{
+				ItemID:    thirdItemID,
+				TagIDs:    &[]string{"tag-backend"},
+				AddTagIDs: &[]string{"tag-metrics"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected apply batch patch to succeed, got %v", err)
+	}
+	if applyResult.DryRun {
+		t.Fatalf("expected apply result dry_run=false")
+	}
+	if applyResult.Items[0].Status != CatalogItemTaxonomyBatchPatchStatusUpdated {
+		t.Fatalf("expected first apply item status updated, got %q", applyResult.Items[0].Status)
+	}
+	if applyResult.Items[1].Status != CatalogItemTaxonomyBatchPatchStatusUnchanged {
+		t.Fatalf("expected second apply item status unchanged, got %q", applyResult.Items[1].Status)
+	}
+	if applyResult.Items[2].Status != CatalogItemTaxonomyBatchPatchStatusNotFound {
+		t.Fatalf("expected third apply item status not_found, got %q", applyResult.Items[2].Status)
+	}
+	if applyResult.Items[3].Status != CatalogItemTaxonomyBatchPatchStatusInvalid {
+		t.Fatalf("expected fourth apply item status invalid, got %q", applyResult.Items[3].Status)
+	}
+
+	afterApply, err := service.Get(ctx, itemID)
+	if err != nil {
+		t.Fatalf("expected get after apply to succeed, got %v", err)
+	}
+	if len(afterApply.Tags) != 1 || afterApply.Tags[0].ID != "tag-metrics" {
+		t.Fatalf("expected apply to persist tag-metrics for first item, got %+v", afterApply.Tags)
+	}
+}
+
+func TestCatalogTaxonomyAssignmentService_PatchBatch_DuplicateCanonicalItemIDs_ReturnsGlobalValidationError(t *testing.T) {
+	service, ctx, itemID := newCatalogTaxonomyAssignmentServiceForDomainTest(t)
+
+	_, err := service.PatchBatch(ctx, CatalogItemTaxonomyBatchPatchRequest{
+		Items: []CatalogItemTaxonomyAssignmentPatchInput{
+			{
+				ItemID:    itemID,
+				AddTagIDs: &[]string{"tag-backend"},
+			},
+			{
+				ItemID:    "taxonomy-item",
+				AddTagIDs: &[]string{"tag-metrics"},
+			},
+		},
+	})
+	if !errors.Is(err, ErrCatalogTaxonomyValidation) {
+		t.Fatalf("expected duplicate canonical item ids to fail validation, got %v", err)
+	}
+
+	view, getErr := service.Get(ctx, itemID)
+	if getErr != nil {
+		t.Fatalf("expected get after duplicate validation failure to succeed, got %v", getErr)
+	}
+	if len(view.Tags) != 0 {
+		t.Fatalf("expected duplicate validation failure to prevent writes, got %+v", view.Tags)
 	}
 }
 
@@ -245,4 +543,34 @@ func newCatalogTaxonomyAssignmentServiceForDomainTest(
 	}
 
 	return service, ctx, itemID
+}
+
+func seedCatalogTaxonomyAssignmentServiceTestSourceItem(
+	t *testing.T,
+	ctx context.Context,
+	service *CatalogTaxonomyAssignmentService,
+	skillID string,
+) string {
+	t.Helper()
+
+	itemID := BuildSkillCatalogItemID(skillID)
+	sourceRepo, ok := service.sourceRepo.(*persistence.CatalogSourceRepository)
+	if !ok {
+		t.Fatalf("expected concrete catalog source repository, got %T", service.sourceRepo)
+	}
+
+	mustUpsertCatalogSourceRowForDomainTest(t, ctx, sourceRepo, persistence.CatalogSourceRow{
+		ItemID:           itemID,
+		Classifier:       persistence.CatalogClassifierSkill,
+		SourceType:       persistence.CatalogSourceTypeLocal,
+		Name:             skillID,
+		Description:      "taxonomy fixture item",
+		Content:          "taxonomy fixture content",
+		ContentHash:      buildCatalogContentHash(skillID + "-content"),
+		ContentWritable:  true,
+		MetadataWritable: true,
+		LastSyncedAt:     time.Date(2026, time.March, 5, 2, 30, 0, 0, time.UTC),
+	})
+
+	return itemID
 }

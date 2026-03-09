@@ -1,13 +1,16 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mudler/skillserver/pkg/domain"
+	"github.com/mudler/skillserver/pkg/persistence"
 )
 
 func TestCatalogItemTaxonomyEndpoints_ServiceUnavailable_Returns503(t *testing.T) {
@@ -130,6 +133,229 @@ func TestCatalogItemTaxonomyEndpoints_GetAndPatch_MapsSuccessAndErrors(t *testin
 	server.echo.ServeHTTP(missingItemRec, missingItemReq)
 	if missingItemRec.Code != http.StatusNotFound {
 		t.Fatalf("expected status %d, got %d body=%q", http.StatusNotFound, missingItemRec.Code, missingItemRec.Body.String())
+	}
+}
+
+func TestCatalogItemTaxonomyEndpoints_SingleItemPatchSupportsAdditiveTagMutations(t *testing.T) {
+	t.Parallel()
+
+	server, _ := newCatalogMetadataFixtureServer(t)
+	seedCatalogTaxonomyObjectsViaAPI(t, server)
+
+	itemID := domain.BuildSkillCatalogItemID("demo-skill")
+	target := "/api/catalog/" + url.PathEscape(itemID) + "/taxonomy"
+
+	req := httptest.NewRequest(
+		http.MethodPatch,
+		target,
+		strings.NewReader(`{"primary_domain_id":"domain-platform","tag_ids":["tag-backend"]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(
+		http.MethodPatch,
+		target,
+		strings.NewReader(`{"add_tag_ids":["tag-metrics"]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload := decodeJSONObject(t, rec.Body.Bytes())
+	tags, ok := payload["tags"].([]any)
+	if !ok || len(tags) != 2 {
+		t.Fatalf("expected two tags after add_tag_ids patch, got %+v", payload["tags"])
+	}
+	if isFullyClassified, ok := payload["is_fully_classified"].(bool); !ok || !isFullyClassified {
+		t.Fatalf("expected is_fully_classified=true after additive patch, got %v", payload["is_fully_classified"])
+	}
+
+	req = httptest.NewRequest(
+		http.MethodPatch,
+		target,
+		strings.NewReader(`{"remove_tag_ids":["tag-backend"]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload = decodeJSONObject(t, rec.Body.Bytes())
+	tags, ok = payload["tags"].([]any)
+	if !ok || len(tags) != 1 {
+		t.Fatalf("expected one tag after remove_tag_ids patch, got %+v", payload["tags"])
+	}
+
+	req = httptest.NewRequest(
+		http.MethodPatch,
+		target,
+		strings.NewReader(`{"clear_tags":true}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload = decodeJSONObject(t, rec.Body.Bytes())
+	tags, ok = payload["tags"].([]any)
+	if !ok || len(tags) != 0 {
+		t.Fatalf("expected zero tags after clear_tags patch, got %+v", payload["tags"])
+	}
+}
+
+func TestCatalogItemTaxonomyEndpoints_BatchPatchSupportsDryRunAndApply(t *testing.T) {
+	t.Parallel()
+
+	server, _ := newCatalogMetadataFixtureServer(t)
+	seedCatalogTaxonomyObjectsViaAPI(t, server)
+
+	localItemID := domain.BuildSkillCatalogItemID("demo-skill")
+	gitItemID := domain.BuildSkillCatalogItemID("repo-a/git-skill")
+
+	req := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/catalog/taxonomy/batch",
+		strings.NewReader(`{"dry_run":true,"items":[{"item_id":"`+localItemID+`","primary_domain_id":"domain-platform","tag_ids":["tag-backend"]},{"item_id":"`+gitItemID+`","secondary_domain_id":"domain-observability","add_tag_ids":["tag-metrics"]},{"item_id":"skill:missing-item","primary_domain_id":"domain-platform"}]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload := decodeJSONObject(t, rec.Body.Bytes())
+	if dryRun, ok := payload["dry_run"].(bool); !ok || !dryRun {
+		t.Fatalf("expected dry_run=true, got %v", payload["dry_run"])
+	}
+	items, ok := payload["items"].([]any)
+	if !ok || len(items) != 3 {
+		t.Fatalf("expected three batch item results, got %+v", payload["items"])
+	}
+	if status, _ := items[0].(map[string]any)["status"].(string); status != "planned" {
+		t.Fatalf("expected first dry-run status planned, got %+v", items[0])
+	}
+	if status, _ := items[2].(map[string]any)["status"].(string); status != "not_found" {
+		t.Fatalf("expected missing-item dry-run status not_found, got %+v", items[2])
+	}
+
+	req = httptest.NewRequest(
+		http.MethodPatch,
+		"/api/catalog/taxonomy/batch",
+		strings.NewReader(`{"items":[{"item_id":"`+localItemID+`","primary_domain_id":"domain-platform","tag_ids":["tag-backend"]},{"item_id":"`+gitItemID+`","secondary_domain_id":"domain-observability","add_tag_ids":["tag-metrics"]}]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload = decodeJSONObject(t, rec.Body.Bytes())
+	items, ok = payload["items"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("expected two apply batch item results, got %+v", payload["items"])
+	}
+	if status, _ := items[0].(map[string]any)["status"].(string); status != "updated" {
+		t.Fatalf("expected first apply status updated, got %+v", items[0])
+	}
+	if status, _ := items[1].(map[string]any)["status"].(string); status != "updated" {
+		t.Fatalf("expected second apply status updated, got %+v", items[1])
+	}
+}
+
+func TestCatalogItemTaxonomyEndpoints_BareSkillIDCompatibility_ForSingleAndBatchPatch(t *testing.T) {
+	t.Parallel()
+
+	server, _ := newCatalogMetadataFixtureServer(t)
+	seedCatalogTaxonomyObjectsViaAPI(t, server)
+
+	bareTarget := "/api/catalog/demo-skill/taxonomy"
+
+	req := httptest.NewRequest(
+		http.MethodPatch,
+		bareTarget,
+		strings.NewReader(`{"primary_domain_id":"domain-platform","tag_ids":["tag-backend"]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload := decodeJSONObject(t, rec.Body.Bytes())
+	canonicalItemID := domain.BuildSkillCatalogItemID("demo-skill")
+	if itemID, _ := payload["item_id"].(string); itemID != canonicalItemID {
+		t.Fatalf("expected canonical item_id %q for bare skill patch, got %q", canonicalItemID, itemID)
+	}
+	if hasAssignment, ok := payload["has_assignment"].(bool); !ok || !hasAssignment {
+		t.Fatalf("expected bare skill patch to set has_assignment=true, got %v", payload["has_assignment"])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, bareTarget, nil)
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload = decodeJSONObject(t, rec.Body.Bytes())
+	if itemID, _ := payload["item_id"].(string); itemID != canonicalItemID {
+		t.Fatalf("expected canonical item_id %q for bare skill get, got %q", canonicalItemID, itemID)
+	}
+	if tags, ok := payload["tags"].([]any); !ok || len(tags) != 1 {
+		t.Fatalf("expected one persisted taxonomy tag after bare skill get, got %+v", payload["tags"])
+	}
+
+	req = httptest.NewRequest(
+		http.MethodPatch,
+		"/api/catalog/taxonomy/batch",
+		strings.NewReader(`{"items":[{"item_id":"demo-skill","add_tag_ids":["tag-metrics"]}]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload = decodeJSONObject(t, rec.Body.Bytes())
+	items, ok := payload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected one batch result item, got %+v", payload["items"])
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected batch result item object, got %T", items[0])
+	}
+	if requestedItemID, _ := item["requested_item_id"].(string); requestedItemID != "demo-skill" {
+		t.Fatalf("expected requested_item_id to preserve bare input, got %q", requestedItemID)
+	}
+	if itemID, _ := item["item_id"].(string); itemID != canonicalItemID {
+		t.Fatalf("expected canonical item_id %q in batch result, got %q", canonicalItemID, itemID)
+	}
+	if status, _ := item["status"].(string); status != "updated" {
+		t.Fatalf("expected batch apply status updated for bare item_id, got %+v", item)
+	}
+	assignment, ok := item["assignment"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected assignment payload on batch apply result, got %+v", item["assignment"])
+	}
+	if tags, ok := assignment["tags"].([]any); !ok || len(tags) != 2 {
+		t.Fatalf("expected additive batch patch to persist two tags, got %+v", assignment["tags"])
 	}
 }
 
@@ -373,6 +599,149 @@ func TestCatalogEndpoints_TaxonomyFilters_AreConsistentBetweenListAndSearch(t *t
 	}
 	if !strings.Contains(strings.ToLower(invalidTagMatchRec.Body.String()), "tag_match") {
 		t.Fatalf("expected tag_match validation message, got %q", invalidTagMatchRec.Body.String())
+	}
+}
+
+func TestCatalogEndpoints_ClassificationStateFilters_WorkForListAndSearch(t *testing.T) {
+	t.Parallel()
+
+	server, sourceRepo := newCatalogMetadataFixtureServer(t)
+	seedCatalogTaxonomyObjectsViaAPI(t, server)
+
+	if err := sourceRepo.Upsert(context.Background(), persistence.CatalogSourceRow{
+		ItemID:           domain.BuildSkillCatalogItemID("plain-item"),
+		Classifier:       persistence.CatalogClassifierSkill,
+		SourceType:       persistence.CatalogSourceTypeLocal,
+		Name:             "plain-item",
+		Description:      "plain unclassified item",
+		Content:          "plain content",
+		ContentHash:      "sha256:plain-item",
+		ContentWritable:  true,
+		MetadataWritable: true,
+		LastSyncedAt:     time.Date(2026, time.March, 5, 4, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("expected plain-item source upsert to succeed, got %v", err)
+	}
+
+	localItemID := domain.BuildSkillCatalogItemID("demo-skill")
+	req := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/catalog/"+url.PathEscape(localItemID)+"/taxonomy",
+		strings.NewReader(`{"primary_domain_id":"domain-platform","tag_ids":["tag-backend"]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	gitItemID := domain.BuildSkillCatalogItemID("repo-a/git-skill")
+	req = httptest.NewRequest(
+		http.MethodPatch,
+		"/api/catalog/"+url.PathEscape(gitItemID)+"/taxonomy",
+		strings.NewReader(`{"secondary_domain_id":"domain-observability","tag_ids":["tag-metrics"]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/catalog?unclassified=true", nil)
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	unclassifiedItems := decodeJSONArray(t, rec.Body.Bytes())
+	if len(unclassifiedItems) != 1 {
+		t.Fatalf("expected one unclassified item, got %d payload=%q", len(unclassifiedItems), rec.Body.String())
+	}
+	if id, _ := unclassifiedItems[0]["id"].(string); id != domain.BuildSkillCatalogItemID("plain-item") {
+		t.Fatalf("expected plain-item in unclassified filter, got %+v", unclassifiedItems[0])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/catalog?missing_tags=true", nil)
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	missingTagItems := decodeJSONArray(t, rec.Body.Bytes())
+	if len(missingTagItems) != 1 {
+		t.Fatalf("expected one missing-tags item, got %d payload=%q", len(missingTagItems), rec.Body.String())
+	}
+	if id, _ := missingTagItems[0]["id"].(string); id != domain.BuildSkillCatalogItemID("plain-item") {
+		t.Fatalf("expected plain-item in missing_tags filter, got %+v", missingTagItems[0])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/catalog?missing_primary_domain=true", nil)
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	missingPrimaryListItems := decodeJSONArray(t, rec.Body.Bytes())
+	if len(missingPrimaryListItems) != 2 {
+		t.Fatalf(
+			"expected two missing_primary_domain list items, got %d payload=%q",
+			len(missingPrimaryListItems),
+			rec.Body.String(),
+		)
+	}
+	missingPrimaryListIDs := map[string]struct{}{}
+	for _, item := range missingPrimaryListItems {
+		id, _ := item["id"].(string)
+		missingPrimaryListIDs[id] = struct{}{}
+	}
+	for _, expectedID := range []string{domain.BuildSkillCatalogItemID("plain-item"), gitItemID} {
+		if _, exists := missingPrimaryListIDs[expectedID]; !exists {
+			t.Fatalf("expected missing_primary_domain list filter to include %q, got %+v", expectedID, missingPrimaryListItems)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/catalog/search?q=git&missing_primary_domain=true", nil)
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	missingPrimaryItems := decodeJSONArray(t, rec.Body.Bytes())
+	if len(missingPrimaryItems) != 1 {
+		t.Fatalf("expected one missing-primary-domain search item, got %d payload=%q", len(missingPrimaryItems), rec.Body.String())
+	}
+	if id, _ := missingPrimaryItems[0]["id"].(string); id != gitItemID {
+		t.Fatalf("expected git item in missing_primary_domain search, got %+v", missingPrimaryItems[0])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/catalog/search?q=plain&unclassified=true", nil)
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	unclassifiedSearchItems := decodeJSONArray(t, rec.Body.Bytes())
+	if len(unclassifiedSearchItems) != 1 {
+		t.Fatalf("expected one unclassified search item, got %d payload=%q", len(unclassifiedSearchItems), rec.Body.String())
+	}
+	if id, _ := unclassifiedSearchItems[0]["id"].(string); id != domain.BuildSkillCatalogItemID("plain-item") {
+		t.Fatalf("expected plain-item in unclassified search, got %+v", unclassifiedSearchItems[0])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/catalog/search?q=plain&missing_tags=true", nil)
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	missingTagsSearchItems := decodeJSONArray(t, rec.Body.Bytes())
+	if len(missingTagsSearchItems) != 1 {
+		t.Fatalf("expected one missing-tags search item, got %d payload=%q", len(missingTagsSearchItems), rec.Body.String())
+	}
+	if id, _ := missingTagsSearchItems[0]["id"].(string); id != domain.BuildSkillCatalogItemID("plain-item") {
+		t.Fatalf("expected plain-item in missing_tags search, got %+v", missingTagsSearchItems[0])
 	}
 }
 

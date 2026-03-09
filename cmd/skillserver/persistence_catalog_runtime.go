@@ -18,6 +18,7 @@ type catalogPersistenceRuntime struct {
 	overlayRepo             *persistence.CatalogMetadataOverlayRepository
 	taxonomyAssignment      *domain.CatalogTaxonomyAssignmentService
 	taxonomyRegistryService *domain.CatalogTaxonomyRegistryService
+	taxonomyUsageService    *domain.CatalogTaxonomyUsageService
 	coordinator             *catalogPersistenceCoordinator
 }
 
@@ -129,12 +130,25 @@ func bootstrapCatalogPersistenceRuntime(
 		return nil, fmt.Errorf("initialize catalog taxonomy assignment service: %w", err)
 	}
 
+	taxonomyUsageService, err := domain.NewCatalogTaxonomyUsageService(
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+	)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize catalog taxonomy usage service: %w", err)
+	}
+
 	return &catalogPersistenceRuntime{
 		db:                      db,
 		sourceRepo:              sourceRepo,
 		overlayRepo:             overlayRepo,
 		taxonomyAssignment:      taxonomyAssignmentService,
 		taxonomyRegistryService: taxonomyRegistryService,
+		taxonomyUsageService:    taxonomyUsageService,
 		coordinator:             coordinator,
 	}, nil
 }

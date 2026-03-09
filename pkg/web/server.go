@@ -49,6 +49,7 @@ type Server struct {
 	catalogMetadataService     *domain.CatalogMetadataService
 	taxonomyAssignment         *domain.CatalogTaxonomyAssignmentService
 	taxonomyRegistry           *domain.CatalogTaxonomyRegistryService
+	taxonomyUsage              *domain.CatalogTaxonomyUsageService
 	gitRepos                   []string
 	gitSyncer                  gitSyncer
 	gitCredentialStore         gitCredentialStore
@@ -123,19 +124,23 @@ func NewServer(
 	api.PATCH("/catalog/metadata", server.patchCatalogMetadata)
 	api.GET("/catalog/:id/metadata", server.getCatalogMetadata)
 	api.PATCH("/catalog/:id/metadata", server.patchCatalogMetadata)
+	api.PATCH("/catalog/taxonomy/batch", server.patchCatalogItemsTaxonomy)
 	api.GET("/catalog/taxonomy", server.getCatalogItemTaxonomy)
 	api.PATCH("/catalog/taxonomy", server.patchCatalogItemTaxonomy)
 	api.GET("/catalog/:id/taxonomy", server.getCatalogItemTaxonomy)
 	api.PATCH("/catalog/:id/taxonomy", server.patchCatalogItemTaxonomy)
 	api.GET("/catalog/taxonomy/domains", server.listCatalogTaxonomyDomains)
+	api.GET("/catalog/taxonomy/domains/:id/usage", server.getCatalogTaxonomyDomainUsage)
 	api.POST("/catalog/taxonomy/domains", server.createCatalogTaxonomyDomain)
 	api.PATCH("/catalog/taxonomy/domains/:id", server.updateCatalogTaxonomyDomain)
 	api.DELETE("/catalog/taxonomy/domains/:id", server.deleteCatalogTaxonomyDomain)
 	api.GET("/catalog/taxonomy/subdomains", server.listCatalogTaxonomySubdomains)
+	api.GET("/catalog/taxonomy/subdomains/:id/usage", server.getCatalogTaxonomySubdomainUsage)
 	api.POST("/catalog/taxonomy/subdomains", server.createCatalogTaxonomySubdomain)
 	api.PATCH("/catalog/taxonomy/subdomains/:id", server.updateCatalogTaxonomySubdomain)
 	api.DELETE("/catalog/taxonomy/subdomains/:id", server.deleteCatalogTaxonomySubdomain)
 	api.GET("/catalog/taxonomy/tags", server.listCatalogTaxonomyTags)
+	api.GET("/catalog/taxonomy/tags/:id/usage", server.getCatalogTaxonomyTagUsage)
 	api.POST("/catalog/taxonomy/tags", server.createCatalogTaxonomyTag)
 	api.PATCH("/catalog/taxonomy/tags/:id", server.updateCatalogTaxonomyTag)
 	api.DELETE("/catalog/taxonomy/tags/:id", server.deleteCatalogTaxonomyTag)
@@ -213,6 +218,11 @@ func (s *Server) SetCatalogTaxonomyAssignmentService(service *domain.CatalogTaxo
 // SetCatalogTaxonomyRegistryService configures taxonomy registry handlers.
 func (s *Server) SetCatalogTaxonomyRegistryService(service *domain.CatalogTaxonomyRegistryService) {
 	s.taxonomyRegistry = service
+}
+
+// SetCatalogTaxonomyUsageService configures taxonomy usage/preflight handlers.
+func (s *Server) SetCatalogTaxonomyUsageService(service *domain.CatalogTaxonomyUsageService) {
+	s.taxonomyUsage = service
 }
 
 // SetManualGitRepoSyncHook configures post-sync behavior for POST /api/git-repos/:id/sync.

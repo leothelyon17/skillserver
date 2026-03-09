@@ -449,6 +449,149 @@ func TestCatalogSourceRepository_SoftDeleteAndRestoreByItemID(t *testing.T) {
 	}
 }
 
+func TestCatalogSourceRepository_List_WithCursorPaginationAndLimit(t *testing.T) {
+	db, ctx := openMigratedSQLiteRepositoryDB(t)
+	repo := newCatalogSourceRepositoryForTest(t, db)
+
+	repoA := "repo-a"
+	sourceRows := []CatalogSourceRow{
+		{
+			ItemID:           "skill:alpha",
+			Classifier:       CatalogClassifierSkill,
+			SourceType:       CatalogSourceTypeLocal,
+			Name:             "alpha",
+			Description:      "alpha skill",
+			Content:          "alpha content",
+			ContentHash:      "sha256:alpha",
+			ContentWritable:  true,
+			MetadataWritable: true,
+			LastSyncedAt:     time.Date(2026, time.March, 9, 9, 0, 0, 0, time.UTC),
+		},
+		{
+			ItemID:           "skill:beta",
+			Classifier:       CatalogClassifierSkill,
+			SourceType:       CatalogSourceTypeLocal,
+			Name:             "beta",
+			Description:      "beta skill",
+			Content:          "beta content",
+			ContentHash:      "sha256:beta",
+			ContentWritable:  true,
+			MetadataWritable: true,
+			LastSyncedAt:     time.Date(2026, time.March, 9, 9, 5, 0, 0, time.UTC),
+		},
+		{
+			ItemID:           "skill:delta",
+			Classifier:       CatalogClassifierSkill,
+			SourceType:       CatalogSourceTypeGit,
+			SourceRepo:       &repoA,
+			Name:             "delta",
+			Description:      "delta skill",
+			Content:          "delta content",
+			ContentHash:      "sha256:delta",
+			ContentWritable:  false,
+			MetadataWritable: true,
+			LastSyncedAt:     time.Date(2026, time.March, 9, 9, 10, 0, 0, time.UTC),
+		},
+		{
+			ItemID:           "skill:gamma",
+			Classifier:       CatalogClassifierSkill,
+			SourceType:       CatalogSourceTypeGit,
+			SourceRepo:       &repoA,
+			Name:             "gamma",
+			Description:      "gamma skill",
+			Content:          "gamma content",
+			ContentHash:      "sha256:gamma",
+			ContentWritable:  false,
+			MetadataWritable: true,
+			LastSyncedAt:     time.Date(2026, time.March, 9, 9, 15, 0, 0, time.UTC),
+		},
+		{
+			ItemID:           "skill:omega",
+			Classifier:       CatalogClassifierSkill,
+			SourceType:       CatalogSourceTypeLocal,
+			Name:             "omega",
+			Description:      "omega skill",
+			Content:          "omega content",
+			ContentHash:      "sha256:omega",
+			ContentWritable:  true,
+			MetadataWritable: true,
+			LastSyncedAt:     time.Date(2026, time.March, 9, 9, 20, 0, 0, time.UTC),
+		},
+	}
+
+	for _, row := range sourceRows {
+		mustUpsertCatalogSourceRow(t, ctx, repo, row)
+	}
+
+	unpaginatedRows, err := repo.List(ctx, CatalogSourceListFilter{})
+	if err != nil {
+		t.Fatalf("expected unpaginated source list query to succeed, got %v", err)
+	}
+	if len(unpaginatedRows) != 5 {
+		t.Fatalf("expected 5 unpaginated rows, got %d", len(unpaginatedRows))
+	}
+	assertStringSliceEqual(
+		t,
+		catalogSourceRowItemIDs(unpaginatedRows),
+		[]string{"skill:alpha", "skill:beta", "skill:delta", "skill:gamma", "skill:omega"},
+		"unpaginated item_ids",
+	)
+
+	firstPage, err := repo.List(ctx, CatalogSourceListFilter{Limit: 2})
+	if err != nil {
+		t.Fatalf("expected first paginated source list query to succeed, got %v", err)
+	}
+	assertStringSliceEqual(
+		t,
+		catalogSourceRowItemIDs(firstPage),
+		[]string{"skill:alpha", "skill:beta"},
+		"first page item_ids",
+	)
+
+	secondPage, err := repo.List(ctx, CatalogSourceListFilter{Cursor: "skill:beta", Limit: 2})
+	if err != nil {
+		t.Fatalf("expected second paginated source list query to succeed, got %v", err)
+	}
+	assertStringSliceEqual(
+		t,
+		catalogSourceRowItemIDs(secondPage),
+		[]string{"skill:delta", "skill:gamma"},
+		"second page item_ids",
+	)
+
+	gitSourceType := CatalogSourceTypeGit
+	filteredFirstPage, err := repo.List(ctx, CatalogSourceListFilter{
+		SourceType: &gitSourceType,
+		SourceRepo: &repoA,
+		Limit:      1,
+	})
+	if err != nil {
+		t.Fatalf("expected filtered paginated source list query to succeed, got %v", err)
+	}
+	assertStringSliceEqual(
+		t,
+		catalogSourceRowItemIDs(filteredFirstPage),
+		[]string{"skill:delta"},
+		"filtered first page item_ids",
+	)
+
+	filteredSecondPage, err := repo.List(ctx, CatalogSourceListFilter{
+		SourceType: &gitSourceType,
+		SourceRepo: &repoA,
+		Cursor:     "skill:delta",
+		Limit:      1,
+	})
+	if err != nil {
+		t.Fatalf("expected filtered second paginated source list query to succeed, got %v", err)
+	}
+	assertStringSliceEqual(
+		t,
+		catalogSourceRowItemIDs(filteredSecondPage),
+		[]string{"skill:gamma"},
+		"filtered second page item_ids",
+	)
+}
+
 func TestCatalogSourceRepository_GetByItemID_MissingRow_ReturnsNotFound(t *testing.T) {
 	db, ctx := openMigratedSQLiteRepositoryDB(t)
 	repo := newCatalogSourceRepositoryForTest(t, db)
@@ -469,6 +612,16 @@ func TestCatalogSourceRepository_List_InvalidFilter_ReturnsError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected invalid filter error, got nil")
+	}
+}
+
+func TestCatalogSourceRepository_List_WithNegativeLimit_ReturnsError(t *testing.T) {
+	db, ctx := openMigratedSQLiteRepositoryDB(t)
+	repo := newCatalogSourceRepositoryForTest(t, db)
+
+	_, err := repo.List(ctx, CatalogSourceListFilter{Limit: -1})
+	if err == nil {
+		t.Fatalf("expected negative limit error, got nil")
 	}
 }
 
@@ -529,4 +682,13 @@ func assertOptionalStringEqual(t *testing.T, expected, actual *string, fieldName
 	case *expected != *actual:
 		t.Fatalf("expected %s %q, got %q", fieldName, *expected, *actual)
 	}
+}
+
+func catalogSourceRowItemIDs(rows []CatalogSourceRow) []string {
+	itemIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		itemIDs = append(itemIDs, row.ItemID)
+	}
+
+	return itemIDs
 }

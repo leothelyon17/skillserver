@@ -121,6 +121,13 @@ type CatalogItemTagAssignmentListFilter struct {
 	TagIDs  []string
 }
 
+// CatalogTaxonomyUsageQueryResult captures repository-level usage counts and preview item IDs.
+type CatalogTaxonomyUsageQueryResult struct {
+	AssignmentCount   int
+	DistinctItemCount int
+	PreviewItemIDs    []string
+}
+
 func validateCatalogDomainCreateRow(row CatalogDomainRow) (CatalogDomainRow, error) {
 	return validateCatalogDomainWriteRow(row, true)
 }

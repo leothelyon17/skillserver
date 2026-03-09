@@ -363,9 +363,11 @@ func main() {
 		webServer.SetCatalogMetadataService(metadataService)
 		webServer.SetCatalogTaxonomyAssignmentService(persistenceRuntime.taxonomyAssignment)
 		webServer.SetCatalogTaxonomyRegistryService(persistenceRuntime.taxonomyRegistryService)
+		webServer.SetCatalogTaxonomyUsageService(persistenceRuntime.taxonomyUsageService)
 		mcpServer.SetCatalogMetadataService(metadataService)
 		mcpServer.SetCatalogTaxonomyAssignmentService(persistenceRuntime.taxonomyAssignment)
 		mcpServer.SetCatalogTaxonomyRegistryService(persistenceRuntime.taxonomyRegistryService)
+		mcpServer.SetCatalogTaxonomyUsageService(persistenceRuntime.taxonomyUsageService)
 
 		webServer.SetManualGitRepoSyncHook(func(repo git.GitRepoConfig) error {
 			repoName := git.ResolveRepoCheckoutName(repo)

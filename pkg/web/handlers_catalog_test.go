@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,21 @@ func TestListCatalog_ReturnsMixedCatalogItemsWithPromptMetadata(t *testing.T) {
 	if name, _ := skill["name"].(string); name != "demo-skill" {
 		t.Fatalf("expected skill name demo-skill, got %q", name)
 	}
+	if _, exists := skill["content"]; exists {
+		t.Fatalf("did not expect content in metadata-first default response, got %+v", skill)
+	}
+	if hasAssignment, ok := skill["has_assignment"].(bool); !ok || hasAssignment {
+		t.Fatalf("expected has_assignment=false for fixture skill, got %v", skill["has_assignment"])
+	}
+	if isFullyClassified, ok := skill["is_fully_classified"].(bool); !ok || isFullyClassified {
+		t.Fatalf(
+			"expected is_fully_classified=false for fixture skill, got %v",
+			skill["is_fully_classified"],
+		)
+	}
+	if missingFields, ok := skill["missing_fields"].([]any); !ok || len(missingFields) != 5 {
+		t.Fatalf("expected explicit missing_fields in default response, got %+v", skill["missing_fields"])
+	}
 
 	prompt := findCatalogItemByClassifier(t, items, "prompt")
 	if id, _ := prompt["id"].(string); !strings.HasPrefix(id, "prompt:") {
@@ -52,6 +68,9 @@ func TestListCatalog_ReturnsMixedCatalogItemsWithPromptMetadata(t *testing.T) {
 	}
 	if metadataWritable, ok := prompt["metadata_writable"].(bool); !ok || !metadataWritable {
 		t.Fatalf("expected metadata_writable=true for direct prompt resource, got %v", prompt["metadata_writable"])
+	}
+	if _, exists := prompt["content"]; exists {
+		t.Fatalf("did not expect prompt content in metadata-first default response, got %+v", prompt)
 	}
 
 	if contentWritable, ok := skill["content_writable"].(bool); !ok || !contentWritable {
@@ -98,6 +117,9 @@ func TestSearchCatalog_SupportsOptionalClassifierFiltering(t *testing.T) {
 	if readOnly, ok := items[0]["read_only"].(bool); !ok || readOnly {
 		t.Fatalf("expected prompt read_only=false in search response, got %v", items[0]["read_only"])
 	}
+	if _, exists := items[0]["content"]; exists {
+		t.Fatalf("did not expect content in metadata-first search response, got %+v", items[0])
+	}
 
 	req = httptest.NewRequest(
 		http.MethodGet,
@@ -126,6 +148,71 @@ func TestSearchCatalog_SupportsOptionalClassifierFiltering(t *testing.T) {
 	}
 	if readOnly, ok := items[0]["read_only"].(bool); !ok || readOnly {
 		t.Fatalf("expected skill read_only=false in search response, got %v", items[0]["read_only"])
+	}
+	if _, exists := items[0]["content"]; exists {
+		t.Fatalf("did not expect content in metadata-first search response, got %+v", items[0])
+	}
+}
+
+func TestCatalogEndpoints_PaginationEnvelopeAndContentOptIn(t *testing.T) {
+	t.Parallel()
+
+	server := newResourceFixtureServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/catalog?limit=1", nil)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	page := decodeJSONObject(t, rec.Body.Bytes())
+	items, ok := page["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected one paginated item, got %+v", page["items"])
+	}
+	if hasMore, ok := page["has_more"].(bool); !ok || !hasMore {
+		t.Fatalf("expected has_more=true for first page, got %v", page["has_more"])
+	}
+	nextCursor, ok := page["next_cursor"].(string)
+	if !ok || strings.TrimSpace(nextCursor) == "" {
+		t.Fatalf("expected next_cursor on first page, got %+v", page["next_cursor"])
+	}
+	firstItem, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected paginated item object, got %T", items[0])
+	}
+	if _, exists := firstItem["content"]; exists {
+		t.Fatalf("did not expect content without include_content=true, got %+v", firstItem)
+	}
+
+	req = httptest.NewRequest(
+		http.MethodGet,
+		"/api/catalog?limit=1&cursor="+url.QueryEscape(nextCursor)+"&include_content=true",
+		nil,
+	)
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	secondPage := decodeJSONObject(t, rec.Body.Bytes())
+	items, ok = secondPage["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected one second-page item, got %+v", secondPage["items"])
+	}
+	if hasMore, ok := secondPage["has_more"].(bool); !ok || hasMore {
+		t.Fatalf("expected has_more=false on final page, got %v", secondPage["has_more"])
+	}
+	secondItem, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected second-page item object, got %T", items[0])
+	}
+	if _, exists := secondItem["content"]; !exists {
+		t.Fatalf("expected content when include_content=true, got %+v", secondItem)
 	}
 }
 
