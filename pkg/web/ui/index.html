@@ -296,8 +296,8 @@
                             </div>
                         </div>
                     </div>
-                    <div class="skill-tags" x-show="Array.isArray(item.labels) && item.labels.length > 0">
-                        <template x-for="label in item.labels.slice(0, 4)" :key="`${item.id || item.name}-${label}`">
+                    <div class="skill-tags" x-show="catalogItemDisplayLabels(item).length > 0">
+                        <template x-for="label in catalogItemDisplayLabels(item).slice(0, 4)" :key="`${item.id || item.name}-${label}`">
                             <span class="tag" x-text="label"></span>
                         </template>
                     </div>
@@ -2736,6 +2736,53 @@
                     return !!item.primary_domain ||
                         !!item.secondary_domain ||
                         (Array.isArray(item.tags) && item.tags.length > 0);
+                },
+
+                normalizeCatalogLabelToken(value) {
+                    return String(value || '')
+                        .trim()
+                        .replace(/^#+/, '')
+                        .replace(/[_-]+/g, ' ')
+                        .replace(/\s+/g, ' ')
+                        .toLowerCase();
+                },
+
+                catalogItemDisplayLabels(item) {
+                    if (!item || !Array.isArray(item.labels) || item.labels.length === 0) {
+                        return [];
+                    }
+
+                    const taxonomyTagTokens = new Set();
+                    if (Array.isArray(item.tags)) {
+                        for (const tag of item.tags) {
+                            if (!tag || typeof tag !== 'object') {
+                                continue;
+                            }
+                            for (const candidate of [tag.name, tag.key, tag.id]) {
+                                const token = this.normalizeCatalogLabelToken(candidate);
+                                if (token !== '') {
+                                    taxonomyTagTokens.add(token);
+                                }
+                            }
+                        }
+                    }
+
+                    const seenLabelTokens = new Set();
+                    const displayLabels = [];
+                    for (const rawLabel of item.labels) {
+                        const trimmedLabel = String(rawLabel || '').trim();
+                        const labelToken = this.normalizeCatalogLabelToken(trimmedLabel);
+                        if (labelToken === '' || seenLabelTokens.has(labelToken)) {
+                            continue;
+                        }
+                        seenLabelTokens.add(labelToken);
+                        if (taxonomyTagTokens.has(labelToken)) {
+                            continue;
+                        }
+                        displayLabels.push(trimmedLabel);
+                    }
+
+                    return displayLabels;
                 },
 
                 catalogItemHasAssignment(item) {

@@ -230,6 +230,7 @@ test.describe("WP-010 taxonomy manager and assignment UX", () => {
     await expect(additiveCard.getByText(/Primary: Platform/i)).toBeVisible();
     await expect(additiveCard.getByText(/Secondary: Observability/i)).toBeVisible();
     await expect(additiveCard.getByText("#Backend")).toBeVisible();
+    await expect(additiveCard.locator(".skill-tags .tag")).toHaveCount(0);
 
     const metadataModal = await openMetadataModal(page, "additive-skill");
 
@@ -279,6 +280,7 @@ test.describe("WP-010 taxonomy manager and assignment UX", () => {
     await expect(updatedCard).toBeVisible();
     await expect(updatedCard.getByText("#Backend")).toBeVisible();
     await expect(updatedCard.getByText("#Metrics")).toBeVisible();
+    await expect(updatedCard.locator(".skill-tags .tag")).toHaveCount(0);
 
     await page.getByRole("button", { name: "Taxonomy Filters" }).click();
     await page.locator('[x-model="taxonomyFilters.primaryDomainID"]').selectOption("domain-platform");
