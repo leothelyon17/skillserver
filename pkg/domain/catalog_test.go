@@ -219,6 +219,75 @@ var _ = Describe("Catalog Contracts and Classifier Rules", func() {
 			Expect(idA).To(Equal(idB))
 			Expect(idA).To(Equal("rule:repo/skill-name:rules/project.md"))
 		})
+
+		It("should normalize bare and canonical skill references to the same canonical item ID", func() {
+			bareReference, err := domain.NormalizeCatalogItemReference("./repo\\skill-name/")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(bareReference.Classifier).To(Equal(domain.CatalogClassifierSkill))
+			Expect(bareReference.SkillID).To(Equal("repo/skill-name"))
+			Expect(bareReference.ItemID).To(Equal("skill:repo/skill-name"))
+
+			canonicalReference, err := domain.NormalizeCatalogItemReference("skill:repo/skill-name")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(canonicalReference).To(Equal(bareReference))
+		})
+
+		It("should require canonical prompt and rule resource item references", func() {
+			_, err := domain.NormalizeCatalogItemReference("prompt:prompts/system.md")
+			Expect(err).To(HaveOccurred())
+
+			_, err = domain.NormalizeCatalogItemReference("rule:AGENTS.md")
+			Expect(err).To(HaveOccurred())
+
+			promptReference, err := domain.NormalizeCatalogItemReference(
+				"prompt:./repo\\skill-name/:./imports\\prompts\\system.md",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(promptReference.Classifier).To(Equal(domain.CatalogClassifierPrompt))
+			Expect(promptReference.ItemID).To(Equal("prompt:repo/skill-name:imports/prompts/system.md"))
+
+			ruleReference, err := domain.NormalizeCatalogItemReference(
+				"rule:./repo\\skill-name/:./rules\\agents.md",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ruleReference.Classifier).To(Equal(domain.CatalogClassifierRule))
+			Expect(ruleReference.ItemID).To(Equal("rule:repo/skill-name:rules/agents.md"))
+		})
+
+		It("should derive classification completeness with fixed missing-field ordering", func() {
+			primaryDomain := &domain.CatalogTaxonomyReference{ID: "domain-platform", Key: "platform", Name: "Platform"}
+			tagReferences := []domain.CatalogTaxonomyReference{{ID: "tag-backend", Key: "backend", Name: "Backend"}}
+
+			unclassified := domain.DeriveCatalogClassificationState(nil, nil, nil, nil, nil)
+			Expect(unclassified.HasAssignment).To(BeFalse())
+			Expect(unclassified.IsFullyClassified).To(BeFalse())
+			Expect(unclassified.MissingFields).To(Equal([]string{
+				domain.CatalogClassificationMissingPrimaryDomain,
+				domain.CatalogClassificationMissingPrimarySubdomain,
+				domain.CatalogClassificationMissingSecondaryDomain,
+				domain.CatalogClassificationMissingSecondarySubdomain,
+				domain.CatalogClassificationMissingTags,
+			}))
+
+			partiallyClassified := domain.DeriveCatalogClassificationState(primaryDomain, nil, nil, nil, nil)
+			Expect(partiallyClassified.HasAssignment).To(BeTrue())
+			Expect(partiallyClassified.IsFullyClassified).To(BeFalse())
+			Expect(partiallyClassified.MissingFields).To(Equal([]string{
+				domain.CatalogClassificationMissingPrimarySubdomain,
+				domain.CatalogClassificationMissingSecondaryDomain,
+				domain.CatalogClassificationMissingSecondarySubdomain,
+				domain.CatalogClassificationMissingTags,
+			}))
+
+			fullyClassified := domain.DeriveCatalogClassificationState(primaryDomain, nil, nil, nil, tagReferences)
+			Expect(fullyClassified.HasAssignment).To(BeTrue())
+			Expect(fullyClassified.IsFullyClassified).To(BeTrue())
+			Expect(fullyClassified.MissingFields).To(Equal([]string{
+				domain.CatalogClassificationMissingPrimarySubdomain,
+				domain.CatalogClassificationMissingSecondaryDomain,
+				domain.CatalogClassificationMissingSecondarySubdomain,
+			}))
+		})
 	})
 
 	Context("Install metadata parsing and validation", func() {

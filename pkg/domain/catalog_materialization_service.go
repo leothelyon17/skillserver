@@ -328,73 +328,12 @@ func normalizeCatalogMaterializationItemIDs(itemIDs []string) ([]string, error) 
 }
 
 func normalizeCatalogMaterializationItemID(rawItemID string) (string, error) {
-	itemID := strings.TrimSpace(rawItemID)
-	if itemID == "" {
-		return "", fmt.Errorf("%w: item id is required", ErrCatalogMaterializationInvalidRequest)
-	}
-
-	classifierToken, payload, hasClassifier := strings.Cut(itemID, ":")
-	if !hasClassifier {
-		skillKey := CanonicalSkillCatalogKey(itemID)
-		if skillKey == "" {
-			return "", fmt.Errorf("%w: item id %q is invalid", ErrCatalogMaterializationInvalidRequest, rawItemID)
-		}
-		return BuildSkillCatalogItemID(skillKey), nil
-	}
-
-	classifier, err := ParseCatalogClassifier(classifierToken)
+	normalizedItemID, err := NormalizeCatalogItemID(rawItemID)
 	if err != nil {
-		return "", fmt.Errorf(
-			"%w: item id %q has an invalid classifier",
-			ErrCatalogMaterializationInvalidRequest,
-			rawItemID,
-		)
-	}
-	payload = strings.TrimSpace(payload)
-	if payload == "" {
-		return "", fmt.Errorf("%w: item id %q has an empty payload", ErrCatalogMaterializationInvalidRequest, rawItemID)
+		return "", fmt.Errorf("%w: %v", ErrCatalogMaterializationInvalidRequest, err)
 	}
 
-	switch classifier {
-	case CatalogClassifierSkill:
-		skillKey := CanonicalSkillCatalogKey(payload)
-		if skillKey == "" {
-			return "", fmt.Errorf("%w: item id %q is invalid", ErrCatalogMaterializationInvalidRequest, rawItemID)
-		}
-		return BuildSkillCatalogItemID(skillKey), nil
-	case CatalogClassifierPrompt:
-		skillID, resourcePath, err := parseCatalogResourceItemPayload(payload)
-		if err != nil {
-			return "", fmt.Errorf("%w: %v", ErrCatalogMaterializationInvalidRequest, err)
-		}
-		return BuildPromptCatalogItemID(skillID, resourcePath), nil
-	case CatalogClassifierRule:
-		skillID, resourcePath, err := parseCatalogResourceItemPayload(payload)
-		if err != nil {
-			return "", fmt.Errorf("%w: %v", ErrCatalogMaterializationInvalidRequest, err)
-		}
-		return BuildRuleCatalogItemID(skillID, resourcePath), nil
-	default:
-		return "", fmt.Errorf(
-			"%w: classifier %q",
-			ErrCatalogMaterializationUnsupportedClassifier,
-			classifier,
-		)
-	}
-}
-
-func parseCatalogResourceItemPayload(payload string) (string, string, error) {
-	separator := strings.LastIndex(payload, ":")
-	if separator <= 0 || separator >= len(payload)-1 {
-		return "", "", fmt.Errorf("catalog resource payload %q must be <skill-id>:<resource-path>", payload)
-	}
-
-	skillID := strings.TrimSpace(payload[:separator])
-	resourcePath := strings.TrimSpace(payload[separator+1:])
-	if skillID == "" || resourcePath == "" {
-		return "", "", fmt.Errorf("catalog resource payload %q must be <skill-id>:<resource-path>", payload)
-	}
-	return skillID, resourcePath, nil
+	return normalizedItemID, nil
 }
 
 func (s *CatalogMaterializationService) resolveDestinationDir(raw string) (string, string, error) {

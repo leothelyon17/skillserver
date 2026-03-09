@@ -2,6 +2,7 @@ package domain
 
 import (
 	"database/sql"
+	"reflect"
 	"testing"
 	"time"
 
@@ -558,15 +559,48 @@ func TestCatalogEffectiveService_List_MergesTaxonomyReferencesAndAppliesTaxonomy
 	if len(itemA.Labels) != 2 || itemA.Labels[0] != "Backend" || itemA.Labels[1] != "Metrics" {
 		t.Fatalf("expected taxonomy-derived labels [Backend, Metrics] for itemA, got %+v", itemA.Labels)
 	}
+	if !itemA.HasAssignment || !itemA.IsFullyClassified {
+		t.Fatalf("expected itemA to be fully classified, got %+v", itemA)
+	}
+	if len(itemA.MissingFields) != 0 {
+		t.Fatalf("expected no missing_fields for itemA, got %+v", itemA.MissingFields)
+	}
 
 	itemB := itemsByID[itemBID]
 	if len(itemB.Labels) != 1 || itemB.Labels[0] != "Metrics" {
 		t.Fatalf("expected taxonomy-derived labels [Metrics] for itemB, got %+v", itemB.Labels)
 	}
+	if !itemB.HasAssignment || !itemB.IsFullyClassified {
+		t.Fatalf("expected itemB to be fully classified despite missing optional taxonomy fields, got %+v", itemB)
+	}
+	expectedItemBMissingFields := []string{
+		CatalogClassificationMissingPrimarySubdomain,
+		CatalogClassificationMissingSecondaryDomain,
+		CatalogClassificationMissingSecondarySubdomain,
+	}
+	if !reflect.DeepEqual(itemB.MissingFields, expectedItemBMissingFields) {
+		t.Fatalf("expected itemB missing_fields %+v, got %+v", expectedItemBMissingFields, itemB.MissingFields)
+	}
 
 	itemC := itemsByID[itemCID]
 	if len(itemC.Labels) != 1 || itemC.Labels[0] != "legacy-overlay-c" {
 		t.Fatalf("expected legacy overlay label fallback for itemC, got %+v", itemC.Labels)
+	}
+	expectedItemCMissingFields := []string{
+		CatalogClassificationMissingPrimaryDomain,
+		CatalogClassificationMissingPrimarySubdomain,
+		CatalogClassificationMissingSecondaryDomain,
+		CatalogClassificationMissingSecondarySubdomain,
+		CatalogClassificationMissingTags,
+	}
+	if itemC.HasAssignment {
+		t.Fatalf("expected itemC has_assignment=false, got %+v", itemC)
+	}
+	if itemC.IsFullyClassified {
+		t.Fatalf("expected itemC is_fully_classified=false, got %+v", itemC)
+	}
+	if !reflect.DeepEqual(itemC.MissingFields, expectedItemCMissingFields) {
+		t.Fatalf("expected itemC missing_fields %+v, got %+v", expectedItemCMissingFields, itemC.MissingFields)
 	}
 
 	platformItems, err := service.List(ctx, CatalogEffectiveListFilter{DomainID: "domain-platform"})

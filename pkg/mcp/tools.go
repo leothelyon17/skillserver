@@ -23,14 +23,14 @@ type ListSkillsOutput struct {
 
 // SkillInfo represents basic information about a skill
 type SkillInfo struct {
-	ID          string `json:"id"`   // Unique identifier to use when reading the skill (repoName/skillName or skillName)
+	ID          string `json:"id"`   // Canonical skill catalog item ID (skill:<skill-id>)
 	Name        string `json:"name"` // Display name
 	Description string `json:"description,omitempty"`
 }
 
 // ReadSkillInput is the input for read_skill tool
 type ReadSkillInput struct {
-	ID string `json:"id" jsonschema:"The skill ID returned by list_skills or search_skills (format: 'skill-name' for local skills, or 'repoName/skill-name' for git repo skills)"`
+	ID string `json:"id" jsonschema:"The skill ID returned by list_skills or search_skills. Accepts bare skill IDs ('skill-name', 'repoName/skill-name') and canonical skill item IDs ('skill:<skill-id>')."`
 }
 
 // ReadSkillOutput is the output for read_skill tool
@@ -50,11 +50,18 @@ type SearchSkillsOutput struct {
 
 // SearchResult represents a search result
 type SearchResult struct {
-	ID      string `json:"id"`   // Unique identifier to use when reading the skill (repoName/skillName or skillName)
+	ID      string `json:"id"`   // Canonical skill catalog item ID (skill:<skill-id>)
 	Name    string `json:"name"` // Display name
 	Content string `json:"content"`
 	Snippet string `json:"snippet,omitempty"`
 }
+
+const (
+	catalogListDefaultLimit                 = 50
+	catalogListMaxLimit                     = 200
+	catalogTaxonomyUsageDefaultPreviewLimit = 10
+	catalogTaxonomyUsageMaxPreviewLimit     = 200
+)
 
 // listSkills lists all available skills
 func listSkills(ctx context.Context, req *mcp.CallToolRequest, input ListSkillsInput, manager domain.SkillManager) (
@@ -70,8 +77,8 @@ func listSkills(ctx context.Context, req *mcp.CallToolRequest, input ListSkillsI
 	skillInfos := make([]SkillInfo, len(skills))
 	for i, skill := range skills {
 		skillInfos[i] = SkillInfo{
-			ID: skill.ID,
-			//	Name: skill.Name,
+			ID:   domain.BuildSkillCatalogItemID(skill.ID),
+			Name: resolveSkillDisplayName(skill),
 		}
 		if skill.Metadata != nil {
 			skillInfos[i].Description = skill.Metadata.Description
@@ -87,7 +94,12 @@ func readSkill(ctx context.Context, req *mcp.CallToolRequest, input ReadSkillInp
 	ReadSkillOutput,
 	error,
 ) {
-	skill, err := manager.ReadSkill(input.ID)
+	skillID, err := normalizeSkillToolInput(input.ID, "id")
+	if err != nil {
+		return nil, ReadSkillOutput{}, err
+	}
+
+	skill, err := manager.ReadSkill(skillID)
 	if err != nil {
 		return nil, ReadSkillOutput{}, fmt.Errorf("failed to read skill: %w", err)
 	}
@@ -115,8 +127,8 @@ func searchSkills(ctx context.Context, req *mcp.CallToolRequest, input SearchSki
 		}
 
 		results[i] = SearchResult{
-			ID:      skill.ID,
-			Name:    skill.Name,
+			ID:      domain.BuildSkillCatalogItemID(skill.ID),
+			Name:    resolveSkillDisplayName(skill),
 			Content: skill.Content,
 			Snippet: snippet,
 		}
@@ -133,11 +145,19 @@ type ListCatalogInput struct {
 	SubdomainID       string   `json:"subdomain_id,omitempty" jsonschema:"Optional subdomain selector (matches primary or secondary subdomain)"`
 	TagIDs            []string `json:"tag_ids,omitempty" jsonschema:"Optional tag selectors"`
 	TagMatch          string   `json:"tag_match,omitempty" jsonschema:"Optional tag match mode ('any' or 'all')"`
+	IncludeContent    *bool    `json:"include_content,omitempty" jsonschema:"Optional content inclusion flag. Defaults to false."`
+	Limit             *int     `json:"limit,omitempty" jsonschema:"Optional result limit (1-200). Defaults to 50."`
+	Cursor            string   `json:"cursor,omitempty" jsonschema:"Optional exclusive after-item_id cursor for deterministic pagination."`
+	Unclassified      *bool    `json:"unclassified,omitempty" jsonschema:"Optional effective-state filter. When true, includes only items with has_assignment=false."`
+	MissingPrimary    *bool    `json:"missing_primary_domain,omitempty" jsonschema:"Optional effective-state filter. When true, includes only items with no primary_domain."`
+	MissingTags       *bool    `json:"missing_tags,omitempty" jsonschema:"Optional effective-state filter. When true, includes only items with zero tags."`
 }
 
 // ListCatalogOutput is the output for list_catalog tool.
 type ListCatalogOutput struct {
-	Items []CatalogItemInfo `json:"items"`
+	Items      []CatalogItemInfo `json:"items"`
+	NextCursor *string           `json:"next_cursor,omitempty"`
+	HasMore    bool              `json:"has_more"`
 }
 
 // SearchCatalogInput is the input for search_catalog tool.
@@ -149,11 +169,19 @@ type SearchCatalogInput struct {
 	SubdomainID       string   `json:"subdomain_id,omitempty" jsonschema:"Optional subdomain selector (matches primary or secondary subdomain)"`
 	TagIDs            []string `json:"tag_ids,omitempty" jsonschema:"Optional tag selectors"`
 	TagMatch          string   `json:"tag_match,omitempty" jsonschema:"Optional tag match mode ('any' or 'all')"`
+	IncludeContent    *bool    `json:"include_content,omitempty" jsonschema:"Optional content inclusion flag. Defaults to false."`
+	Limit             *int     `json:"limit,omitempty" jsonschema:"Optional result limit (1-200). Defaults to 50."`
+	Cursor            string   `json:"cursor,omitempty" jsonschema:"Optional exclusive after-item_id cursor for deterministic pagination."`
+	Unclassified      *bool    `json:"unclassified,omitempty" jsonschema:"Optional effective-state filter. When true, includes only items with has_assignment=false."`
+	MissingPrimary    *bool    `json:"missing_primary_domain,omitempty" jsonschema:"Optional effective-state filter. When true, includes only items with no primary_domain."`
+	MissingTags       *bool    `json:"missing_tags,omitempty" jsonschema:"Optional effective-state filter. When true, includes only items with zero tags."`
 }
 
 // SearchCatalogOutput is the output for search_catalog tool.
 type SearchCatalogOutput struct {
-	Results []CatalogItemInfo `json:"results"`
+	Results    []CatalogItemInfo `json:"results"`
+	NextCursor *string           `json:"next_cursor,omitempty"`
+	HasMore    bool              `json:"has_more"`
 }
 
 var errCatalogTaxonomyFiltersUnavailable = errors.New("catalog taxonomy filters are unavailable")
@@ -173,6 +201,9 @@ type CatalogItemInfo struct {
 	SecondarySubdomain *domain.CatalogTaxonomyReference  `json:"secondary_subdomain,omitempty"`
 	Tags               []domain.CatalogTaxonomyReference `json:"tags,omitempty"`
 	ReadOnly           bool                              `json:"read_only"`
+	HasAssignment      bool                              `json:"has_assignment"`
+	IsFullyClassified  bool                              `json:"is_fully_classified"`
+	MissingFields      []string                          `json:"missing_fields"`
 }
 
 // listCatalog lists unified catalog items with an optional classifier filter.
@@ -203,12 +234,32 @@ func listCatalog(
 		return nil, ListCatalogOutput{}, err
 	}
 
+	request, err := newCatalogToolCollectionRequest(
+		input.IncludeContent,
+		input.Limit,
+		input.Cursor,
+		input.Unclassified,
+		input.MissingPrimary,
+		input.MissingTags,
+	)
+	if err != nil {
+		return nil, ListCatalogOutput{}, err
+	}
+	if request.requiresMetadataRuntime() && catalogMetadata == nil {
+		return nil, ListCatalogOutput{}, errCatalogTaxonomyFiltersUnavailable
+	}
+
 	items, err := loadCatalogItems(ctx, "", classifier, taxonomyFilter, manager, catalogMetadata)
 	if err != nil {
 		return nil, ListCatalogOutput{}, err
 	}
 
-	return nil, ListCatalogOutput{Items: buildCatalogItemInfos(items)}, nil
+	page := buildCatalogToolCollection(items, request)
+	return nil, ListCatalogOutput{
+		Items:      page.Items,
+		NextCursor: page.NextCursor,
+		HasMore:    page.HasMore,
+	}, nil
 }
 
 // searchCatalog searches unified catalog items with an optional classifier filter.
@@ -244,12 +295,161 @@ func searchCatalog(
 		return nil, SearchCatalogOutput{}, err
 	}
 
+	request, err := newCatalogToolCollectionRequest(
+		input.IncludeContent,
+		input.Limit,
+		input.Cursor,
+		input.Unclassified,
+		input.MissingPrimary,
+		input.MissingTags,
+	)
+	if err != nil {
+		return nil, SearchCatalogOutput{}, err
+	}
+	if request.requiresMetadataRuntime() && catalogMetadata == nil {
+		return nil, SearchCatalogOutput{}, errCatalogTaxonomyFiltersUnavailable
+	}
+
 	items, err := loadCatalogItems(ctx, query, classifier, taxonomyFilter, manager, catalogMetadata)
 	if err != nil {
 		return nil, SearchCatalogOutput{}, err
 	}
 
-	return nil, SearchCatalogOutput{Results: buildCatalogItemInfos(items)}, nil
+	page := buildCatalogToolCollection(items, request)
+	return nil, SearchCatalogOutput{
+		Results:    page.Items,
+		NextCursor: page.NextCursor,
+		HasMore:    page.HasMore,
+	}, nil
+}
+
+type catalogToolCollectionRequest struct {
+	IncludeContent       bool
+	Limit                int
+	Cursor               string
+	Unclassified         bool
+	MissingPrimaryDomain bool
+	MissingTags          bool
+}
+
+type catalogToolCollectionResult struct {
+	Items      []CatalogItemInfo
+	NextCursor *string
+	HasMore    bool
+}
+
+func newCatalogToolCollectionRequest(
+	includeContent *bool,
+	limit *int,
+	cursor string,
+	unclassified *bool,
+	missingPrimaryDomain *bool,
+	missingTags *bool,
+) (catalogToolCollectionRequest, error) {
+	request := catalogToolCollectionRequest{
+		Limit:  catalogListDefaultLimit,
+		Cursor: strings.TrimSpace(cursor),
+	}
+	if includeContent != nil {
+		request.IncludeContent = *includeContent
+	}
+	if unclassified != nil {
+		request.Unclassified = *unclassified
+	}
+	if missingPrimaryDomain != nil {
+		request.MissingPrimaryDomain = *missingPrimaryDomain
+	}
+	if missingTags != nil {
+		request.MissingTags = *missingTags
+	}
+	if limit == nil {
+		return request, nil
+	}
+	if *limit <= 0 || *limit > catalogListMaxLimit {
+		return catalogToolCollectionRequest{}, fmt.Errorf(
+			"limit must be an integer between 1 and %d",
+			catalogListMaxLimit,
+		)
+	}
+	request.Limit = *limit
+	return request, nil
+}
+
+func (r catalogToolCollectionRequest) matchesClassificationState(item domain.CatalogItem) bool {
+	if r.Unclassified && item.HasAssignment {
+		return false
+	}
+	if r.MissingPrimaryDomain && item.PrimaryDomain != nil {
+		return false
+	}
+	if r.MissingTags && len(item.Tags) > 0 {
+		return false
+	}
+	return true
+}
+
+func (r catalogToolCollectionRequest) requiresMetadataRuntime() bool {
+	return r.Unclassified || r.MissingPrimaryDomain || r.MissingTags
+}
+
+func buildCatalogToolCollection(
+	items []domain.CatalogItem,
+	request catalogToolCollectionRequest,
+) catalogToolCollectionResult {
+	normalizedItems := make([]domain.CatalogItem, 0, len(items))
+	for _, item := range items {
+		normalizedItem := normalizeCatalogItemForToolResponse(item)
+		if !request.matchesClassificationState(normalizedItem) {
+			continue
+		}
+		normalizedItems = append(normalizedItems, normalizedItem)
+	}
+
+	sort.Slice(normalizedItems, func(i int, j int) bool {
+		return normalizedItems[i].ID < normalizedItems[j].ID
+	})
+
+	pageItems, nextCursor, hasMore := paginateCatalogToolItems(
+		normalizedItems,
+		request.Cursor,
+		request.Limit,
+	)
+
+	return catalogToolCollectionResult{
+		Items:      buildCatalogItemInfos(pageItems, request.IncludeContent),
+		NextCursor: nextCursor,
+		HasMore:    hasMore,
+	}
+}
+
+func paginateCatalogToolItems(
+	items []domain.CatalogItem,
+	cursor string,
+	limit int,
+) ([]domain.CatalogItem, *string, bool) {
+	if len(items) == 0 {
+		return []domain.CatalogItem{}, nil, false
+	}
+
+	start := 0
+	normalizedCursor := strings.TrimSpace(cursor)
+	if normalizedCursor != "" {
+		for start < len(items) && strings.Compare(items[start].ID, normalizedCursor) <= 0 {
+			start++
+		}
+	}
+	if start >= len(items) {
+		return []domain.CatalogItem{}, nil, false
+	}
+
+	pageItems := items[start:]
+	if limit <= 0 || len(pageItems) <= limit {
+		return append([]domain.CatalogItem{}, pageItems...), nil, false
+	}
+
+	pageItems = append([]domain.CatalogItem{}, pageItems[:limit]...)
+	nextCursor := pageItems[len(pageItems)-1].ID
+	return pageItems, &nextCursor, true
 }
 
 type catalogFilterTaxonomyInput struct {
@@ -437,15 +637,21 @@ func catalogItemMatchesQuery(item domain.CatalogItem, normalizedQuery string) bo
 	return strings.Contains(haystack, normalizedQuery)
 }
 
-func buildCatalogItemInfos(items []domain.CatalogItem) []CatalogItemInfo {
+func buildCatalogItemInfos(items []domain.CatalogItem, includeContent bool) []CatalogItemInfo {
 	results := make([]CatalogItemInfo, len(items))
 	for i, item := range items {
+		classificationState := deriveCatalogItemClassificationState(item)
+		content := ""
+		if includeContent {
+			content = item.Content
+		}
+
 		results[i] = CatalogItemInfo{
 			ID:                 item.ID,
 			Classifier:         item.Classifier,
 			Name:               item.Name,
 			Description:        item.Description,
-			Content:            item.Content,
+			Content:            content,
 			ParentSkillID:      item.ParentSkillID,
 			ResourcePath:       item.ResourcePath,
 			PrimaryDomain:      copyCatalogItemTaxonomyReference(item.PrimaryDomain),
@@ -454,10 +660,31 @@ func buildCatalogItemInfos(items []domain.CatalogItem) []CatalogItemInfo {
 			SecondarySubdomain: copyCatalogItemTaxonomyReference(item.SecondarySubdomain),
 			Tags:               copyCatalogItemTaxonomyReferences(item.Tags),
 			ReadOnly:           item.ReadOnly,
+			HasAssignment:      classificationState.HasAssignment,
+			IsFullyClassified:  classificationState.IsFullyClassified,
+			MissingFields:      append([]string{}, classificationState.MissingFields...),
 		}
 	}
 
 	return results
+}
+
+func normalizeCatalogItemForToolResponse(item domain.CatalogItem) domain.CatalogItem {
+	classificationState := deriveCatalogItemClassificationState(item)
+	item.HasAssignment = classificationState.HasAssignment
+	item.IsFullyClassified = classificationState.IsFullyClassified
+	item.MissingFields = append([]string{}, classificationState.MissingFields...)
+	return item
+}
+
+func deriveCatalogItemClassificationState(item domain.CatalogItem) domain.CatalogClassificationState {
+	return domain.DeriveCatalogClassificationState(
+		item.PrimaryDomain,
+		item.PrimarySubdomain,
+		item.SecondaryDomain,
+		item.SecondarySubdomain,
+		item.Tags,
+	)
 }
 
 func copyCatalogItemTaxonomyReference(
@@ -527,7 +754,7 @@ type ListTaxonomyTagsOutput struct {
 
 // GetCatalogItemTaxonomyInput is the input for get_catalog_item_taxonomy tool.
 type GetCatalogItemTaxonomyInput struct {
-	ItemID string `json:"item_id" jsonschema:"Catalog item identifier"`
+	ItemID string `json:"item_id" jsonschema:"Catalog item identifier. Accepts bare skill IDs only for skill items; prompt/rule inputs must be canonical."`
 }
 
 // GetCatalogItemTaxonomyOutput is the output for get_catalog_item_taxonomy tool.
@@ -760,11 +987,64 @@ type PatchCatalogItemTaxonomyInput struct {
 	SecondaryDomainID    *string   `json:"secondary_domain_id,omitempty" jsonschema:"Optional secondary domain identifier"`
 	SecondarySubdomainID *string   `json:"secondary_subdomain_id,omitempty" jsonschema:"Optional secondary subdomain identifier"`
 	TagIDs               *[]string `json:"tag_ids,omitempty" jsonschema:"Optional full replacement tag id list"`
+	AddTagIDs            *[]string `json:"add_tag_ids,omitempty" jsonschema:"Optional additive tag id list"`
+	RemoveTagIDs         *[]string `json:"remove_tag_ids,omitempty" jsonschema:"Optional tag ids to remove"`
+	ClearTags            *bool     `json:"clear_tags,omitempty" jsonschema:"Optional flag to clear all existing tags"`
 	UpdatedBy            *string   `json:"updated_by,omitempty" jsonschema:"Optional updater identity"`
 }
 
 // PatchCatalogItemTaxonomyOutput is the output for patch_catalog_item_taxonomy.
 type PatchCatalogItemTaxonomyOutput = domain.CatalogItemTaxonomyAssignment
+
+// PatchCatalogItemsTaxonomyInput is the input for patch_catalog_items_taxonomy.
+type PatchCatalogItemsTaxonomyInput struct {
+	Items  []PatchCatalogItemsTaxonomyItemInput `json:"items" jsonschema:"Batch taxonomy mutation items"`
+	DryRun bool                                 `json:"dry_run,omitempty" jsonschema:"When true, returns only planned statuses without writing changes."`
+}
+
+// PatchCatalogItemsTaxonomyItemInput is one batch taxonomy mutation item.
+type PatchCatalogItemsTaxonomyItemInput struct {
+	ItemID               string    `json:"item_id" jsonschema:"Catalog item identifier"`
+	PrimaryDomainID      *string   `json:"primary_domain_id,omitempty" jsonschema:"Optional primary domain identifier"`
+	PrimarySubdomainID   *string   `json:"primary_subdomain_id,omitempty" jsonschema:"Optional primary subdomain identifier"`
+	SecondaryDomainID    *string   `json:"secondary_domain_id,omitempty" jsonschema:"Optional secondary domain identifier"`
+	SecondarySubdomainID *string   `json:"secondary_subdomain_id,omitempty" jsonschema:"Optional secondary subdomain identifier"`
+	TagIDs               *[]string `json:"tag_ids,omitempty" jsonschema:"Optional full replacement tag id list"`
+	AddTagIDs            *[]string `json:"add_tag_ids,omitempty" jsonschema:"Optional additive tag id list"`
+	RemoveTagIDs         *[]string `json:"remove_tag_ids,omitempty" jsonschema:"Optional tag ids to remove"`
+	ClearTags            *bool     `json:"clear_tags,omitempty" jsonschema:"Optional flag to clear all existing tags"`
+	UpdatedBy            *string   `json:"updated_by,omitempty" jsonschema:"Optional updater identity"`
+}
+
+// PatchCatalogItemsTaxonomyOutput is the output for patch_catalog_items_taxonomy.
+type PatchCatalogItemsTaxonomyOutput = domain.CatalogItemTaxonomyBatchPatchResult
+
+// GetTaxonomyDomainUsageInput is the input for get_taxonomy_domain_usage.
+type GetTaxonomyDomainUsageInput struct {
+	DomainID     string `json:"domain_id" jsonschema:"Catalog taxonomy domain identifier"`
+	PreviewLimit *int   `json:"preview_limit,omitempty" jsonschema:"Optional impacted-item preview limit (0-200). Defaults to 10."`
+}
+
+// GetTaxonomyDomainUsageOutput is the output for get_taxonomy_domain_usage.
+type GetTaxonomyDomainUsageOutput = domain.CatalogTaxonomyUsageSummary
+
+// GetTaxonomySubdomainUsageInput is the input for get_taxonomy_subdomain_usage.
+type GetTaxonomySubdomainUsageInput struct {
+	SubdomainID  string `json:"subdomain_id" jsonschema:"Catalog taxonomy subdomain identifier"`
+	PreviewLimit *int   `json:"preview_limit,omitempty" jsonschema:"Optional impacted-item preview limit (0-200). Defaults to 10."`
+}
+
+// GetTaxonomySubdomainUsageOutput is the output for get_taxonomy_subdomain_usage.
+type GetTaxonomySubdomainUsageOutput = domain.CatalogTaxonomyUsageSummary
+
+// GetTaxonomyTagUsageInput is the input for get_taxonomy_tag_usage.
+type GetTaxonomyTagUsageInput struct {
+	TagID        string `json:"tag_id" jsonschema:"Catalog taxonomy tag identifier"`
+	PreviewLimit *int   `json:"preview_limit,omitempty" jsonschema:"Optional impacted-item preview limit (0-200). Defaults to 10."`
+}
+
+// GetTaxonomyTagUsageOutput is the output for get_taxonomy_tag_usage.
+type GetTaxonomyTagUsageOutput = domain.CatalogTaxonomyUsageSummary
 
 func createTaxonomyDomain(
 	ctx context.Context,
@@ -1084,6 +1364,9 @@ func patchCatalogItemTaxonomy(
 		SecondaryDomainID:    input.SecondaryDomainID,
 		SecondarySubdomainID: input.SecondarySubdomainID,
 		TagIDs:               input.TagIDs,
+		AddTagIDs:            input.AddTagIDs,
+		RemoveTagIDs:         input.RemoveTagIDs,
+		ClearTags:            input.ClearTags,
 		UpdatedBy:            input.UpdatedBy,
 	})
 	if err != nil {
@@ -1095,6 +1378,160 @@ func patchCatalogItemTaxonomy(
 	}
 
 	return nil, value, nil
+}
+
+func patchCatalogItemsTaxonomy(
+	ctx context.Context,
+	req *mcp.CallToolRequest,
+	input PatchCatalogItemsTaxonomyInput,
+	assignment CatalogTaxonomyAssignmentWriter,
+) (
+	*mcp.CallToolResult,
+	PatchCatalogItemsTaxonomyOutput,
+	error,
+) {
+	if assignment == nil {
+		return nil, PatchCatalogItemsTaxonomyOutput{}, fmt.Errorf("catalog taxonomy assignment API is unavailable")
+	}
+
+	request := domain.CatalogItemTaxonomyBatchPatchRequest{
+		DryRun: input.DryRun,
+		Items:  make([]domain.CatalogItemTaxonomyAssignmentPatchInput, 0, len(input.Items)),
+	}
+	for _, item := range input.Items {
+		request.Items = append(request.Items, domain.CatalogItemTaxonomyAssignmentPatchInput{
+			ItemID:               item.ItemID,
+			PrimaryDomainID:      item.PrimaryDomainID,
+			PrimarySubdomainID:   item.PrimarySubdomainID,
+			SecondaryDomainID:    item.SecondaryDomainID,
+			SecondarySubdomainID: item.SecondarySubdomainID,
+			TagIDs:               item.TagIDs,
+			AddTagIDs:            item.AddTagIDs,
+			RemoveTagIDs:         item.RemoveTagIDs,
+			ClearTags:            item.ClearTags,
+			UpdatedBy:            item.UpdatedBy,
+		})
+	}
+
+	value, err := assignment.PatchBatch(ctx, request)
+	if err != nil {
+		return nil, PatchCatalogItemsTaxonomyOutput{}, fmt.Errorf("patch catalog items taxonomy: %w", err)
+	}
+
+	return nil, value, nil
+}
+
+func getTaxonomyDomainUsage(
+	ctx context.Context,
+	req *mcp.CallToolRequest,
+	input GetTaxonomyDomainUsageInput,
+	usage CatalogTaxonomyUsageReader,
+) (
+	*mcp.CallToolResult,
+	GetTaxonomyDomainUsageOutput,
+	error,
+) {
+	if usage == nil {
+		return nil, GetTaxonomyDomainUsageOutput{}, fmt.Errorf("catalog taxonomy usage API is unavailable")
+	}
+
+	domainID := strings.TrimSpace(input.DomainID)
+	if domainID == "" {
+		return nil, GetTaxonomyDomainUsageOutput{}, fmt.Errorf("domain_id is required")
+	}
+
+	previewLimit, err := normalizeCatalogTaxonomyUsagePreviewLimit(input.PreviewLimit)
+	if err != nil {
+		return nil, GetTaxonomyDomainUsageOutput{}, err
+	}
+
+	value, err := usage.GetDomainUsage(ctx, domainID, previewLimit)
+	if err != nil {
+		return nil, GetTaxonomyDomainUsageOutput{}, fmt.Errorf("get taxonomy domain usage for %q: %w", domainID, err)
+	}
+
+	return nil, value, nil
+}
+
+func getTaxonomySubdomainUsage(
+	ctx context.Context,
+	req *mcp.CallToolRequest,
+	input GetTaxonomySubdomainUsageInput,
+	usage CatalogTaxonomyUsageReader,
+) (
+	*mcp.CallToolResult,
+	GetTaxonomySubdomainUsageOutput,
+	error,
+) {
+	if usage == nil {
+		return nil, GetTaxonomySubdomainUsageOutput{}, fmt.Errorf("catalog taxonomy usage API is unavailable")
+	}
+
+	subdomainID := strings.TrimSpace(input.SubdomainID)
+	if subdomainID == "" {
+		return nil, GetTaxonomySubdomainUsageOutput{}, fmt.Errorf("subdomain_id is required")
+	}
+
+	previewLimit, err := normalizeCatalogTaxonomyUsagePreviewLimit(input.PreviewLimit)
+	if err != nil {
+		return nil, GetTaxonomySubdomainUsageOutput{}, err
+	}
+
+	value, err := usage.GetSubdomainUsage(ctx, subdomainID, previewLimit)
+	if err != nil {
+		return nil, GetTaxonomySubdomainUsageOutput{}, fmt.Errorf(
+			"get taxonomy subdomain usage for %q: %w",
+			subdomainID,
+			err,
+		)
+	}
+
+	return nil, value, nil
+}
+
+func getTaxonomyTagUsage(
+	ctx context.Context,
+	req *mcp.CallToolRequest,
+	input GetTaxonomyTagUsageInput,
+	usage CatalogTaxonomyUsageReader,
+) (
+	*mcp.CallToolResult,
+	GetTaxonomyTagUsageOutput,
+	error,
+) {
+	if usage == nil {
+		return nil, GetTaxonomyTagUsageOutput{}, fmt.Errorf("catalog taxonomy usage API is unavailable")
+	}
+
+	tagID := strings.TrimSpace(input.TagID)
+	if tagID == "" {
+		return nil, GetTaxonomyTagUsageOutput{}, fmt.Errorf("tag_id is required")
+	}
+
+	previewLimit, err := normalizeCatalogTaxonomyUsagePreviewLimit(input.PreviewLimit)
+	if err != nil {
+		return nil, GetTaxonomyTagUsageOutput{}, err
+	}
+
+	value, err := usage.GetTagUsage(ctx, tagID, previewLimit)
+	if err != nil {
+		return nil, GetTaxonomyTagUsageOutput{}, fmt.Errorf("get taxonomy tag usage for %q: %w", tagID, err)
+	}
+
+	return nil, value, nil
+}
+
+func normalizeCatalogTaxonomyUsagePreviewLimit(limit *int) (int, error) {
+	if limit == nil {
+		return catalogTaxonomyUsageDefaultPreviewLimit, nil
+	}
+	if *limit < 0 || *limit > catalogTaxonomyUsageMaxPreviewLimit {
+		return 0, fmt.Errorf(
+			"preview_limit must be an integer between 0 and %d",
+			catalogTaxonomyUsageMaxPreviewLimit,
+		)
+	}
+	return *limit, nil
 }
 
 func hasTaxonomyDomainUpdateValues(input UpdateTaxonomyDomainInput) bool {
@@ -1119,7 +1556,7 @@ func hasTaxonomyTagUpdateValues(input UpdateTaxonomyTagInput) bool {
 
 // ListSkillResourcesInput is the input for list_skill_resources tool
 type ListSkillResourcesInput struct {
-	SkillID string `json:"skill_id" jsonschema:"The skill ID returned by list_skills or search_skills (format: 'skill-name' for local skills, or 'repoName/skill-name' for git repo skills)"`
+	SkillID string `json:"skill_id" jsonschema:"The skill ID returned by list_skills or search_skills. Accepts bare skill IDs and canonical skill item IDs."`
 }
 
 // ListSkillResourcesOutput is the output for list_skill_resources tool
@@ -1141,7 +1578,7 @@ type SkillResourceInfo struct {
 
 // ReadSkillResourceInput is the input for read_skill_resource tool
 type ReadSkillResourceInput struct {
-	SkillID      string `json:"skill_id"`      // The skill ID
+	SkillID      string `json:"skill_id"`      // Bare skill ID or canonical skill item ID
 	ResourcePath string `json:"resource_path"` // Relative path from skill root (e.g., "scripts/script.py")
 }
 
@@ -1178,7 +1615,12 @@ func listSkillResources(ctx context.Context, req *mcp.CallToolRequest, input Lis
 	ListSkillResourcesOutput,
 	error,
 ) {
-	resources, err := manager.ListSkillResources(input.SkillID)
+	skillID, err := normalizeSkillToolInput(input.SkillID, "skill_id")
+	if err != nil {
+		return nil, ListSkillResourcesOutput{}, err
+	}
+
+	resources, err := manager.ListSkillResources(skillID)
 	if err != nil {
 		return nil, ListSkillResourcesOutput{}, fmt.Errorf("failed to list skill resources: %w", err)
 	}
@@ -1206,8 +1648,13 @@ func readSkillResource(ctx context.Context, req *mcp.CallToolRequest, input Read
 	ReadSkillResourceOutput,
 	error,
 ) {
+	skillID, err := normalizeSkillToolInput(input.SkillID, "skill_id")
+	if err != nil {
+		return nil, ReadSkillResourceOutput{}, err
+	}
+
 	// Check file size limit (1MB for MCP)
-	info, err := manager.GetSkillResourceInfo(input.SkillID, input.ResourcePath)
+	info, err := manager.GetSkillResourceInfo(skillID, input.ResourcePath)
 	if err != nil {
 		return nil, ReadSkillResourceOutput{}, fmt.Errorf("failed to get resource info: %w", err)
 	}
@@ -1217,7 +1664,7 @@ func readSkillResource(ctx context.Context, req *mcp.CallToolRequest, input Read
 		return nil, ReadSkillResourceOutput{}, fmt.Errorf("file too large (%d bytes, max %d). Use web UI to download", info.Size, maxMCPFileSize)
 	}
 
-	content, err := manager.ReadSkillResource(input.SkillID, input.ResourcePath)
+	content, err := manager.ReadSkillResource(skillID, input.ResourcePath)
 	if err != nil {
 		return nil, ReadSkillResourceOutput{}, fmt.Errorf("failed to read resource: %w", err)
 	}
@@ -1236,7 +1683,12 @@ func getSkillResourceInfo(ctx context.Context, req *mcp.CallToolRequest, input G
 	GetSkillResourceInfoOutput,
 	error,
 ) {
-	info, err := manager.GetSkillResourceInfo(input.SkillID, input.ResourcePath)
+	skillID, err := normalizeSkillToolInput(input.SkillID, "skill_id")
+	if err != nil {
+		return nil, GetSkillResourceInfoOutput{}, err
+	}
+
+	info, err := manager.GetSkillResourceInfo(skillID, input.ResourcePath)
 	if err != nil {
 		// Resource doesn't exist
 		return nil, GetSkillResourceInfoOutput{
@@ -1263,4 +1715,33 @@ func resolveResourceOrigin(origin domain.ResourceOrigin) string {
 	}
 
 	return string(origin)
+}
+
+func normalizeSkillToolInput(raw string, fieldName string) (string, error) {
+	reference, err := domain.NormalizeCatalogItemReference(raw)
+	if err != nil {
+		return "", fmt.Errorf("%s is invalid: %w", fieldName, err)
+	}
+	if reference.Classifier != domain.CatalogClassifierSkill {
+		return "", fmt.Errorf("%s must reference a skill item", fieldName)
+	}
+	if strings.TrimSpace(reference.SkillID) == "" {
+		return "", fmt.Errorf("%s is invalid", fieldName)
+	}
+	return reference.SkillID, nil
+}
+
+func resolveSkillDisplayName(skill domain.Skill) string {
+	if trimmed := strings.TrimSpace(skill.Name); trimmed != "" {
+		return trimmed
+	}
+	if skill.Metadata != nil {
+		if trimmed := strings.TrimSpace(skill.Metadata.Name); trimmed != "" {
+			return trimmed
+		}
+	}
+	if trimmed := strings.TrimSpace(skill.ID); trimmed != "" {
+		return trimmed
+	}
+	return domain.CanonicalSkillCatalogKey(skill.ID)
 }

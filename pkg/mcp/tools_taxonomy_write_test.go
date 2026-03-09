@@ -102,11 +102,68 @@ func TestTaxonomyWriteTools_PatchCatalogItemTaxonomy_PassesInputsToService(t *te
 	if assignment.lastPatchInput.ItemID != "skill:sample-skill" {
 		t.Fatalf("expected item_id to be forwarded, got %q", assignment.lastPatchInput.ItemID)
 	}
+	if assignment.lastPatchInput.AddTagIDs != nil {
+		t.Fatalf("did not expect add_tag_ids to be set in this test")
+	}
 	if output.ItemID != "skill:sample-skill" {
 		t.Fatalf("expected output item_id %q, got %q", "skill:sample-skill", output.ItemID)
 	}
 	if len(output.Tags) != 1 || output.Tags[0].ID != "tag-backend" {
 		t.Fatalf("expected tag-backend output tag, got %+v", output.Tags)
+	}
+}
+
+func TestTaxonomyWriteTools_PatchCatalogItemsTaxonomy_PassesInputsToService(t *testing.T) {
+	assignment := &stubCatalogTaxonomyAssignmentWriter{
+		patchBatchResult: domain.CatalogItemTaxonomyBatchPatchResult{
+			DryRun: true,
+			Items: []domain.CatalogItemTaxonomyBatchPatchItemResult{
+				{
+					RequestedItemID: "sample-skill",
+					ItemID:          "skill:sample-skill",
+					Status:          domain.CatalogItemTaxonomyBatchPatchStatusPlanned,
+				},
+			},
+		},
+	}
+	addTagIDs := []string{"tag-backend"}
+
+	_, output, err := patchCatalogItemsTaxonomy(
+		context.Background(),
+		nil,
+		PatchCatalogItemsTaxonomyInput{
+			DryRun: true,
+			Items: []PatchCatalogItemsTaxonomyItemInput{
+				{
+					ItemID:    "sample-skill",
+					AddTagIDs: &addTagIDs,
+				},
+			},
+		},
+		assignment,
+	)
+	if err != nil {
+		t.Fatalf("expected batch patch to succeed, got %v", err)
+	}
+	if !assignment.patchBatchCalled {
+		t.Fatalf("expected assignment PatchBatch to be called")
+	}
+	if !assignment.lastPatchBatchRequest.DryRun {
+		t.Fatalf("expected dry_run=true to be forwarded")
+	}
+	if len(assignment.lastPatchBatchRequest.Items) != 1 {
+		t.Fatalf("expected one batch item, got %d", len(assignment.lastPatchBatchRequest.Items))
+	}
+	if assignment.lastPatchBatchRequest.Items[0].ItemID != "sample-skill" {
+		t.Fatalf("expected raw item_id to be forwarded, got %q", assignment.lastPatchBatchRequest.Items[0].ItemID)
+	}
+	if assignment.lastPatchBatchRequest.Items[0].AddTagIDs == nil ||
+		len(*assignment.lastPatchBatchRequest.Items[0].AddTagIDs) != 1 ||
+		(*assignment.lastPatchBatchRequest.Items[0].AddTagIDs)[0] != "tag-backend" {
+		t.Fatalf("expected add_tag_ids to be forwarded, got %+v", assignment.lastPatchBatchRequest.Items[0].AddTagIDs)
+	}
+	if !output.DryRun || len(output.Items) != 1 {
+		t.Fatalf("expected dry-run batch output, got %+v", output)
 	}
 }
 
@@ -178,10 +235,14 @@ func (s *stubCatalogTaxonomyRegistryWriter) DeleteTag(ctx context.Context, tagID
 }
 
 type stubCatalogTaxonomyAssignmentWriter struct {
-	patchResult    domain.CatalogItemTaxonomyAssignment
-	patchErr       error
-	patchCalled    bool
-	lastPatchInput domain.CatalogItemTaxonomyAssignmentPatchInput
+	patchResult           domain.CatalogItemTaxonomyAssignment
+	patchErr              error
+	patchCalled           bool
+	lastPatchInput        domain.CatalogItemTaxonomyAssignmentPatchInput
+	patchBatchResult      domain.CatalogItemTaxonomyBatchPatchResult
+	patchBatchErr         error
+	patchBatchCalled      bool
+	lastPatchBatchRequest domain.CatalogItemTaxonomyBatchPatchRequest
 }
 
 func (s *stubCatalogTaxonomyAssignmentWriter) Patch(
@@ -194,4 +255,16 @@ func (s *stubCatalogTaxonomyAssignmentWriter) Patch(
 		return domain.CatalogItemTaxonomyAssignment{}, s.patchErr
 	}
 	return s.patchResult, nil
+}
+
+func (s *stubCatalogTaxonomyAssignmentWriter) PatchBatch(
+	ctx context.Context,
+	request domain.CatalogItemTaxonomyBatchPatchRequest,
+) (domain.CatalogItemTaxonomyBatchPatchResult, error) {
+	s.patchBatchCalled = true
+	s.lastPatchBatchRequest = request
+	if s.patchBatchErr != nil {
+		return domain.CatalogItemTaxonomyBatchPatchResult{}, s.patchBatchErr
+	}
+	return s.patchBatchResult, nil
 }

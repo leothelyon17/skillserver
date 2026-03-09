@@ -96,8 +96,8 @@ func TestMCPHTTP_ListToolsAndCallListSkills(t *testing.T) {
 	if len(skills) == 0 {
 		t.Fatalf("expected at least one skill from test fixture")
 	}
-	if !skillsContainID(skills, "demo-skill") {
-		t.Fatalf("expected demo-skill to be returned from list_skills")
+	if !skillsContainID(skills, domain.BuildSkillCatalogItemID("demo-skill")) {
+		t.Fatalf("expected canonical demo-skill item ID to be returned from list_skills")
 	}
 }
 

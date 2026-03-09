@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,9 +19,11 @@ import (
 
 // ExportCatalogItemsInput is the input for export_catalog_items.
 type ExportCatalogItemsInput struct {
-	ItemIDs []string `json:"item_ids" jsonschema:"Catalog item identifiers to export (skill/prompt/rule item IDs)."`
-	Format  string   `json:"format,omitempty" jsonschema:"Optional export format ('tar.gz')."`
-	DryRun  bool     `json:"dry_run,omitempty" jsonschema:"When true, returns only export planning metadata without archive bytes."`
+	ItemIDs              []string `json:"item_ids" jsonschema:"Catalog item identifiers to export (skill/prompt/rule item IDs)."`
+	Format               string   `json:"format,omitempty" jsonschema:"Optional export format ('tar.gz')."`
+	DryRun               bool     `json:"dry_run,omitempty" jsonschema:"When true, returns only export planning metadata without archive bytes."`
+	ArchiveRootMode      string   `json:"archive_root_mode,omitempty" jsonschema:"Optional archive root mode ('flat' or 'materialized'). Defaults to 'flat'."`
+	IncludeArchiveBase64 *bool    `json:"include_archive_base64,omitempty" jsonschema:"When true, include archive bytes inline as base64. Defaults to false."`
 }
 
 // ExportCatalogItemsDownload describes archive output metadata.
@@ -40,6 +41,13 @@ type ExportCatalogItemsOutput struct {
 	Manifest domain.CatalogExportManifest `json:"manifest"`
 	Download *ExportCatalogItemsDownload  `json:"download,omitempty"`
 }
+
+type catalogExportArchiveRootMode string
+
+const (
+	catalogExportArchiveRootModeFlat         catalogExportArchiveRootMode = "flat"
+	catalogExportArchiveRootModeMaterialized catalogExportArchiveRootMode = "materialized"
+)
 
 // MaterializeCatalogItemsInput is the input for materialize_catalog_items.
 type MaterializeCatalogItemsInput struct {
@@ -75,6 +83,7 @@ func exportCatalogItems(
 			Format:  format,
 			DryRun:  input.DryRun,
 		},
+		input.ArchiveRootMode,
 	)
 	if err != nil {
 		return nil, ExportCatalogItemsOutput{}, err
@@ -86,18 +95,22 @@ func exportCatalogItems(
 		Manifest: result.Manifest,
 	}
 
+	includeArchiveBase64 := input.IncludeArchiveBase64 != nil && *input.IncludeArchiveBase64
 	if !result.DryRun {
 		contentType := strings.TrimSpace(result.ContentType)
 		if contentType == "" {
 			contentType = "application/octet-stream"
 		}
 
-		output.Download = &ExportCatalogItemsDownload{
+		download := &ExportCatalogItemsDownload{
 			FileName:      result.FileName,
 			ContentType:   contentType,
 			ContentLength: len(result.ArchiveData),
-			ArchiveBase64: base64.StdEncoding.EncodeToString(result.ArchiveData),
 		}
+		if includeArchiveBase64 {
+			download.ArchiveBase64 = base64.StdEncoding.EncodeToString(result.ArchiveData)
+		}
+		output.Download = download
 	}
 
 	return nil, output, nil
@@ -144,6 +157,7 @@ func executeCatalogExportViaMaterialization(
 	ctx context.Context,
 	manager domain.SkillManager,
 	request domain.CatalogExportRequest,
+	rawArchiveRootMode string,
 ) (domain.CatalogExportResult, error) {
 	format := request.Format
 	if format == "" {
@@ -155,6 +169,11 @@ func executeCatalogExportViaMaterialization(
 			domain.ErrCatalogExportInvalidRequest,
 			format,
 		)
+	}
+
+	archiveRootMode, err := normalizeCatalogExportArchiveRootMode(rawArchiveRootMode)
+	if err != nil {
+		return domain.CatalogExportResult{}, err
 	}
 
 	stagingRoot, err := os.MkdirTemp("", "skillserver-mcp-export-*")
@@ -180,7 +199,10 @@ func executeCatalogExportViaMaterialization(
 		return domain.CatalogExportResult{}, mapCatalogMaterializationErrorToExportError(err)
 	}
 
-	manifest := buildCatalogExportManifestFromMaterializationResult(materializedResult)
+	manifest, err := buildCatalogExportManifestFromMaterializationResult(materializedResult, archiveRootMode)
+	if err != nil {
+		return domain.CatalogExportResult{}, fmt.Errorf("build catalog export manifest: %w", err)
+	}
 	result := domain.CatalogExportResult{
 		Format:   format,
 		DryRun:   request.DryRun,
@@ -190,7 +212,10 @@ func executeCatalogExportViaMaterialization(
 		return result, nil
 	}
 
-	archiveData, err := buildCatalogExportArchiveFromDirectory(stagingRoot)
+	archiveData, err := buildCatalogExportArchiveFromMaterializationResult(
+		materializedResult,
+		archiveRootMode,
+	)
 	if err != nil {
 		return domain.CatalogExportResult{}, fmt.Errorf("build catalog export archive: %w", err)
 	}
@@ -217,12 +242,17 @@ func mapCatalogMaterializationErrorToExportError(materializeErr error) error {
 
 func buildCatalogExportManifestFromMaterializationResult(
 	result domain.CatalogMaterializationResult,
-) domain.CatalogExportManifest {
+	mode catalogExportArchiveRootMode,
+) (domain.CatalogExportManifest, error) {
 	manifestItems := make([]domain.CatalogExportManifestItem, 0, len(result.Items))
 	for _, item := range result.Items {
 		archiveRoot := strings.TrimSpace(item.TargetPath)
 		if archiveRoot == "" && len(item.Files) > 0 {
 			archiveRoot = strings.TrimSpace(item.Files[0].TargetPath)
+		}
+		archiveRoot, err := transformCatalogExportArchivePath(archiveRoot, mode)
+		if err != nil {
+			return domain.CatalogExportManifest{}, err
 		}
 		if archiveRoot == "" {
 			archiveRoot = "."
@@ -241,7 +271,7 @@ func buildCatalogExportManifestFromMaterializationResult(
 			ArchiveFileName: buildCatalogExportManifestItemFileName(item),
 		})
 	}
-	return domain.CatalogExportManifest{Items: manifestItems}
+	return domain.CatalogExportManifest{Items: manifestItems}, nil
 }
 
 func buildCatalogExportManifestItemFileName(item domain.CatalogMaterializationItemResult) string {
@@ -291,51 +321,67 @@ func buildCatalogExportArchiveFileName(manifest domain.CatalogExportManifest) st
 	return "catalog-export.tar.gz"
 }
 
-func buildCatalogExportArchiveFromDirectory(rootDir string) ([]byte, error) {
+func buildCatalogExportArchiveFromMaterializationResult(
+	result domain.CatalogMaterializationResult,
+	mode catalogExportArchiveRootMode,
+) ([]byte, error) {
 	var buffer bytes.Buffer
 	gzipWriter := gzip.NewWriter(&buffer)
 	tarWriter := tar.NewWriter(gzipWriter)
 
-	if err := filepath.Walk(rootDir, func(currentPath string, info fs.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if info.IsDir() {
-			return nil
-		}
+	writtenPaths := make(map[string]struct{})
+	for _, item := range result.Items {
+		for _, file := range item.Files {
+			archivePath, err := transformCatalogExportArchivePath(file.TargetPath, mode)
+			if err != nil {
+				_ = tarWriter.Close()
+				_ = gzipWriter.Close()
+				return nil, err
+			}
+			if archivePath == "" || archivePath == "." {
+				_ = tarWriter.Close()
+				_ = gzipWriter.Close()
+				return nil, fmt.Errorf("invalid archive path %q", archivePath)
+			}
+			if _, exists := writtenPaths[archivePath]; exists {
+				_ = tarWriter.Close()
+				_ = gzipWriter.Close()
+				return nil, fmt.Errorf("duplicate archive path %q", archivePath)
+			}
+			writtenPaths[archivePath] = struct{}{}
 
-		relativePath, err := filepath.Rel(rootDir, currentPath)
-		if err != nil {
-			return err
-		}
-		relativePath = filepath.ToSlash(relativePath)
-		relativePath = strings.TrimPrefix(relativePath, "./")
-		if relativePath == "" || relativePath == "." || strings.HasPrefix(relativePath, "../") {
-			return fmt.Errorf("invalid archive path %q", relativePath)
-		}
+			info, err := os.Stat(file.ResolvedPath)
+			if err != nil {
+				_ = tarWriter.Close()
+				_ = gzipWriter.Close()
+				return nil, err
+			}
 
-		header, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return err
-		}
-		header.Name = relativePath
-		if err := tarWriter.WriteHeader(header); err != nil {
-			return err
-		}
+			header, err := tar.FileInfoHeader(info, "")
+			if err != nil {
+				_ = tarWriter.Close()
+				_ = gzipWriter.Close()
+				return nil, err
+			}
+			header.Name = archivePath
+			if err := tarWriter.WriteHeader(header); err != nil {
+				_ = tarWriter.Close()
+				_ = gzipWriter.Close()
+				return nil, err
+			}
 
-		content, err := os.ReadFile(currentPath)
-		if err != nil {
-			return err
+			content, err := os.ReadFile(file.ResolvedPath)
+			if err != nil {
+				_ = tarWriter.Close()
+				_ = gzipWriter.Close()
+				return nil, err
+			}
+			if _, err := tarWriter.Write(content); err != nil {
+				_ = tarWriter.Close()
+				_ = gzipWriter.Close()
+				return nil, err
+			}
 		}
-		if _, err := tarWriter.Write(content); err != nil {
-			return err
-		}
-
-		return nil
-	}); err != nil {
-		_ = tarWriter.Close()
-		_ = gzipWriter.Close()
-		return nil, err
 	}
 
 	if err := tarWriter.Close(); err != nil {
@@ -347,4 +393,50 @@ func buildCatalogExportArchiveFromDirectory(rootDir string) ([]byte, error) {
 	}
 
 	return buffer.Bytes(), nil
+}
+
+func normalizeCatalogExportArchiveRootMode(raw string) (catalogExportArchiveRootMode, error) {
+	normalized := catalogExportArchiveRootMode(strings.ToLower(strings.TrimSpace(raw)))
+	if normalized == "" {
+		return catalogExportArchiveRootModeFlat, nil
+	}
+	switch normalized {
+	case catalogExportArchiveRootModeFlat, catalogExportArchiveRootModeMaterialized:
+		return normalized, nil
+	default:
+		return "", fmt.Errorf(
+			"%w: archive_root_mode must be one of: flat, materialized",
+			domain.ErrCatalogExportInvalidRequest,
+		)
+	}
+}
+
+func transformCatalogExportArchivePath(
+	targetPath string,
+	mode catalogExportArchiveRootMode,
+) (string, error) {
+	normalized := filepath.ToSlash(filepath.Clean(strings.TrimSpace(targetPath)))
+	normalized = strings.TrimPrefix(normalized, "./")
+	if normalized == "" || normalized == "." || strings.HasPrefix(normalized, "../") {
+		return "", fmt.Errorf("invalid archive path %q", targetPath)
+	}
+	if mode != catalogExportArchiveRootModeFlat {
+		return normalized, nil
+	}
+
+	parts := strings.Split(normalized, "/")
+	if len(parts) == 0 {
+		return normalized, nil
+	}
+	switch parts[0] {
+	case "skills", "prompts", "rules":
+		if len(parts) == 1 {
+			return "", fmt.Errorf("invalid archive path %q", targetPath)
+		}
+		normalized = strings.Join(parts[1:], "/")
+	}
+	if normalized == "" || normalized == "." || strings.HasPrefix(normalized, "../") {
+		return "", fmt.Errorf("invalid archive path %q", targetPath)
+	}
+	return normalized, nil
 }

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -76,6 +77,16 @@ type CatalogItemResponse struct {
 	ContentWritable    bool                              `json:"content_writable"`
 	MetadataWritable   bool                              `json:"metadata_writable"`
 	ReadOnly           bool                              `json:"read_only"`
+	HasAssignment      bool                              `json:"has_assignment"`
+	IsFullyClassified  bool                              `json:"is_fully_classified"`
+	MissingFields      []string                          `json:"missing_fields"`
+}
+
+// CatalogCollectionResponse represents paginated catalog list/search payloads.
+type CatalogCollectionResponse struct {
+	Items      []CatalogItemResponse `json:"items"`
+	NextCursor *string               `json:"next_cursor,omitempty"`
+	HasMore    bool                  `json:"has_more"`
 }
 
 // PatchCatalogMetadataRequest represents one metadata overlay mutation request.
@@ -149,6 +160,29 @@ type PatchCatalogItemTaxonomyRequest struct {
 	SecondaryDomainID    *string   `json:"secondary_domain_id,omitempty"`
 	SecondarySubdomainID *string   `json:"secondary_subdomain_id,omitempty"`
 	TagIDs               *[]string `json:"tag_ids,omitempty"`
+	AddTagIDs            *[]string `json:"add_tag_ids,omitempty"`
+	RemoveTagIDs         *[]string `json:"remove_tag_ids,omitempty"`
+	ClearTags            *bool     `json:"clear_tags,omitempty"`
+	UpdatedBy            *string   `json:"updated_by,omitempty"`
+}
+
+// PatchCatalogItemsTaxonomyRequest describes batch taxonomy assignment mutations.
+type PatchCatalogItemsTaxonomyRequest struct {
+	Items  []PatchCatalogItemsTaxonomyItemRequest `json:"items"`
+	DryRun bool                                   `json:"dry_run,omitempty"`
+}
+
+// PatchCatalogItemsTaxonomyItemRequest describes one batch taxonomy assignment mutation.
+type PatchCatalogItemsTaxonomyItemRequest struct {
+	ItemID               string    `json:"item_id"`
+	PrimaryDomainID      *string   `json:"primary_domain_id,omitempty"`
+	PrimarySubdomainID   *string   `json:"primary_subdomain_id,omitempty"`
+	SecondaryDomainID    *string   `json:"secondary_domain_id,omitempty"`
+	SecondarySubdomainID *string   `json:"secondary_subdomain_id,omitempty"`
+	TagIDs               *[]string `json:"tag_ids,omitempty"`
+	AddTagIDs            *[]string `json:"add_tag_ids,omitempty"`
+	RemoveTagIDs         *[]string `json:"remove_tag_ids,omitempty"`
+	ClearTags            *bool     `json:"clear_tags,omitempty"`
 	UpdatedBy            *string   `json:"updated_by,omitempty"`
 }
 
@@ -223,33 +257,73 @@ type CatalogMetadataEffectiveResponse struct {
 	ContentWritable    bool                              `json:"content_writable"`
 	MetadataWritable   bool                              `json:"metadata_writable"`
 	ReadOnly           bool                              `json:"read_only"`
+	HasAssignment      bool                              `json:"has_assignment"`
+	IsFullyClassified  bool                              `json:"is_fully_classified"`
+	MissingFields      []string                          `json:"missing_fields"`
+}
+
+type catalogListRequest struct {
+	TaxonomyFilter       domain.CatalogEffectiveListFilter
+	IncludeContent       bool
+	UseEnvelope          bool
+	Limit                int
+	Cursor               string
+	Unclassified         bool
+	MissingPrimaryDomain bool
+	MissingTags          bool
+}
+
+type catalogTaxonomyConflictResponse struct {
+	Error    string                               `json:"error"`
+	Conflict *catalogTaxonomyConflictDetailResult `json:"conflict,omitempty"`
+}
+
+type catalogTaxonomyConflictDetailResult struct {
+	ObjectType        domain.CatalogTaxonomyObjectType     `json:"object_type"`
+	ObjectID          string                               `json:"object_id"`
+	Reason            domain.CatalogTaxonomyConflictReason `json:"reason"`
+	ReferencedItemIDs []string                             `json:"referenced_item_ids,omitempty"`
 }
 
 const (
-	catalogExportRequestMaxBodyBytes       = 32 * 1024
-	catalogMaterializeRequestMaxBodyBytes  = 32 * 1024
-	catalogTaxonomyRequestMaxBodyBytes     = 32 * 1024
-	catalogMetadataPatchMaxBodyBytes       = 32 * 1024
-	catalogMetadataDisplayNameMaxChars     = 256
-	catalogMetadataDescriptionMaxChars     = 4096
-	catalogMetadataMaxLabels               = 64
-	catalogMetadataLabelMaxChars           = 64
-	catalogMetadataCustomMetadataMaxKeys   = 128
-	catalogMetadataCustomMetadataMaxDepth  = 6
-	catalogMetadataCustomMetadataMaxArray  = 256
-	catalogMetadataCustomMetadataMaxString = 4096
-	catalogMetadataCustomMetadataMaxKeyLen = 128
+	catalogExportRequestMaxBodyBytes        = 32 * 1024
+	catalogMaterializeRequestMaxBodyBytes   = 32 * 1024
+	catalogTaxonomyRequestMaxBodyBytes      = 32 * 1024
+	catalogMetadataPatchMaxBodyBytes        = 32 * 1024
+	catalogMetadataDisplayNameMaxChars      = 256
+	catalogMetadataDescriptionMaxChars      = 4096
+	catalogMetadataMaxLabels                = 64
+	catalogMetadataLabelMaxChars            = 64
+	catalogMetadataCustomMetadataMaxKeys    = 128
+	catalogMetadataCustomMetadataMaxDepth   = 6
+	catalogMetadataCustomMetadataMaxArray   = 256
+	catalogMetadataCustomMetadataMaxString  = 4096
+	catalogMetadataCustomMetadataMaxKeyLen  = 128
+	catalogListDefaultLimit                 = 50
+	catalogListMaxLimit                     = 200
+	catalogTaxonomyUsageDefaultPreviewLimit = 10
+	catalogTaxonomyUsageMaxPreviewLimit     = 200
 )
 
 var errCatalogTaxonomyFiltersUnavailable = errors.New("catalog taxonomy filters are unavailable")
 
 func catalogResponseFromItem(item domain.CatalogItem) CatalogItemResponse {
+	return catalogResponseFromItemWithContent(item, true)
+}
+
+func catalogResponseFromItemWithContent(item domain.CatalogItem, includeContent bool) CatalogItemResponse {
+	classificationState := deriveCatalogItemClassificationState(item)
+	content := ""
+	if includeContent {
+		content = item.Content
+	}
+
 	return CatalogItemResponse{
 		ID:                 item.ID,
 		Classifier:         item.Classifier,
 		Name:               item.Name,
 		Description:        item.Description,
-		Content:            item.Content,
+		Content:            content,
 		ParentSkillID:      item.ParentSkillID,
 		ResourcePath:       item.ResourcePath,
 		PrimaryDomain:      cloneCatalogTaxonomyReference(item.PrimaryDomain),
@@ -262,6 +336,9 @@ func catalogResponseFromItem(item domain.CatalogItem) CatalogItemResponse {
 		ContentWritable:    item.ContentWritable,
 		MetadataWritable:   item.MetadataWritable,
 		ReadOnly:           item.ReadOnly,
+		HasAssignment:      classificationState.HasAssignment,
+		IsFullyClassified:  classificationState.IsFullyClassified,
+		MissingFields:      append([]string{}, classificationState.MissingFields...),
 	}
 }
 
@@ -637,14 +714,19 @@ func (s *Server) searchSkills(c *echo.Context) error {
 
 // listCatalog lists all catalog items (skills and prompts).
 func (s *Server) listCatalog(c *echo.Context) error {
-	taxonomyFilter, err := decodeCatalogListTaxonomyFilter(c)
+	request, err := decodeCatalogListRequest(c)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": err.Error(),
 		})
 	}
+	if request.requiresMetadataRuntime() && s.catalogMetadataService == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": errCatalogTaxonomyFiltersUnavailable.Error(),
+		})
+	}
 
-	items, err := s.loadCatalogItems(c.Request().Context(), "", nil, taxonomyFilter)
+	items, err := s.loadCatalogItems(c.Request().Context(), "", nil, request.TaxonomyFilter)
 	if err != nil {
 		if errors.Is(err, errCatalogTaxonomyFiltersUnavailable) {
 			return c.JSON(http.StatusServiceUnavailable, map[string]string{
@@ -656,12 +738,7 @@ func (s *Server) listCatalog(c *echo.Context) error {
 		})
 	}
 
-	responses := make([]CatalogItemResponse, len(items))
-	for i, item := range items {
-		responses[i] = catalogResponseFromItem(item)
-	}
-
-	return c.JSON(http.StatusOK, responses)
+	return c.JSON(http.StatusOK, buildCatalogCollectionResponse(items, request))
 }
 
 // searchCatalog searches catalog items by query with an optional classifier filter.
@@ -685,14 +762,19 @@ func (s *Server) searchCatalog(c *echo.Context) error {
 		classifier = &parsedClassifier
 	}
 
-	taxonomyFilter, err := decodeCatalogListTaxonomyFilter(c)
+	request, err := decodeCatalogListRequest(c)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": err.Error(),
 		})
 	}
+	if request.requiresMetadataRuntime() && s.catalogMetadataService == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": errCatalogTaxonomyFiltersUnavailable.Error(),
+		})
+	}
 
-	items, err := s.loadCatalogItems(c.Request().Context(), query, classifier, taxonomyFilter)
+	items, err := s.loadCatalogItems(c.Request().Context(), query, classifier, request.TaxonomyFilter)
 	if err != nil {
 		if errors.Is(err, errCatalogTaxonomyFiltersUnavailable) {
 			return c.JSON(http.StatusServiceUnavailable, map[string]string{
@@ -704,12 +786,7 @@ func (s *Server) searchCatalog(c *echo.Context) error {
 		})
 	}
 
-	responses := make([]CatalogItemResponse, len(items))
-	for i, item := range items {
-		responses[i] = catalogResponseFromItem(item)
-	}
-
-	return c.JSON(http.StatusOK, responses)
+	return c.JSON(http.StatusOK, buildCatalogCollectionResponse(items, request))
 }
 
 func (s *Server) loadCatalogItems(
@@ -773,6 +850,113 @@ func cloneCatalogTaxonomyReferences(
 	copied := make([]domain.CatalogTaxonomyReference, len(references))
 	copy(copied, references)
 	return copied
+}
+
+func deriveCatalogItemClassificationState(item domain.CatalogItem) domain.CatalogClassificationState {
+	return domain.DeriveCatalogClassificationState(
+		item.PrimaryDomain,
+		item.PrimarySubdomain,
+		item.SecondaryDomain,
+		item.SecondarySubdomain,
+		item.Tags,
+	)
+}
+
+func normalizeCatalogItemForResponse(item domain.CatalogItem) domain.CatalogItem {
+	classificationState := deriveCatalogItemClassificationState(item)
+	item.HasAssignment = classificationState.HasAssignment
+	item.IsFullyClassified = classificationState.IsFullyClassified
+	item.MissingFields = append([]string{}, classificationState.MissingFields...)
+	return item
+}
+
+func buildCatalogCollectionResponse(items []domain.CatalogItem, request catalogListRequest) any {
+	normalizedItems := make([]domain.CatalogItem, 0, len(items))
+	for _, item := range items {
+		normalizedItem := normalizeCatalogItemForResponse(item)
+		if !request.matchesClassificationState(normalizedItem) {
+			continue
+		}
+		normalizedItems = append(normalizedItems, normalizedItem)
+	}
+
+	sort.Slice(normalizedItems, func(i int, j int) bool {
+		return normalizedItems[i].ID < normalizedItems[j].ID
+	})
+
+	pageItems := normalizedItems
+	var (
+		nextCursor *string
+		hasMore    bool
+	)
+	if request.UseEnvelope {
+		pageItems, nextCursor, hasMore = paginateCatalogItems(normalizedItems, request.Cursor, request.Limit)
+	}
+
+	responses := make([]CatalogItemResponse, len(pageItems))
+	for i, item := range pageItems {
+		responses[i] = catalogResponseFromItemWithContent(item, request.IncludeContent)
+	}
+
+	if !request.UseEnvelope {
+		return responses
+	}
+
+	return CatalogCollectionResponse{
+		Items:      responses,
+		NextCursor: nextCursor,
+		HasMore:    hasMore,
+	}
+}
+
+func paginateCatalogItems(
+	items []domain.CatalogItem,
+	cursor string,
+	limit int,
+) ([]domain.CatalogItem, *string, bool) {
+	if len(items) == 0 {
+		return []domain.CatalogItem{}, nil, false
+	}
+
+	start := 0
+	normalizedCursor := strings.TrimSpace(cursor)
+	if normalizedCursor != "" {
+		for start < len(items) && strings.Compare(items[start].ID, normalizedCursor) <= 0 {
+			start++
+		}
+	}
+	if start >= len(items) {
+		return []domain.CatalogItem{}, nil, false
+	}
+
+	pageItems := items[start:]
+	if limit <= 0 || len(pageItems) <= limit {
+		return append([]domain.CatalogItem{}, pageItems...), nil, false
+	}
+
+	pageItems = append([]domain.CatalogItem{}, pageItems[:limit]...)
+	nextCursor := pageItems[len(pageItems)-1].ID
+	return pageItems, &nextCursor, true
+}
+
+func (r catalogListRequest) matchesClassificationState(item domain.CatalogItem) bool {
+	if r.Unclassified && item.HasAssignment {
+		return false
+	}
+	if r.MissingPrimaryDomain && item.PrimaryDomain != nil {
+		return false
+	}
+	if r.MissingTags && len(item.Tags) > 0 {
+		return false
+	}
+	return true
+}
+
+func (r catalogListRequest) requiresMetadataRuntime() bool {
+	return hasCatalogTaxonomyListFilterConstraints(r.TaxonomyFilter) ||
+		r.Unclassified ||
+		r.MissingPrimaryDomain ||
+		r.MissingTags
 }
 
 func filterCatalogItemsByQuery(items []domain.CatalogItem, query string) []domain.CatalogItem {
@@ -961,6 +1145,9 @@ func (s *Server) patchCatalogItemTaxonomy(c *echo.Context) error {
 		SecondaryDomainID:    request.SecondaryDomainID,
 		SecondarySubdomainID: request.SecondarySubdomainID,
 		TagIDs:               request.TagIDs,
+		AddTagIDs:            request.AddTagIDs,
+		RemoveTagIDs:         request.RemoveTagIDs,
+		ClearTags:            request.ClearTags,
 		UpdatedBy:            request.UpdatedBy,
 	}
 
@@ -970,6 +1157,48 @@ func (s *Server) patchCatalogItemTaxonomy(c *echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, assignment)
+}
+
+// patchCatalogItemsTaxonomy patches multiple catalog item taxonomy assignments.
+func (s *Server) patchCatalogItemsTaxonomy(c *echo.Context) error {
+	if s.taxonomyAssignment == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy assignment API is unavailable",
+		})
+	}
+
+	request, err := decodeCatalogTaxonomyRequest[PatchCatalogItemsTaxonomyRequest](c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	input := domain.CatalogItemTaxonomyBatchPatchRequest{
+		DryRun: request.DryRun,
+		Items:  make([]domain.CatalogItemTaxonomyAssignmentPatchInput, 0, len(request.Items)),
+	}
+	for _, item := range request.Items {
+		input.Items = append(input.Items, domain.CatalogItemTaxonomyAssignmentPatchInput{
+			ItemID:               item.ItemID,
+			PrimaryDomainID:      item.PrimaryDomainID,
+			PrimarySubdomainID:   item.PrimarySubdomainID,
+			SecondaryDomainID:    item.SecondaryDomainID,
+			SecondarySubdomainID: item.SecondarySubdomainID,
+			TagIDs:               item.TagIDs,
+			AddTagIDs:            item.AddTagIDs,
+			RemoveTagIDs:         item.RemoveTagIDs,
+			ClearTags:            item.ClearTags,
+			UpdatedBy:            item.UpdatedBy,
+		})
+	}
+
+	result, err := s.taxonomyAssignment.PatchBatch(c.Request().Context(), input)
+	if err != nil {
+		return encodeCatalogTaxonomyAssignmentServiceError(c, err)
+	}
+
+	return c.JSON(http.StatusOK, result)
 }
 
 // listCatalogTaxonomyDomains returns taxonomy domain objects.
@@ -1337,6 +1566,93 @@ func (s *Server) deleteCatalogTaxonomyTag(c *echo.Context) error {
 	}
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+// getCatalogTaxonomyDomainUsage returns delete-preflight usage for one taxonomy domain.
+func (s *Server) getCatalogTaxonomyDomainUsage(c *echo.Context) error {
+	if s.taxonomyUsage == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy usage API is unavailable",
+		})
+	}
+
+	domainID, err := decodeCatalogTaxonomyObjectIDFromPath(c.Param("id"), "domain_id")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	previewLimit, err := decodeCatalogTaxonomyUsagePreviewLimit(c.QueryParam("preview_limit"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	summary, err := s.taxonomyUsage.GetDomainUsage(c.Request().Context(), domainID, previewLimit)
+	if err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, domain.ErrCatalogTaxonomyDomainNotFound)
+	}
+
+	return c.JSON(http.StatusOK, summary)
+}
+
+// getCatalogTaxonomySubdomainUsage returns delete-preflight usage for one taxonomy subdomain.
+func (s *Server) getCatalogTaxonomySubdomainUsage(c *echo.Context) error {
+	if s.taxonomyUsage == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy usage API is unavailable",
+		})
+	}
+
+	subdomainID, err := decodeCatalogTaxonomyObjectIDFromPath(c.Param("id"), "subdomain_id")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	previewLimit, err := decodeCatalogTaxonomyUsagePreviewLimit(c.QueryParam("preview_limit"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	summary, err := s.taxonomyUsage.GetSubdomainUsage(c.Request().Context(), subdomainID, previewLimit)
+	if err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, domain.ErrCatalogTaxonomySubdomainNotFound)
+	}
+
+	return c.JSON(http.StatusOK, summary)
+}
+
+// getCatalogTaxonomyTagUsage returns delete-preflight usage for one taxonomy tag.
+func (s *Server) getCatalogTaxonomyTagUsage(c *echo.Context) error {
+	if s.taxonomyUsage == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog taxonomy usage API is unavailable",
+		})
+	}
+
+	tagID, err := decodeCatalogTaxonomyObjectIDFromPath(c.Param("id"), "tag_id")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	previewLimit, err := decodeCatalogTaxonomyUsagePreviewLimit(c.QueryParam("preview_limit"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	summary, err := s.taxonomyUsage.GetTagUsage(c.Request().Context(), tagID, previewLimit)
+	if err != nil {
+		return encodeCatalogTaxonomyServiceError(c, err, domain.ErrCatalogTaxonomyTagNotFound)
+	}
+
+	return c.JSON(http.StatusOK, summary)
 }
 
 func decodeCatalogItemIDFromPath(raw string) (string, error) {
@@ -1931,6 +2247,73 @@ func decodeCatalogTaxonomyTagListFilter(c *echo.Context) (domain.CatalogTaxonomy
 	}, nil
 }
 
+func decodeCatalogListRequest(c *echo.Context) (catalogListRequest, error) {
+	taxonomyFilter, err := decodeCatalogListTaxonomyFilter(c)
+	if err != nil {
+		return catalogListRequest{}, err
+	}
+
+	includeContent, err := decodeCatalogTaxonomyBoolQueryParam(c.QueryParam("include_content"), "include_content")
+	if err != nil {
+		return catalogListRequest{}, err
+	}
+	unclassified, err := decodeCatalogTaxonomyBoolQueryParam(c.QueryParam("unclassified"), "unclassified")
+	if err != nil {
+		return catalogListRequest{}, err
+	}
+	missingPrimaryDomain, err := decodeCatalogTaxonomyBoolQueryParam(
+		c.QueryParam("missing_primary_domain"),
+		"missing_primary_domain",
+	)
+	if err != nil {
+		return catalogListRequest{}, err
+	}
+	missingTags, err := decodeCatalogTaxonomyBoolQueryParam(c.QueryParam("missing_tags"), "missing_tags")
+	if err != nil {
+		return catalogListRequest{}, err
+	}
+
+	request := catalogListRequest{
+		TaxonomyFilter: taxonomyFilter,
+	}
+	if includeContent != nil {
+		request.IncludeContent = *includeContent
+	}
+	if unclassified != nil {
+		request.Unclassified = *unclassified
+	}
+	if missingPrimaryDomain != nil {
+		request.MissingPrimaryDomain = *missingPrimaryDomain
+	}
+	if missingTags != nil {
+		request.MissingTags = *missingTags
+	}
+
+	limitRaw := strings.TrimSpace(c.QueryParam("limit"))
+	cursor := strings.TrimSpace(c.QueryParam("cursor"))
+	if limitRaw == "" && cursor == "" {
+		return request, nil
+	}
+
+	request.UseEnvelope = true
+	request.Cursor = cursor
+	request.Limit = catalogListDefaultLimit
+	if limitRaw == "" {
+		return request, nil
+	}
+
+	limit, err := strconv.Atoi(limitRaw)
+	if err != nil || limit <= 0 || limit > catalogListMaxLimit {
+		return catalogListRequest{}, fmt.Errorf(
+			"query parameter %q must be an integer between 1 and %d",
+			"limit",
+			catalogListMaxLimit,
+		)
+	}
+	request.Limit = limit
+	return request, nil
+}
+
 func decodeCatalogListTaxonomyFilter(c *echo.Context) (domain.CatalogEffectiveListFilter, error) {
 	filter := domain.CatalogEffectiveListFilter{
 		PrimaryDomainID:   strings.TrimSpace(c.QueryParam("primary_domain_id")),
@@ -1961,6 +2344,24 @@ func hasCatalogTaxonomyListFilterConstraints(filter domain.CatalogEffectiveListF
 		strings.TrimSpace(filter.SubdomainID) != "" ||
 		len(filter.TagIDs) > 0 ||
 		strings.TrimSpace(string(filter.TagMatch)) != ""
+}
+
+func decodeCatalogTaxonomyUsagePreviewLimit(raw string) (int, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return catalogTaxonomyUsageDefaultPreviewLimit, nil
+	}
+
+	limit, err := strconv.Atoi(trimmed)
+	if err != nil || limit < 0 || limit > catalogTaxonomyUsageMaxPreviewLimit {
+		return 0, fmt.Errorf(
+			"query parameter %q must be an integer between 0 and %d",
+			"preview_limit",
+			catalogTaxonomyUsageMaxPreviewLimit,
+		)
+	}
+
+	return limit, nil
 }
 
 func decodeCatalogTaxonomyBoolQueryParam(
@@ -2040,9 +2441,7 @@ func encodeCatalogTaxonomyServiceError(
 			"error": serviceErr.Error(),
 		})
 	case errors.Is(serviceErr, domain.ErrCatalogTaxonomyConflict):
-		return c.JSON(http.StatusConflict, map[string]string{
-			"error": serviceErr.Error(),
-		})
+		return c.JSON(http.StatusConflict, buildCatalogTaxonomyConflictResponse(serviceErr))
 	default:
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": serviceErr.Error(),
@@ -2065,14 +2464,31 @@ func encodeCatalogTaxonomyAssignmentServiceError(c *echo.Context, serviceErr err
 			"error": serviceErr.Error(),
 		})
 	case errors.Is(serviceErr, domain.ErrCatalogTaxonomyConflict):
-		return c.JSON(http.StatusConflict, map[string]string{
-			"error": serviceErr.Error(),
-		})
+		return c.JSON(http.StatusConflict, buildCatalogTaxonomyConflictResponse(serviceErr))
 	default:
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": serviceErr.Error(),
 		})
 	}
+}
+
+func buildCatalogTaxonomyConflictResponse(serviceErr error) catalogTaxonomyConflictResponse {
+	response := catalogTaxonomyConflictResponse{
+		Error: serviceErr.Error(),
+	}
+
+	var conflictErr *domain.CatalogTaxonomyConflictError
+	if !errors.As(serviceErr, &conflictErr) {
+		return response
+	}
+
+	response.Conflict = &catalogTaxonomyConflictDetailResult{
+		ObjectType:        conflictErr.ObjectType,
+		ObjectID:          conflictErr.ObjectID,
+		Reason:            conflictErr.Reason,
+		ReferencedItemIDs: append([]string{}, conflictErr.ReferencedItemIDs...),
+	}
+	return response
 }
 
 func decodeCatalogMetadataPatchRequest(c *echo.Context) (PatchCatalogMetadataRequest, error) {
@@ -2309,6 +2725,9 @@ func catalogMetadataResponseFromView(view domain.CatalogMetadataView) CatalogMet
 			ContentWritable:    view.Effective.ContentWritable,
 			MetadataWritable:   view.Effective.MetadataWritable,
 			ReadOnly:           view.Effective.ReadOnly,
+			HasAssignment:      view.Effective.HasAssignment,
+			IsFullyClassified:  view.Effective.IsFullyClassified,
+			MissingFields:      append([]string{}, view.Effective.MissingFields...),
 		},
 	}
 

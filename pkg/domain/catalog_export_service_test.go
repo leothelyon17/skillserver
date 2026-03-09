@@ -192,6 +192,47 @@ func TestCatalogExportService_ExportDryRun_ReturnsManifestWithoutPayload(t *test
 	}
 }
 
+func TestCatalogExportService_ExportBareAndCanonicalSkillIDsResolveToSameCanonicalManifestItem(t *testing.T) {
+	t.Parallel()
+
+	skillsDir := t.TempDir()
+	writeSkillFixture(t, skillsDir, "compat-skill", map[string]string{
+		"scripts/check.sh": "echo check\n",
+	})
+
+	manager := newCatalogExportServiceTestManager(t, skillsDir, nil)
+	service := newCatalogExportServiceForTest(t, manager)
+
+	bareResult, err := service.Export(context.Background(), CatalogExportRequest{
+		ItemIDs: []string{"compat-skill"},
+		DryRun:  true,
+	})
+	if err != nil {
+		t.Fatalf("expected bare skill export dry-run to succeed, got %v", err)
+	}
+
+	canonicalResult, err := service.Export(context.Background(), CatalogExportRequest{
+		ItemIDs: []string{BuildSkillCatalogItemID("compat-skill")},
+		DryRun:  true,
+	})
+	if err != nil {
+		t.Fatalf("expected canonical skill export dry-run to succeed, got %v", err)
+	}
+
+	if len(bareResult.Manifest.Items) != 1 || len(canonicalResult.Manifest.Items) != 1 {
+		t.Fatalf("expected one manifest item per export result")
+	}
+
+	bareItem := bareResult.Manifest.Items[0]
+	canonicalItem := canonicalResult.Manifest.Items[0]
+	if bareItem != canonicalItem {
+		t.Fatalf("expected bare/canonical manifests to match, bare=%+v canonical=%+v", bareItem, canonicalItem)
+	}
+	if bareItem.ItemID != BuildSkillCatalogItemID("compat-skill") {
+		t.Fatalf("expected canonical manifest item id %q, got %q", BuildSkillCatalogItemID("compat-skill"), bareItem.ItemID)
+	}
+}
+
 func TestCatalogExportService_ExportMatchesLegacyArchiveFileSet(t *testing.T) {
 	t.Parallel()
 

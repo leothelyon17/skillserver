@@ -151,6 +151,146 @@ func (r *CatalogItemTaxonomyAssignmentRepository) List(
 	return result, nil
 }
 
+// GetUsageByDomainID returns usage counts and preview item IDs for one domain.
+func (r *CatalogItemTaxonomyAssignmentRepository) GetUsageByDomainID(
+	ctx context.Context,
+	domainID string,
+	previewLimit int,
+) (CatalogTaxonomyUsageQueryResult, error) {
+	if r == nil {
+		return CatalogTaxonomyUsageQueryResult{}, fmt.Errorf("catalog item taxonomy assignment repository is required")
+	}
+
+	normalizedDomainID, err := normalizeRequiredID(domainID, "catalog domain domain_id")
+	if err != nil {
+		return CatalogTaxonomyUsageQueryResult{}, err
+	}
+
+	normalizedPreviewLimit, err := normalizeOptionalPositiveLimit(
+		previewLimit,
+		"catalog taxonomy usage preview limit",
+	)
+	if err != nil {
+		return CatalogTaxonomyUsageQueryResult{}, err
+	}
+
+	result := CatalogTaxonomyUsageQueryResult{}
+	if err := r.exec.QueryRowContext(
+		normalizeContext(ctx),
+		`SELECT
+			COALESCE(SUM(CASE WHEN primary_domain_id = ? THEN 1 ELSE 0 END), 0) +
+				COALESCE(SUM(CASE WHEN secondary_domain_id = ? THEN 1 ELSE 0 END), 0) AS assignment_count,
+			COUNT(DISTINCT item_id) AS distinct_item_count
+		FROM catalog_item_taxonomy_assignments
+		WHERE primary_domain_id = ? OR secondary_domain_id = ?;`,
+		normalizedDomainID,
+		normalizedDomainID,
+		normalizedDomainID,
+		normalizedDomainID,
+	).Scan(&result.AssignmentCount, &result.DistinctItemCount); err != nil {
+		return CatalogTaxonomyUsageQueryResult{}, fmt.Errorf("get catalog domain usage for %q: %w", normalizedDomainID, err)
+	}
+
+	if normalizedPreviewLimit == 0 {
+		return result, nil
+	}
+
+	previewItemIDs, err := queryCatalogUsagePreviewItemIDs(
+		normalizeContext(ctx),
+		r.exec,
+		`SELECT DISTINCT item_id
+		FROM catalog_item_taxonomy_assignments
+		WHERE primary_domain_id = ? OR secondary_domain_id = ?
+		ORDER BY item_id ASC
+		LIMIT ?;`,
+		normalizedDomainID,
+		normalizedDomainID,
+		normalizedPreviewLimit,
+	)
+	if err != nil {
+		return CatalogTaxonomyUsageQueryResult{}, fmt.Errorf(
+			"list catalog domain usage preview items for %q: %w",
+			normalizedDomainID,
+			err,
+		)
+	}
+	result.PreviewItemIDs = previewItemIDs
+
+	return result, nil
+}
+
+// GetUsageBySubdomainID returns usage counts and preview item IDs for one subdomain.
+func (r *CatalogItemTaxonomyAssignmentRepository) GetUsageBySubdomainID(
+	ctx context.Context,
+	subdomainID string,
+	previewLimit int,
+) (CatalogTaxonomyUsageQueryResult, error) {
+	if r == nil {
+		return CatalogTaxonomyUsageQueryResult{}, fmt.Errorf("catalog item taxonomy assignment repository is required")
+	}
+
+	normalizedSubdomainID, err := normalizeRequiredID(subdomainID, "catalog subdomain subdomain_id")
+	if err != nil {
+		return CatalogTaxonomyUsageQueryResult{}, err
+	}
+
+	normalizedPreviewLimit, err := normalizeOptionalPositiveLimit(
+		previewLimit,
+		"catalog taxonomy usage preview limit",
+	)
+	if err != nil {
+		return CatalogTaxonomyUsageQueryResult{}, err
+	}
+
+	result := CatalogTaxonomyUsageQueryResult{}
+	if err := r.exec.QueryRowContext(
+		normalizeContext(ctx),
+		`SELECT
+			COALESCE(SUM(CASE WHEN primary_subdomain_id = ? THEN 1 ELSE 0 END), 0) +
+				COALESCE(SUM(CASE WHEN secondary_subdomain_id = ? THEN 1 ELSE 0 END), 0) AS assignment_count,
+			COUNT(DISTINCT item_id) AS distinct_item_count
+		FROM catalog_item_taxonomy_assignments
+		WHERE primary_subdomain_id = ? OR secondary_subdomain_id = ?;`,
+		normalizedSubdomainID,
+		normalizedSubdomainID,
+		normalizedSubdomainID,
+		normalizedSubdomainID,
+	).Scan(&result.AssignmentCount, &result.DistinctItemCount); err != nil {
+		return CatalogTaxonomyUsageQueryResult{}, fmt.Errorf(
+			"get catalog subdomain usage for %q: %w",
+			normalizedSubdomainID,
+			err,
+		)
+	}
+
+	if normalizedPreviewLimit == 0 {
+		return result, nil
+	}
+
+	previewItemIDs, err := queryCatalogUsagePreviewItemIDs(
+		normalizeContext(ctx),
+		r.exec,
+		`SELECT DISTINCT item_id
+		FROM catalog_item_taxonomy_assignments
+		WHERE primary_subdomain_id = ? OR secondary_subdomain_id = ?
+		ORDER BY item_id ASC
+		LIMIT ?;`,
+		normalizedSubdomainID,
+		normalizedSubdomainID,
+		normalizedPreviewLimit,
+	)
+	if err != nil {
+		return CatalogTaxonomyUsageQueryResult{}, fmt.Errorf(
+			"list catalog subdomain usage preview items for %q: %w",
+			normalizedSubdomainID,
+			err,
+		)
+	}
+	result.PreviewItemIDs = previewItemIDs
+
+	return result, nil
+}
+
 // DeleteByItemID deletes one taxonomy assignment row by item_id.
 func (r *CatalogItemTaxonomyAssignmentRepository) DeleteByItemID(
 	ctx context.Context,
@@ -456,6 +596,69 @@ func (r *CatalogItemTagAssignmentRepository) ListItemIDsByTagIDs(
 	return itemIDs, nil
 }
 
+// GetUsageByTagID returns usage counts and preview item IDs for one tag.
+func (r *CatalogItemTagAssignmentRepository) GetUsageByTagID(
+	ctx context.Context,
+	tagID string,
+	previewLimit int,
+) (CatalogTaxonomyUsageQueryResult, error) {
+	if r == nil {
+		return CatalogTaxonomyUsageQueryResult{}, fmt.Errorf("catalog item tag assignment repository is required")
+	}
+
+	normalizedTagID, err := normalizeRequiredID(tagID, "catalog tag tag_id")
+	if err != nil {
+		return CatalogTaxonomyUsageQueryResult{}, err
+	}
+
+	normalizedPreviewLimit, err := normalizeOptionalPositiveLimit(
+		previewLimit,
+		"catalog taxonomy usage preview limit",
+	)
+	if err != nil {
+		return CatalogTaxonomyUsageQueryResult{}, err
+	}
+
+	result := CatalogTaxonomyUsageQueryResult{}
+	if err := r.exec.QueryRowContext(
+		normalizeContext(ctx),
+		`SELECT
+			COUNT(*) AS assignment_count,
+			COUNT(DISTINCT item_id) AS distinct_item_count
+		FROM catalog_item_tag_assignments
+		WHERE tag_id = ?;`,
+		normalizedTagID,
+	).Scan(&result.AssignmentCount, &result.DistinctItemCount); err != nil {
+		return CatalogTaxonomyUsageQueryResult{}, fmt.Errorf("get catalog tag usage for %q: %w", normalizedTagID, err)
+	}
+
+	if normalizedPreviewLimit == 0 {
+		return result, nil
+	}
+
+	previewItemIDs, err := queryCatalogUsagePreviewItemIDs(
+		normalizeContext(ctx),
+		r.exec,
+		`SELECT item_id
+		FROM catalog_item_tag_assignments
+		WHERE tag_id = ?
+		ORDER BY item_id ASC
+		LIMIT ?;`,
+		normalizedTagID,
+		normalizedPreviewLimit,
+	)
+	if err != nil {
+		return CatalogTaxonomyUsageQueryResult{}, fmt.Errorf(
+			"list catalog tag usage preview items for %q: %w",
+			normalizedTagID,
+			err,
+		)
+	}
+	result.PreviewItemIDs = previewItemIDs
+
+	return result, nil
+}
+
 // DeleteByItemID deletes all tag assignments for one item.
 func (r *CatalogItemTagAssignmentRepository) DeleteByItemID(
 	ctx context.Context,
@@ -541,6 +744,33 @@ func buildCatalogItemTagAssignmentListQuery(
 	queryBuilder.WriteString(" ORDER BY item_id ASC, tag_id ASC;")
 
 	return queryBuilder.String(), args, nil
+}
+
+func queryCatalogUsagePreviewItemIDs(
+	ctx context.Context,
+	exec catalogQueryExecutor,
+	query string,
+	args ...any,
+) ([]string, error) {
+	rows, err := exec.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	itemIDs := make([]string, 0, 16)
+	for rows.Next() {
+		var itemID string
+		if err := rows.Scan(&itemID); err != nil {
+			return nil, err
+		}
+		itemIDs = append(itemIDs, itemID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return itemIDs, nil
 }
 
 type catalogTransactionBeginner interface {

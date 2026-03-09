@@ -31,6 +31,10 @@ type CatalogTaxonomyAssignmentWriter interface {
 		ctx context.Context,
 		input domain.CatalogItemTaxonomyAssignmentPatchInput,
 	) (domain.CatalogItemTaxonomyAssignment, error)
+	PatchBatch(
+		ctx context.Context,
+		request domain.CatalogItemTaxonomyBatchPatchRequest,
+	) (domain.CatalogItemTaxonomyBatchPatchResult, error)
 }
 
 // CatalogTaxonomyRegistryReader exposes taxonomy registry reads for MCP tools.
@@ -71,6 +75,17 @@ type CatalogTaxonomyRegistryWriter interface {
 	DeleteTag(ctx context.Context, tagID string) error
 }
 
+// CatalogTaxonomyUsageReader exposes taxonomy usage/preflight reads for MCP tools.
+type CatalogTaxonomyUsageReader interface {
+	GetDomainUsage(ctx context.Context, domainID string, previewLimit int) (domain.CatalogTaxonomyUsageSummary, error)
+	GetSubdomainUsage(
+		ctx context.Context,
+		subdomainID string,
+		previewLimit int,
+	) (domain.CatalogTaxonomyUsageSummary, error)
+	GetTagUsage(ctx context.Context, tagID string, previewLimit int) (domain.CatalogTaxonomyUsageSummary, error)
+}
+
 // Server wraps the MCP server and provides access to the skill manager
 type Server struct {
 	mcpServer                              *mcp.Server
@@ -80,6 +95,7 @@ type Server struct {
 	taxonomyAssignWrite                    CatalogTaxonomyAssignmentWriter
 	taxonomyRegistry                       CatalogTaxonomyRegistryReader
 	taxonomyRegistryWrite                  CatalogTaxonomyRegistryWriter
+	taxonomyUsage                          CatalogTaxonomyUsageReader
 	enableTaxonomyWriteTools               bool
 	enableMaterializationTools             bool
 	allowedMaterializationDestinationRoots []string
@@ -231,6 +247,39 @@ func registerReadTools(mcpServer *mcp.Server, server *Server) {
 		error,
 	) {
 		return getCatalogItemTaxonomy(ctx, req, input, server.taxonomyAssign)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "get_taxonomy_domain_usage",
+		Description: "Get delete-preflight usage metadata for one taxonomy domain",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input GetTaxonomyDomainUsageInput) (
+		*mcp.CallToolResult,
+		GetTaxonomyDomainUsageOutput,
+		error,
+	) {
+		return getTaxonomyDomainUsage(ctx, req, input, server.taxonomyUsage)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "get_taxonomy_subdomain_usage",
+		Description: "Get delete-preflight usage metadata for one taxonomy subdomain",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input GetTaxonomySubdomainUsageInput) (
+		*mcp.CallToolResult,
+		GetTaxonomySubdomainUsageOutput,
+		error,
+	) {
+		return getTaxonomySubdomainUsage(ctx, req, input, server.taxonomyUsage)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "get_taxonomy_tag_usage",
+		Description: "Get delete-preflight usage metadata for one taxonomy tag",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input GetTaxonomyTagUsageInput) (
+		*mcp.CallToolResult,
+		GetTaxonomyTagUsageOutput,
+		error,
+	) {
+		return getTaxonomyTagUsage(ctx, req, input, server.taxonomyUsage)
 	})
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
@@ -397,6 +446,17 @@ func registerTaxonomyWriteTools(mcpServer *mcp.Server, server *Server) {
 	) {
 		return patchCatalogItemTaxonomy(ctx, req, input, server.taxonomyAssignWrite)
 	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "patch_catalog_items_taxonomy",
+		Description: "Patch taxonomy assignment metadata for multiple catalog items with optional dry-run planning",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input PatchCatalogItemsTaxonomyInput) (
+		*mcp.CallToolResult,
+		PatchCatalogItemsTaxonomyOutput,
+		error,
+	) {
+		return patchCatalogItemsTaxonomy(ctx, req, input, server.taxonomyAssignWrite)
+	})
 }
 
 // Run starts the MCP server with stdio transport
@@ -427,6 +487,11 @@ func (s *Server) SetCatalogTaxonomyRegistryService(service CatalogTaxonomyRegist
 		return
 	}
 	s.taxonomyRegistryWrite = nil
+}
+
+// SetCatalogTaxonomyUsageService configures taxonomy usage/preflight reads for MCP tools.
+func (s *Server) SetCatalogTaxonomyUsageService(service CatalogTaxonomyUsageReader) {
+	s.taxonomyUsage = service
 }
 
 // MaterializationToolsEnabled reports whether runtime config enabled write-capable materialization tools.

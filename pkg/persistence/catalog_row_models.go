@@ -81,6 +81,8 @@ type CatalogSourceListFilter struct {
 	Classifier     *CatalogClassifier
 	SourceType     *CatalogSourceType
 	SourceRepo     *string
+	Cursor         string
+	Limit          int
 	IncludeDeleted bool
 }
 
@@ -143,6 +145,14 @@ func normalizeOptionalIDList(itemIDs []string) []string {
 
 	sort.Strings(normalized)
 	return normalized
+}
+
+func normalizeOptionalPositiveLimit(limit int, fieldName string) (int, error) {
+	if limit < 0 {
+		return 0, fmt.Errorf("%s cannot be negative", fieldName)
+	}
+
+	return limit, nil
 }
 
 func validateCatalogSourceUpsertRow(row CatalogSourceRow) (CatalogSourceRow, error) {

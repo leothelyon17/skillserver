@@ -35,6 +35,9 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 			"list_taxonomy_subdomains",
 			"list_taxonomy_tags",
 			"get_catalog_item_taxonomy",
+			"get_taxonomy_domain_usage",
+			"get_taxonomy_subdomain_usage",
+			"get_taxonomy_tag_usage",
 			"list_skill_resources",
 			"read_skill_resource",
 			"get_skill_resource_info",
@@ -190,13 +193,17 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		}
 
 		skillID, _ := firstSkill["id"].(string)
-		if skillID != manager.skill.ID {
-			t.Fatalf("expected skill id %q, got %q", manager.skill.ID, skillID)
+		expectedSkillID := domain.BuildSkillCatalogItemID(manager.skill.ID)
+		if skillID != expectedSkillID {
+			t.Fatalf("expected skill id %q, got %q", expectedSkillID, skillID)
+		}
+		if name, _ := firstSkill["name"].(string); name != manager.skill.Name {
+			t.Fatalf("expected populated skill name %q, got %q", manager.skill.Name, name)
 		}
 
 		readResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
 			Name:      "read_skill",
-			Arguments: map[string]any{"id": manager.skill.ID},
+			Arguments: map[string]any{"id": skillID},
 		})
 		if err != nil {
 			t.Fatalf("read_skill call failed: %v", err)
@@ -213,6 +220,36 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		content, _ := readStructured["content"].(string)
 		if content != manager.skill.Content {
 			t.Fatalf("expected read content %q, got %q", manager.skill.Content, content)
+		}
+
+		searchResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name:      "search_skills",
+			Arguments: map[string]any{"query": "sample"},
+		})
+		if err != nil {
+			t.Fatalf("search_skills call failed: %v", err)
+		}
+		if searchResult.IsError {
+			t.Fatalf("search_skills returned tool error")
+		}
+
+		searchStructured, ok := searchResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected search_skills structured content map, got %T", searchResult.StructuredContent)
+		}
+		searchResults, ok := searchStructured["results"].([]any)
+		if !ok || len(searchResults) != 1 {
+			t.Fatalf("expected one search_skills result, got %#v", searchStructured["results"])
+		}
+		firstSearchResult, ok := searchResults[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected search_skills result object, got %T", searchResults[0])
+		}
+		if id, _ := firstSearchResult["id"].(string); id != expectedSkillID {
+			t.Fatalf("expected canonical search_skills id %q, got %q", expectedSkillID, id)
+		}
+		if name, _ := firstSearchResult["name"].(string); name != manager.skill.Name {
+			t.Fatalf("expected populated search_skills name %q, got %q", manager.skill.Name, name)
 		}
 	})
 
@@ -244,6 +281,9 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		if len(rawItems) != len(manager.catalogItems) {
 			t.Fatalf("expected %d catalog items, got %d", len(manager.catalogItems), len(rawItems))
 		}
+		if hasMore, ok := listStructured["has_more"].(bool); !ok || hasMore {
+			t.Fatalf("expected has_more=false for small default list, got %v", listStructured["has_more"])
+		}
 
 		promptItem := findCatalogItemByClassifier(t, rawItems, string(domain.CatalogClassifierPrompt))
 		if parentSkillID, _ := promptItem["parent_skill_id"].(string); parentSkillID != "sample-skill" {
@@ -252,11 +292,21 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		if resourcePath, _ := promptItem["resource_path"].(string); resourcePath != "imports/prompts/system.md" {
 			t.Fatalf("expected prompt resource_path imports/prompts/system.md, got %q", resourcePath)
 		}
+		if _, exists := promptItem["content"]; exists {
+			t.Fatalf("did not expect content in metadata-first default response, got %+v", promptItem)
+		}
+		if hasAssignment, ok := promptItem["has_assignment"].(bool); !ok || !hasAssignment {
+			t.Fatalf("expected explicit has_assignment=true on prompt item, got %v", promptItem["has_assignment"])
+		}
+		if _, ok := promptItem["missing_fields"].([]any); !ok {
+			t.Fatalf("expected explicit missing_fields array on prompt item, got %T", promptItem["missing_fields"])
+		}
 
 		filteredResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
 			Name: "list_catalog",
 			Arguments: map[string]any{
-				"classifier": "Prompt",
+				"classifier":      "Prompt",
+				"include_content": true,
 			},
 		})
 		if err != nil {
@@ -285,6 +335,9 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		filteredClassifier, _ := filteredItem["classifier"].(string)
 		if filteredClassifier != string(domain.CatalogClassifierPrompt) {
 			t.Fatalf("expected filtered classifier %q, got %q", domain.CatalogClassifierPrompt, filteredClassifier)
+		}
+		if _, exists := filteredItem["content"]; !exists {
+			t.Fatalf("expected content when include_content=true, got %+v", filteredItem)
 		}
 
 		ruleFilteredResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
@@ -355,6 +408,9 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		if classifier, _ := searchPrompt["classifier"].(string); classifier != string(domain.CatalogClassifierPrompt) {
 			t.Fatalf("expected search result classifier %q, got %q", domain.CatalogClassifierPrompt, classifier)
 		}
+		if _, exists := searchPrompt["content"]; exists {
+			t.Fatalf("did not expect search result content without include_content=true, got %+v", searchPrompt)
+		}
 	})
 
 	t.Run("invokes export and materialization tools with dry-run planning and explicit failures", func(t *testing.T) {
@@ -407,6 +463,9 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 			if archiveRoot, _ := item["archive_root"].(string); strings.TrimSpace(archiveRoot) == "" {
 				t.Fatalf("expected manifest archive_root to be populated, got %v", item)
 			}
+			if archiveRoot, _ := item["archive_root"].(string); strings.HasPrefix(archiveRoot, "prompts/") {
+				t.Fatalf("expected flat archive_root to omit synthetic prompts/ wrapper, got %q", archiveRoot)
+			}
 		}
 		if _, hasDownload := exportDryRunStructured["download"]; hasDownload {
 			t.Fatalf("expected no download metadata on dry-run export response")
@@ -433,11 +492,53 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected export download metadata object, got %T", exportStructured["download"])
 		}
-		if archiveBase64, _ := download["archive_base64"].(string); strings.TrimSpace(archiveBase64) == "" {
-			t.Fatalf("expected archive_base64 payload in non-dry-run export response, got %v", download["archive_base64"])
+		if _, exists := download["archive_base64"]; exists {
+			t.Fatalf("did not expect archive_base64 by default, got %+v", download["archive_base64"])
 		}
 		if contentType, _ := download["content_type"].(string); contentType != "application/gzip" {
 			t.Fatalf("expected content_type application/gzip, got %q", contentType)
+		}
+
+		exportWithArchiveResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "export_catalog_items",
+			Arguments: map[string]any{
+				"item_ids":               []string{promptItemID},
+				"archive_root_mode":      "materialized",
+				"include_archive_base64": true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("export_catalog_items include-archive call failed: %v", err)
+		}
+		if exportWithArchiveResult.IsError {
+			t.Fatalf("export_catalog_items include-archive returned tool error: %s", toolResultErrorText(exportWithArchiveResult))
+		}
+
+		exportWithArchiveStructured, ok := exportWithArchiveResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected export include-archive structured content map, got %T", exportWithArchiveResult.StructuredContent)
+		}
+		manifest, ok = exportWithArchiveStructured["manifest"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected export manifest object, got %T", exportWithArchiveStructured["manifest"])
+		}
+		manifestItems, ok = manifest["items"].([]any)
+		if !ok || len(manifestItems) != 1 {
+			t.Fatalf("expected one manifest item, got %v", manifest["items"])
+		}
+		manifestItem, ok := manifestItems[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected export manifest item object, got %T", manifestItems[0])
+		}
+		if archiveRoot, _ := manifestItem["archive_root"].(string); archiveRoot != "prompts/system.md" {
+			t.Fatalf("expected materialized archive_root prompts/system.md, got %q", archiveRoot)
+		}
+		download, ok = exportWithArchiveStructured["download"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected export include-archive download metadata object, got %T", exportWithArchiveStructured["download"])
+		}
+		if archiveBase64, _ := download["archive_base64"].(string); strings.TrimSpace(archiveBase64) == "" {
+			t.Fatalf("expected archive_base64 when explicitly requested, got %v", download["archive_base64"])
 		}
 
 		dryRunDestination := filepath.Join(allowedRoot, "workspace")
@@ -562,6 +663,7 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		server := NewServer(manager)
 		server.SetCatalogTaxonomyRegistryService(newFakeCatalogTaxonomyRegistryService())
 		server.SetCatalogTaxonomyAssignmentService(newFakeCatalogTaxonomyAssignmentService())
+		server.SetCatalogTaxonomyUsageService(newFakeCatalogTaxonomyUsageService())
 		session, cleanup := connectMCPClientSession(t, server)
 		defer cleanup()
 
@@ -671,6 +773,247 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		}
 		if len(assignmentTags) != 2 {
 			t.Fatalf("expected 2 tags in assignment view, got %d", len(assignmentTags))
+		}
+		if hasAssignment, ok := taxonomyStructured["has_assignment"].(bool); !ok || !hasAssignment {
+			t.Fatalf("expected explicit has_assignment=true, got %v", taxonomyStructured["has_assignment"])
+		}
+		if isFullyClassified, ok := taxonomyStructured["is_fully_classified"].(bool); !ok || !isFullyClassified {
+			t.Fatalf(
+				"expected explicit is_fully_classified=true, got %v",
+				taxonomyStructured["is_fully_classified"],
+			)
+		}
+
+		domainUsageResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "get_taxonomy_domain_usage",
+			Arguments: map[string]any{
+				"domain_id":     "domain-platform",
+				"preview_limit": 1,
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_taxonomy_domain_usage call failed: %v", err)
+		}
+		if domainUsageResult.IsError {
+			t.Fatalf("get_taxonomy_domain_usage returned tool error")
+		}
+		domainUsageStructured, ok := domainUsageResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected get_taxonomy_domain_usage structured content map, got %T", domainUsageResult.StructuredContent)
+		}
+		if assignmentCount, ok := domainUsageStructured["assignment_count"].(float64); !ok || assignmentCount != 2 {
+			t.Fatalf("expected assignment_count=2, got %v", domainUsageStructured["assignment_count"])
+		}
+		if previewItemIDs, ok := domainUsageStructured["preview_item_ids"].([]any); !ok || len(previewItemIDs) != 1 {
+			t.Fatalf("expected one preview item id, got %+v", domainUsageStructured["preview_item_ids"])
+		}
+
+		subdomainUsageResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "get_taxonomy_subdomain_usage",
+			Arguments: map[string]any{
+				"subdomain_id":  "subdomain-platform-api",
+				"preview_limit": 2,
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_taxonomy_subdomain_usage call failed: %v", err)
+		}
+		if subdomainUsageResult.IsError {
+			t.Fatalf("get_taxonomy_subdomain_usage returned tool error")
+		}
+		subdomainUsageStructured, ok := subdomainUsageResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf(
+				"expected get_taxonomy_subdomain_usage structured content map, got %T",
+				subdomainUsageResult.StructuredContent,
+			)
+		}
+		if objectID, _ := subdomainUsageStructured["object_id"].(string); objectID != "subdomain-platform-api" {
+			t.Fatalf("expected subdomain object_id %q, got %q", "subdomain-platform-api", objectID)
+		}
+		if previewItemIDs, ok := subdomainUsageStructured["preview_item_ids"].([]any); !ok || len(previewItemIDs) != 2 {
+			t.Fatalf("expected two subdomain preview item ids, got %+v", subdomainUsageStructured["preview_item_ids"])
+		}
+
+		tagUsageResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "get_taxonomy_tag_usage",
+			Arguments: map[string]any{
+				"tag_id":        "tag-backend",
+				"preview_limit": 1,
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_taxonomy_tag_usage call failed: %v", err)
+		}
+		if tagUsageResult.IsError {
+			t.Fatalf("get_taxonomy_tag_usage returned tool error")
+		}
+		tagUsageStructured, ok := tagUsageResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected get_taxonomy_tag_usage structured content map, got %T", tagUsageResult.StructuredContent)
+		}
+		if objectType, _ := tagUsageStructured["object_type"].(string); objectType != string(domain.CatalogTaxonomyObjectTag) {
+			t.Fatalf("expected tag object_type %q, got %q", domain.CatalogTaxonomyObjectTag, objectType)
+		}
+		if previewItemIDs, ok := tagUsageStructured["preview_item_ids"].([]any); !ok || len(previewItemIDs) != 1 {
+			t.Fatalf("expected one tag preview item id, got %+v", tagUsageStructured["preview_item_ids"])
+		}
+	})
+
+	t.Run("invokes taxonomy write tools end-to-end with additive and batch contracts", func(t *testing.T) {
+		manager := newFakeSkillManager()
+		server := NewServer(manager, ServerOptions{EnableTaxonomyWriteTools: true})
+		server.SetCatalogTaxonomyAssignmentService(newFakeCatalogTaxonomyAssignmentService())
+		session, cleanup := connectMCPClientSession(t, server)
+		defer cleanup()
+
+		singlePatchResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "patch_catalog_item_taxonomy",
+			Arguments: map[string]any{
+				"item_id":     "sample-skill",
+				"add_tag_ids": []string{"tag-backend"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("patch_catalog_item_taxonomy call failed: %v", err)
+		}
+		if singlePatchResult.IsError {
+			t.Fatalf("patch_catalog_item_taxonomy returned tool error: %s", toolResultErrorText(singlePatchResult))
+		}
+		singlePatchStructured, ok := singlePatchResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected patch_catalog_item_taxonomy structured content map, got %T", singlePatchResult.StructuredContent)
+		}
+		tags, ok := singlePatchStructured["tags"].([]any)
+		if !ok || len(tags) != 1 {
+			t.Fatalf("expected one tag after additive single-item patch, got %+v", singlePatchStructured["tags"])
+		}
+		if itemID, _ := singlePatchStructured["item_id"].(string); itemID != domain.BuildSkillCatalogItemID("sample-skill") {
+			t.Fatalf(
+				"expected canonical item_id %q from bare single-item patch, got %q",
+				domain.BuildSkillCatalogItemID("sample-skill"),
+				itemID,
+			)
+		}
+
+		getBareSkillResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "get_catalog_item_taxonomy",
+			Arguments: map[string]any{
+				"item_id": "sample-skill",
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_catalog_item_taxonomy bare skill call failed: %v", err)
+		}
+		if getBareSkillResult.IsError {
+			t.Fatalf("get_catalog_item_taxonomy bare skill returned tool error: %s", toolResultErrorText(getBareSkillResult))
+		}
+		getBareSkillStructured, ok := getBareSkillResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf(
+				"expected get_catalog_item_taxonomy bare skill structured content map, got %T",
+				getBareSkillResult.StructuredContent,
+			)
+		}
+		if itemID, _ := getBareSkillStructured["item_id"].(string); itemID != domain.BuildSkillCatalogItemID("sample-skill") {
+			t.Fatalf(
+				"expected canonical item_id %q from bare taxonomy get, got %q",
+				domain.BuildSkillCatalogItemID("sample-skill"),
+				itemID,
+			)
+		}
+
+		batchPatchResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "patch_catalog_items_taxonomy",
+			Arguments: map[string]any{
+				"dry_run": true,
+				"items": []map[string]any{
+					{
+						"item_id":     "sample-skill",
+						"add_tag_ids": []string{"tag-metrics"},
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("patch_catalog_items_taxonomy call failed: %v", err)
+		}
+		if batchPatchResult.IsError {
+			t.Fatalf("patch_catalog_items_taxonomy returned tool error: %s", toolResultErrorText(batchPatchResult))
+		}
+		batchPatchStructured, ok := batchPatchResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected patch_catalog_items_taxonomy structured content map, got %T", batchPatchResult.StructuredContent)
+		}
+		if dryRun, ok := batchPatchStructured["dry_run"].(bool); !ok || !dryRun {
+			t.Fatalf("expected dry_run=true in batch output, got %v", batchPatchStructured["dry_run"])
+		}
+		items, ok := batchPatchStructured["items"].([]any)
+		if !ok || len(items) != 1 {
+			t.Fatalf("expected one batch item result, got %+v", batchPatchStructured["items"])
+		}
+		item, ok := items[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected batch item result object, got %T", items[0])
+		}
+		if requestedItemID, _ := item["requested_item_id"].(string); requestedItemID != "sample-skill" {
+			t.Fatalf("expected requested_item_id to preserve bare skill input, got %q", requestedItemID)
+		}
+		if itemID, _ := item["item_id"].(string); itemID != domain.BuildSkillCatalogItemID("sample-skill") {
+			t.Fatalf(
+				"expected canonical item_id %q in dry-run batch output, got %q",
+				domain.BuildSkillCatalogItemID("sample-skill"),
+				itemID,
+			)
+		}
+		if status, _ := item["status"].(string); status != string(domain.CatalogItemTaxonomyBatchPatchStatusPlanned) {
+			t.Fatalf("expected planned batch status, got %+v", item)
+		}
+
+		batchApplyResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "patch_catalog_items_taxonomy",
+			Arguments: map[string]any{
+				"items": []map[string]any{
+					{
+						"item_id":     "sample-skill",
+						"add_tag_ids": []string{"tag-metrics"},
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("patch_catalog_items_taxonomy apply call failed: %v", err)
+		}
+		if batchApplyResult.IsError {
+			t.Fatalf("patch_catalog_items_taxonomy apply returned tool error: %s", toolResultErrorText(batchApplyResult))
+		}
+		batchApplyStructured, ok := batchApplyResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf(
+				"expected patch_catalog_items_taxonomy apply structured content map, got %T",
+				batchApplyResult.StructuredContent,
+			)
+		}
+		if dryRun, ok := batchApplyStructured["dry_run"].(bool); !ok || dryRun {
+			t.Fatalf("expected dry_run=false in apply batch output, got %v", batchApplyStructured["dry_run"])
+		}
+		appliedItems, ok := batchApplyStructured["items"].([]any)
+		if !ok || len(appliedItems) != 1 {
+			t.Fatalf("expected one apply batch item result, got %+v", batchApplyStructured["items"])
+		}
+		appliedItem, ok := appliedItems[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected apply batch item result object, got %T", appliedItems[0])
+		}
+		if status, _ := appliedItem["status"].(string); status != string(domain.CatalogItemTaxonomyBatchPatchStatusUpdated) {
+			t.Fatalf("expected updated apply batch status, got %+v", appliedItem)
+		}
+		assignment, ok := appliedItem["assignment"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected assignment payload on apply batch item, got %+v", appliedItem["assignment"])
+		}
+		if tags, ok := assignment["tags"].([]any); !ok || len(tags) != 2 {
+			t.Fatalf("expected apply batch to persist two tags, got %+v", assignment["tags"])
 		}
 	})
 
@@ -810,10 +1153,116 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		if len(listAnyItems) != 2 {
 			t.Fatalf("expected 2 items matching tag_ids with implicit any semantics, got %d", len(listAnyItems))
 		}
+
+		paginatedResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "list_catalog",
+			Arguments: map[string]any{
+				"limit": 1,
+			},
+		})
+		if err != nil {
+			t.Fatalf("list_catalog paginated call failed: %v", err)
+		}
+		if paginatedResult.IsError {
+			t.Fatalf("list_catalog paginated call returned tool error")
+		}
+		paginatedStructured, ok := paginatedResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected list_catalog paginated structured content map, got %T", paginatedResult.StructuredContent)
+		}
+		paginatedItems, ok := paginatedStructured["items"].([]any)
+		if !ok || len(paginatedItems) != 1 {
+			t.Fatalf("expected one paginated item, got %+v", paginatedStructured["items"])
+		}
+		if hasMore, ok := paginatedStructured["has_more"].(bool); !ok || !hasMore {
+			t.Fatalf("expected has_more=true for first paginated page, got %v", paginatedStructured["has_more"])
+		}
+		nextCursor, ok := paginatedStructured["next_cursor"].(string)
+		if !ok || strings.TrimSpace(nextCursor) == "" {
+			t.Fatalf("expected next_cursor on paginated response, got %+v", paginatedStructured["next_cursor"])
+		}
+
+		unclassifiedResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "list_catalog",
+			Arguments: map[string]any{
+				"unclassified": true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("list_catalog unclassified call failed: %v", err)
+		}
+		if unclassifiedResult.IsError {
+			t.Fatalf("list_catalog unclassified call returned tool error")
+		}
+		unclassifiedStructured, ok := unclassifiedResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected list_catalog unclassified structured content map, got %T", unclassifiedResult.StructuredContent)
+		}
+		unclassifiedItems, ok := unclassifiedStructured["items"].([]any)
+		if !ok || len(unclassifiedItems) != 1 {
+			t.Fatalf("expected one unclassified item, got %+v", unclassifiedStructured["items"])
+		}
+		unclassifiedItem, ok := unclassifiedItems[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected unclassified item object, got %T", unclassifiedItems[0])
+		}
+		if classifier, _ := unclassifiedItem["classifier"].(string); classifier != string(domain.CatalogClassifierRule) {
+			t.Fatalf("expected unclassified rule item, got %+v", unclassifiedItem)
+		}
+
+		missingPrimaryDomainResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "list_catalog",
+			Arguments: map[string]any{
+				"missing_primary_domain": true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("list_catalog missing_primary_domain call failed: %v", err)
+		}
+		if missingPrimaryDomainResult.IsError {
+			t.Fatalf("list_catalog missing_primary_domain call returned tool error")
+		}
+		missingPrimaryDomainStructured, ok := missingPrimaryDomainResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf(
+				"expected list_catalog missing_primary_domain structured content map, got %T",
+				missingPrimaryDomainResult.StructuredContent,
+			)
+		}
+		missingPrimaryDomainItems, ok := missingPrimaryDomainStructured["items"].([]any)
+		if !ok || len(missingPrimaryDomainItems) != 1 {
+			t.Fatalf(
+				"expected one missing_primary_domain item, got %+v",
+				missingPrimaryDomainStructured["items"],
+			)
+		}
+
+		missingTagsResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "search_catalog",
+			Arguments: map[string]any{
+				"query":        "agents",
+				"missing_tags": true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("search_catalog missing_tags call failed: %v", err)
+		}
+		if missingTagsResult.IsError {
+			t.Fatalf("search_catalog missing_tags call returned tool error")
+		}
+		missingTagsStructured, ok := missingTagsResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected search_catalog missing_tags structured content map, got %T", missingTagsResult.StructuredContent)
+		}
+		missingTagsItems, ok := missingTagsStructured["results"].([]any)
+		if !ok || len(missingTagsItems) != 1 {
+			t.Fatalf("expected one missing_tags search result, got %+v", missingTagsStructured["results"])
+		}
 	})
 
 	t.Run("returns tool errors for invalid catalog inputs", func(t *testing.T) {
 		server := NewServer(newFakeSkillManager())
+		server.SetCatalogTaxonomyUsageService(newFakeCatalogTaxonomyUsageService())
 		session, cleanup := connectMCPClientSession(t, server)
 		defer cleanup()
 
@@ -893,6 +1342,46 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		if !missingItemIDResult.IsError {
 			t.Fatalf("expected get_catalog_item_taxonomy missing item_id to return tool error")
 		}
+
+		invalidLimitResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "list_catalog",
+			Arguments: map[string]any{
+				"limit": 0,
+			},
+		})
+		if err != nil {
+			t.Fatalf("list_catalog invalid limit call failed: %v", err)
+		}
+		if !invalidLimitResult.IsError {
+			t.Fatalf("expected list_catalog invalid limit to return tool error")
+		}
+
+		invalidPreviewLimitResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "get_taxonomy_domain_usage",
+			Arguments: map[string]any{
+				"domain_id":     "domain-platform",
+				"preview_limit": 201,
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_taxonomy_domain_usage invalid preview_limit call failed: %v", err)
+		}
+		if !invalidPreviewLimitResult.IsError {
+			t.Fatalf("expected get_taxonomy_domain_usage invalid preview_limit to return tool error")
+		}
+
+		invalidSkillResourceResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "list_skill_resources",
+			Arguments: map[string]any{
+				"skill_id": "prompt:sample-skill:imports/prompts/system.md",
+			},
+		})
+		if err != nil {
+			t.Fatalf("list_skill_resources invalid skill_id call failed: %v", err)
+		}
+		if !invalidSkillResourceResult.IsError {
+			t.Fatalf("expected list_skill_resources invalid skill_id to return tool error")
+		}
 	})
 
 	t.Run("returns additive resource metadata without breaking legacy fields", func(t *testing.T) {
@@ -901,9 +1390,11 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		session, cleanup := connectMCPClientSession(t, server)
 		defer cleanup()
 
+		canonicalSkillID := domain.BuildSkillCatalogItemID(manager.skill.ID)
+
 		listResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
 			Name:      "list_skill_resources",
-			Arguments: map[string]any{"skill_id": manager.skill.ID},
+			Arguments: map[string]any{"skill_id": canonicalSkillID},
 		})
 		if err != nil {
 			t.Fatalf("list_skill_resources call failed: %v", err)
@@ -956,7 +1447,7 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		infoResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
 			Name: "get_skill_resource_info",
 			Arguments: map[string]any{
-				"skill_id":      manager.skill.ID,
+				"skill_id":      canonicalSkillID,
 				"resource_path": "imports/prompts/system.md",
 			},
 		})
@@ -1004,7 +1495,7 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		missingResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
 			Name: "get_skill_resource_info",
 			Arguments: map[string]any{
-				"skill_id":      manager.skill.ID,
+				"skill_id":      canonicalSkillID,
 				"resource_path": "imports/prompts/missing.md",
 			},
 		})
@@ -1023,6 +1514,27 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		missingExists, _ := missingStructured["exists"].(bool)
 		if missingExists {
 			t.Fatalf("expected exists=false for missing resource")
+		}
+
+		readResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "read_skill_resource",
+			Arguments: map[string]any{
+				"skill_id":      canonicalSkillID,
+				"resource_path": "imports/prompts/system.md",
+			},
+		})
+		if err != nil {
+			t.Fatalf("read_skill_resource call failed: %v", err)
+		}
+		if readResult.IsError {
+			t.Fatalf("read_skill_resource returned tool error")
+		}
+		readStructured, ok := readResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected read_skill_resource structured content map, got %T", readResult.StructuredContent)
+		}
+		if content, _ := readStructured["content"].(string); content != "# System Prompt" {
+			t.Fatalf("expected canonical skill resource read content, got %q", content)
 		}
 	})
 }
@@ -1057,6 +1569,7 @@ func taxonomyWriteToolNames() []string {
 		"update_taxonomy_tag",
 		"delete_taxonomy_tag",
 		"patch_catalog_item_taxonomy",
+		"patch_catalog_items_taxonomy",
 	}
 }
 
@@ -1194,6 +1707,23 @@ func newFakeSkillManager() *fakeSkillManager {
 					{ID: "tag-backend", Key: "backend", Name: "Backend"},
 				},
 				ReadOnly: false,
+				CatalogClassificationState: domain.DeriveCatalogClassificationState(
+					&domain.CatalogTaxonomyReference{
+						ID:   "domain-platform",
+						Key:  "platform",
+						Name: "Platform",
+					},
+					&domain.CatalogTaxonomyReference{
+						ID:   "subdomain-platform-api",
+						Key:  "api",
+						Name: "API",
+					},
+					nil,
+					nil,
+					[]domain.CatalogTaxonomyReference{
+						{ID: "tag-backend", Key: "backend", Name: "Backend"},
+					},
+				),
 			},
 			{
 				ID:            domain.BuildPromptCatalogItemID("sample-skill", "imports/prompts/system.md"),
@@ -1228,16 +1758,43 @@ func newFakeSkillManager() *fakeSkillManager {
 					{ID: "tag-metrics", Key: "metrics", Name: "Metrics"},
 				},
 				ReadOnly: true,
+				CatalogClassificationState: domain.DeriveCatalogClassificationState(
+					&domain.CatalogTaxonomyReference{
+						ID:   "domain-observability",
+						Key:  "observability",
+						Name: "Observability",
+					},
+					&domain.CatalogTaxonomyReference{
+						ID:   "subdomain-observability-metrics",
+						Key:  "metrics",
+						Name: "Metrics",
+					},
+					&domain.CatalogTaxonomyReference{
+						ID:   "domain-platform",
+						Key:  "platform",
+						Name: "Platform",
+					},
+					&domain.CatalogTaxonomyReference{
+						ID:   "subdomain-platform-api",
+						Key:  "api",
+						Name: "API",
+					},
+					[]domain.CatalogTaxonomyReference{
+						{ID: "tag-backend", Key: "backend", Name: "Backend"},
+						{ID: "tag-metrics", Key: "metrics", Name: "Metrics"},
+					},
+				),
 			},
 			{
-				ID:            domain.BuildRuleCatalogItemID("sample-skill", "imports/rules/agents.md"),
-				Classifier:    domain.CatalogClassifierRule,
-				Name:          "agents.md",
-				Description:   "Repository agent guardrails",
-				Content:       "# AGENTS\nFollow project rules.",
-				ParentSkillID: "sample-skill",
-				ResourcePath:  "imports/rules/agents.md",
-				ReadOnly:      true,
+				ID:                         domain.BuildRuleCatalogItemID("sample-skill", "imports/rules/agents.md"),
+				Classifier:                 domain.CatalogClassifierRule,
+				Name:                       "agents.md",
+				Description:                "Repository agent guardrails",
+				Content:                    "# AGENTS\nFollow project rules.",
+				ParentSkillID:              "sample-skill",
+				ResourcePath:               "imports/rules/agents.md",
+				ReadOnly:                   true,
+				CatalogClassificationState: domain.DeriveCatalogClassificationState(nil, nil, nil, nil, nil),
 			},
 		},
 		resources:             resources,
@@ -1552,6 +2109,34 @@ type fakeCatalogTaxonomyAssignmentService struct {
 func newFakeCatalogTaxonomyAssignmentService() *fakeCatalogTaxonomyAssignmentService {
 	return &fakeCatalogTaxonomyAssignmentService{
 		byItemID: map[string]domain.CatalogItemTaxonomyAssignment{
+			"skill:sample-skill": {
+				ItemID: "skill:sample-skill",
+				PrimaryDomain: &domain.CatalogTaxonomyReference{
+					ID:   "domain-platform",
+					Key:  "platform",
+					Name: "Platform",
+				},
+				PrimarySubdomain: &domain.CatalogTaxonomyReference{
+					ID:   "subdomain-platform-api",
+					Key:  "api",
+					Name: "API",
+				},
+				CatalogClassificationState: domain.DeriveCatalogClassificationState(
+					&domain.CatalogTaxonomyReference{
+						ID:   "domain-platform",
+						Key:  "platform",
+						Name: "Platform",
+					},
+					&domain.CatalogTaxonomyReference{
+						ID:   "subdomain-platform-api",
+						Key:  "api",
+						Name: "API",
+					},
+					nil,
+					nil,
+					nil,
+				),
+			},
 			"prompt:sample-skill:imports/prompts/system.md": {
 				ItemID: "prompt:sample-skill:imports/prompts/system.md",
 				PrimaryDomain: &domain.CatalogTaxonomyReference{
@@ -1578,6 +2163,32 @@ func newFakeCatalogTaxonomyAssignmentService() *fakeCatalogTaxonomyAssignmentSer
 					{ID: "tag-backend", Key: "backend", Name: "Backend"},
 					{ID: "tag-metrics", Key: "metrics", Name: "Metrics"},
 				},
+				CatalogClassificationState: domain.DeriveCatalogClassificationState(
+					&domain.CatalogTaxonomyReference{
+						ID:   "domain-observability",
+						Key:  "observability",
+						Name: "Observability",
+					},
+					&domain.CatalogTaxonomyReference{
+						ID:   "subdomain-observability-metrics",
+						Key:  "metrics",
+						Name: "Metrics",
+					},
+					&domain.CatalogTaxonomyReference{
+						ID:   "domain-platform",
+						Key:  "platform",
+						Name: "Platform",
+					},
+					&domain.CatalogTaxonomyReference{
+						ID:   "subdomain-platform-api",
+						Key:  "api",
+						Name: "API",
+					},
+					[]domain.CatalogTaxonomyReference{
+						{ID: "tag-backend", Key: "backend", Name: "Backend"},
+						{ID: "tag-metrics", Key: "metrics", Name: "Metrics"},
+					},
+				),
 			},
 		},
 	}
@@ -1587,6 +2198,7 @@ func (s *fakeCatalogTaxonomyAssignmentService) Get(
 	ctx context.Context,
 	itemID string,
 ) (domain.CatalogItemTaxonomyAssignment, error) {
+	itemID = normalizeFakeCatalogTaxonomyAssignmentItemID(itemID)
 	assignment, ok := s.byItemID[itemID]
 	if !ok {
 		return domain.CatalogItemTaxonomyAssignment{}, fmt.Errorf(
@@ -1596,6 +2208,175 @@ func (s *fakeCatalogTaxonomyAssignmentService) Get(
 		)
 	}
 	return assignment, nil
+}
+
+func (s *fakeCatalogTaxonomyAssignmentService) Patch(
+	ctx context.Context,
+	input domain.CatalogItemTaxonomyAssignmentPatchInput,
+) (domain.CatalogItemTaxonomyAssignment, error) {
+	itemID := normalizeFakeCatalogTaxonomyAssignmentItemID(input.ItemID)
+	if itemID == "" {
+		return domain.CatalogItemTaxonomyAssignment{}, fmt.Errorf(
+			"%w: field=item_id detail=is required",
+			domain.ErrCatalogTaxonomyValidation,
+		)
+	}
+
+	current, exists := s.byItemID[itemID]
+	if !exists {
+		current = domain.CatalogItemTaxonomyAssignment{ItemID: itemID}
+	}
+	if input.TagIDs != nil {
+		current.Tags = buildFakeTaxonomyReferences(*input.TagIDs)
+	}
+	if input.AddTagIDs != nil {
+		seen := make(map[string]struct{}, len(current.Tags))
+		for _, tag := range current.Tags {
+			seen[tag.ID] = struct{}{}
+		}
+		for _, tagID := range *input.AddTagIDs {
+			if _, exists := seen[tagID]; exists {
+				continue
+			}
+			seen[tagID] = struct{}{}
+			current.Tags = append(current.Tags, fakeTaxonomyReference(tagID))
+		}
+	}
+	if input.RemoveTagIDs != nil {
+		removeSet := toStringSet(*input.RemoveTagIDs)
+		filtered := make([]domain.CatalogTaxonomyReference, 0, len(current.Tags))
+		for _, tag := range current.Tags {
+			if _, remove := removeSet[tag.ID]; remove {
+				continue
+			}
+			filtered = append(filtered, tag)
+		}
+		current.Tags = filtered
+	}
+	if input.ClearTags != nil && *input.ClearTags {
+		current.Tags = []domain.CatalogTaxonomyReference{}
+	}
+	current.CatalogClassificationState = domain.DeriveCatalogClassificationState(
+		current.PrimaryDomain,
+		current.PrimarySubdomain,
+		current.SecondaryDomain,
+		current.SecondarySubdomain,
+		current.Tags,
+	)
+	s.byItemID[itemID] = current
+	return current, nil
+}
+
+func (s *fakeCatalogTaxonomyAssignmentService) PatchBatch(
+	ctx context.Context,
+	request domain.CatalogItemTaxonomyBatchPatchRequest,
+) (domain.CatalogItemTaxonomyBatchPatchResult, error) {
+	result := domain.CatalogItemTaxonomyBatchPatchResult{
+		DryRun: request.DryRun,
+		Items:  make([]domain.CatalogItemTaxonomyBatchPatchItemResult, 0, len(request.Items)),
+	}
+	for _, item := range request.Items {
+		normalizedItemID := normalizeFakeCatalogTaxonomyAssignmentItemID(item.ItemID)
+		status := domain.CatalogItemTaxonomyBatchPatchStatusUpdated
+		if request.DryRun {
+			status = domain.CatalogItemTaxonomyBatchPatchStatusPlanned
+		}
+		entry := domain.CatalogItemTaxonomyBatchPatchItemResult{
+			RequestedItemID: item.ItemID,
+			ItemID:          normalizedItemID,
+			Status:          status,
+		}
+		if !request.DryRun {
+			assignment, err := s.Patch(ctx, item)
+			if err != nil {
+				return domain.CatalogItemTaxonomyBatchPatchResult{}, err
+			}
+			entry.Assignment = &assignment
+		}
+		result.Items = append(result.Items, entry)
+	}
+	return result, nil
+}
+
+func normalizeFakeCatalogTaxonomyAssignmentItemID(itemID string) string {
+	normalized := strings.TrimSpace(itemID)
+	if normalized == "" {
+		return ""
+	}
+	reference, err := domain.NormalizeCatalogItemReference(normalized)
+	if err != nil {
+		return normalized
+	}
+	return reference.ItemID
+}
+
+type fakeCatalogTaxonomyUsageService struct{}
+
+func newFakeCatalogTaxonomyUsageService() *fakeCatalogTaxonomyUsageService {
+	return &fakeCatalogTaxonomyUsageService{}
+}
+
+func (s *fakeCatalogTaxonomyUsageService) GetDomainUsage(
+	ctx context.Context,
+	domainID string,
+	previewLimit int,
+) (domain.CatalogTaxonomyUsageSummary, error) {
+	return fakeCatalogTaxonomyUsageSummary(domain.CatalogTaxonomyObjectDomain, domainID, previewLimit), nil
+}
+
+func (s *fakeCatalogTaxonomyUsageService) GetSubdomainUsage(
+	ctx context.Context,
+	subdomainID string,
+	previewLimit int,
+) (domain.CatalogTaxonomyUsageSummary, error) {
+	return fakeCatalogTaxonomyUsageSummary(domain.CatalogTaxonomyObjectSubdomain, subdomainID, previewLimit), nil
+}
+
+func (s *fakeCatalogTaxonomyUsageService) GetTagUsage(
+	ctx context.Context,
+	tagID string,
+	previewLimit int,
+) (domain.CatalogTaxonomyUsageSummary, error) {
+	return fakeCatalogTaxonomyUsageSummary(domain.CatalogTaxonomyObjectTag, tagID, previewLimit), nil
+}
+
+func fakeCatalogTaxonomyUsageSummary(
+	objectType domain.CatalogTaxonomyObjectType,
+	objectID string,
+	previewLimit int,
+) domain.CatalogTaxonomyUsageSummary {
+	previewIDs := []string{"skill:sample-skill", "prompt:sample-skill:imports/prompts/system.md"}
+	if previewLimit >= 0 && previewLimit < len(previewIDs) {
+		previewIDs = previewIDs[:previewLimit]
+	}
+	reason := domain.CatalogTaxonomyConflictReasonInUse
+	return domain.CatalogTaxonomyUsageSummary{
+		ObjectType:        objectType,
+		ObjectID:          objectID,
+		AssignmentCount:   2,
+		DistinctItemCount: 2,
+		PreviewItemIDs:    previewIDs,
+		BlockingReason:    &reason,
+	}
+}
+
+func buildFakeTaxonomyReferences(tagIDs []string) []domain.CatalogTaxonomyReference {
+	references := make([]domain.CatalogTaxonomyReference, 0, len(tagIDs))
+	for _, tagID := range tagIDs {
+		references = append(references, fakeTaxonomyReference(tagID))
+	}
+	return references
+}
+
+func fakeTaxonomyReference(tagID string) domain.CatalogTaxonomyReference {
+	switch strings.TrimSpace(tagID) {
+	case "tag-backend":
+		return domain.CatalogTaxonomyReference{ID: "tag-backend", Key: "backend", Name: "Backend"}
+	case "tag-metrics":
+		return domain.CatalogTaxonomyReference{ID: "tag-metrics", Key: "metrics", Name: "Metrics"}
+	default:
+		return domain.CatalogTaxonomyReference{ID: tagID, Key: tagID, Name: tagID}
+	}
 }
 
 func toStringSet(values []string) map[string]struct{} {

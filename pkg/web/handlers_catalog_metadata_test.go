@@ -280,6 +280,53 @@ func TestCatalogMetadataEndpoints_ListAndSearch_UseEffectiveOverlayProjection(t 
 	}
 }
 
+func TestCatalogMetadataEndpoints_EffectiveResponseIncludesClassificationState(t *testing.T) {
+	t.Parallel()
+
+	server, _ := newCatalogMetadataFixtureServer(t)
+	seedCatalogTaxonomyObjectsViaAPI(t, server)
+
+	itemID := domain.BuildSkillCatalogItemID("demo-skill")
+	taxonomyTarget := "/api/catalog/" + url.PathEscape(itemID) + "/taxonomy"
+	req := httptest.NewRequest(
+		http.MethodPatch,
+		taxonomyTarget,
+		strings.NewReader(`{"primary_domain_id":"domain-platform","tag_ids":["tag-backend"]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	metadataTarget := "/api/catalog/" + url.PathEscape(itemID) + "/metadata"
+	req = httptest.NewRequest(http.MethodGet, metadataTarget, nil)
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload := decodeJSONObject(t, rec.Body.Bytes())
+	effective, ok := payload["effective"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected effective metadata object, got %T", payload["effective"])
+	}
+	if hasAssignment, ok := effective["has_assignment"].(bool); !ok || !hasAssignment {
+		t.Fatalf("expected has_assignment=true, got %v", effective["has_assignment"])
+	}
+	if isFullyClassified, ok := effective["is_fully_classified"].(bool); !ok || !isFullyClassified {
+		t.Fatalf("expected is_fully_classified=true, got %v", effective["is_fully_classified"])
+	}
+	missingFields, ok := effective["missing_fields"].([]any)
+	if !ok || len(missingFields) != 3 {
+		t.Fatalf("expected three remaining missing_fields, got %+v", effective["missing_fields"])
+	}
+}
+
 func TestCatalogMetadataEndpoints_ValidationAndMissingItems(t *testing.T) {
 	t.Parallel()
 
@@ -457,11 +504,22 @@ func newCatalogMetadataFixtureServer(t *testing.T) (*Server, *persistence.Catalo
 	if err != nil {
 		t.Fatalf("expected taxonomy assignment service creation to succeed, got %v", err)
 	}
+	taxonomyUsageService, err := domain.NewCatalogTaxonomyUsageService(
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+	)
+	if err != nil {
+		t.Fatalf("expected taxonomy usage service creation to succeed, got %v", err)
+	}
 
 	seedCatalogMetadataSourceRows(t, sourceRepo)
 	server.SetCatalogMetadataService(metadataService)
 	server.SetCatalogTaxonomyRegistryService(taxonomyRegistry)
 	server.SetCatalogTaxonomyAssignmentService(taxonomyAssignmentService)
+	server.SetCatalogTaxonomyUsageService(taxonomyUsageService)
 
 	return server, sourceRepo
 }

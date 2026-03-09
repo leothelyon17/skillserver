@@ -129,10 +129,10 @@ async function openMetadataModal(page: Page, title: string) {
 
 async function confirmDangerModal(page: Page) {
   const modal = page.locator(".fixed.inset-0:visible").filter({
-    has: page.getByRole("button", { name: "Confirm" }),
+    has: page.getByRole("button", { name: /^(Confirm|Delete )/ }),
   });
   await expect(modal).toBeVisible();
-  await modal.getByRole("button", { name: "Confirm" }).click();
+  await modal.getByRole("button", { name: /^(Confirm|Delete )/ }).click();
 }
 
 test.describe("WP-010 taxonomy manager and assignment UX", () => {
@@ -246,6 +246,10 @@ test.describe("WP-010 taxonomy manager and assignment UX", () => {
     await metadataModal.locator('[x-model="metadataEditorModal.form.primarySubdomainID"]').selectOption("subdomain-platform-api");
     await metadataModal.locator('[x-model="metadataEditorModal.form.secondaryDomainID"]').selectOption("domain-observability");
     await metadataModal.locator('[x-model="metadataEditorModal.form.secondarySubdomainID"]').selectOption("subdomain-observability-metrics");
+    await metadataModal.locator('[x-model="metadataEditorModal.form.secondaryDomainID"]').selectOption("");
+    await expect(
+      metadataModal.locator('[x-model="metadataEditorModal.form.secondarySubdomainID"]'),
+    ).toHaveValue("");
 
     const updatedName = "additive-skill wp010 taxonomy";
     await metadataModal.locator('[x-model="metadataEditorModal.form.displayName"]').fill(updatedName);

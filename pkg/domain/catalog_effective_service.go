@@ -648,6 +648,13 @@ func mapEffectiveCatalogItem(
 		CustomMetadata:     customMetadata,
 		Labels:             labels,
 		ReadOnly:           !contentWritable,
+		CatalogClassificationState: DeriveCatalogClassificationState(
+			taxonomyProjection.PrimaryDomain,
+			taxonomyProjection.PrimarySubdomain,
+			taxonomyProjection.SecondaryDomain,
+			taxonomyProjection.SecondarySubdomain,
+			taxonomyProjection.Tags,
+		),
 	}
 
 	if source.ParentSkillID != nil {

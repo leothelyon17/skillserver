@@ -44,6 +44,7 @@ type CatalogItem struct {
 	CustomMetadata     map[string]any             `json:"custom_metadata,omitempty"`
 	Labels             []string                   `json:"labels,omitempty"`
 	ReadOnly           bool                       `json:"read_only"`
+	CatalogClassificationState
 }
 
 // CatalogTaxonomyReference is a lightweight domain/subdomain/tag reference on effective catalog items.
@@ -52,6 +53,29 @@ type CatalogTaxonomyReference struct {
 	Key  string `json:"key"`
 	Name string `json:"name"`
 }
+
+// CatalogClassificationState exposes explicit taxonomy completeness semantics.
+type CatalogClassificationState struct {
+	HasAssignment     bool     `json:"has_assignment"`
+	IsFullyClassified bool     `json:"is_fully_classified"`
+	MissingFields     []string `json:"missing_fields"`
+}
+
+// CatalogItemReference is a normalized catalog item identifier breakdown.
+type CatalogItemReference struct {
+	ItemID       string
+	Classifier   CatalogClassifier
+	SkillID      string
+	ResourcePath string
+}
+
+const (
+	CatalogClassificationMissingPrimaryDomain      = "primary_domain"
+	CatalogClassificationMissingPrimarySubdomain   = "primary_subdomain"
+	CatalogClassificationMissingSecondaryDomain    = "secondary_domain"
+	CatalogClassificationMissingSecondarySubdomain = "secondary_subdomain"
+	CatalogClassificationMissingTags               = "tags"
+)
 
 func normalizeCatalogItemMutability(item CatalogItem) (contentWritable bool, metadataWritable bool, readOnly bool) {
 	contentWritable = item.ContentWritable
@@ -240,6 +264,95 @@ func CanonicalSkillCatalogKey(skillID string) string {
 	return normalizeCatalogPath(skillID)
 }
 
+// NormalizeCatalogItemReference accepts canonical catalog item IDs plus legacy bare skill IDs.
+func NormalizeCatalogItemReference(rawItemID string) (CatalogItemReference, error) {
+	itemID := strings.TrimSpace(rawItemID)
+	if itemID == "" {
+		return CatalogItemReference{}, fmt.Errorf("catalog item id is required")
+	}
+
+	classifierToken, payload, hasClassifier := strings.Cut(itemID, ":")
+	if !hasClassifier {
+		skillKey := CanonicalSkillCatalogKey(itemID)
+		if skillKey == "" {
+			return CatalogItemReference{}, fmt.Errorf("catalog item id %q is invalid", rawItemID)
+		}
+		return CatalogItemReference{
+			ItemID:     BuildSkillCatalogItemID(skillKey),
+			Classifier: CatalogClassifierSkill,
+			SkillID:    skillKey,
+		}, nil
+	}
+
+	classifier, err := ParseCatalogClassifier(classifierToken)
+	if err != nil {
+		return CatalogItemReference{}, fmt.Errorf("catalog item id %q has an invalid classifier", rawItemID)
+	}
+
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return CatalogItemReference{}, fmt.Errorf("catalog item id %q has an empty payload", rawItemID)
+	}
+
+	switch classifier {
+	case CatalogClassifierSkill:
+		skillKey := CanonicalSkillCatalogKey(payload)
+		if skillKey == "" {
+			return CatalogItemReference{}, fmt.Errorf("catalog item id %q is invalid", rawItemID)
+		}
+		return CatalogItemReference{
+			ItemID:     BuildSkillCatalogItemID(skillKey),
+			Classifier: CatalogClassifierSkill,
+			SkillID:    skillKey,
+		}, nil
+	case CatalogClassifierPrompt:
+		skillID, resourcePath, err := parseCatalogResourceItemPayload(payload)
+		if err != nil {
+			return CatalogItemReference{}, err
+		}
+
+		skillKey := CanonicalSkillCatalogKey(skillID)
+		resourceKey := CanonicalPromptCatalogResourcePath(resourcePath)
+		if skillKey == "" || resourceKey == "" {
+			return CatalogItemReference{}, fmt.Errorf("catalog item id %q is invalid", rawItemID)
+		}
+		return CatalogItemReference{
+			ItemID:       BuildPromptCatalogItemID(skillKey, resourceKey),
+			Classifier:   CatalogClassifierPrompt,
+			SkillID:      skillKey,
+			ResourcePath: resourceKey,
+		}, nil
+	case CatalogClassifierRule:
+		skillID, resourcePath, err := parseCatalogResourceItemPayload(payload)
+		if err != nil {
+			return CatalogItemReference{}, err
+		}
+
+		skillKey := CanonicalSkillCatalogKey(skillID)
+		resourceKey := CanonicalRuleCatalogResourcePath(resourcePath)
+		if skillKey == "" || resourceKey == "" {
+			return CatalogItemReference{}, fmt.Errorf("catalog item id %q is invalid", rawItemID)
+		}
+		return CatalogItemReference{
+			ItemID:       BuildRuleCatalogItemID(skillKey, resourceKey),
+			Classifier:   CatalogClassifierRule,
+			SkillID:      skillKey,
+			ResourcePath: resourceKey,
+		}, nil
+	default:
+		return CatalogItemReference{}, fmt.Errorf("catalog classifier %q is invalid", classifier)
+	}
+}
+
+// NormalizeCatalogItemID returns the canonical catalog item ID for one input reference.
+func NormalizeCatalogItemID(rawItemID string) (string, error) {
+	reference, err := NormalizeCatalogItemReference(rawItemID)
+	if err != nil {
+		return "", err
+	}
+	return reference.ItemID, nil
+}
+
 // CanonicalPromptCatalogResourcePath normalizes prompt resource paths for deterministic keys/IDs.
 func CanonicalPromptCatalogResourcePath(resourcePath string) string {
 	return normalizeCatalogPath(resourcePath)
@@ -293,6 +406,60 @@ func CanonicalRuleCatalogKey(skillID, resourcePath string) string {
 // BuildRuleCatalogItemID returns a deterministic ID for rule catalog items.
 func BuildRuleCatalogItemID(skillID, resourcePath string) string {
 	return ruleCatalogIDPrefix + CanonicalRuleCatalogKey(skillID, resourcePath)
+}
+
+// DeriveCatalogClassificationState centralizes classification completeness semantics.
+func DeriveCatalogClassificationState(
+	primaryDomain *CatalogTaxonomyReference,
+	primarySubdomain *CatalogTaxonomyReference,
+	secondaryDomain *CatalogTaxonomyReference,
+	secondarySubdomain *CatalogTaxonomyReference,
+	tags []CatalogTaxonomyReference,
+) CatalogClassificationState {
+	missingFields := make([]string, 0, 5)
+	if primaryDomain == nil {
+		missingFields = append(missingFields, CatalogClassificationMissingPrimaryDomain)
+	}
+	if primarySubdomain == nil {
+		missingFields = append(missingFields, CatalogClassificationMissingPrimarySubdomain)
+	}
+	if secondaryDomain == nil {
+		missingFields = append(missingFields, CatalogClassificationMissingSecondaryDomain)
+	}
+	if secondarySubdomain == nil {
+		missingFields = append(missingFields, CatalogClassificationMissingSecondarySubdomain)
+	}
+
+	hasTags := len(tags) > 0
+	if !hasTags {
+		missingFields = append(missingFields, CatalogClassificationMissingTags)
+	}
+
+	hasAssignment := primaryDomain != nil ||
+		primarySubdomain != nil ||
+		secondaryDomain != nil ||
+		secondarySubdomain != nil ||
+		hasTags
+
+	return CatalogClassificationState{
+		HasAssignment:     hasAssignment,
+		IsFullyClassified: primaryDomain != nil && hasTags,
+		MissingFields:     missingFields,
+	}
+}
+
+func parseCatalogResourceItemPayload(payload string) (string, string, error) {
+	separator := strings.LastIndex(payload, ":")
+	if separator <= 0 || separator >= len(payload)-1 {
+		return "", "", fmt.Errorf("catalog resource payload %q must be <skill-id>:<resource-path>", payload)
+	}
+
+	skillID := strings.TrimSpace(payload[:separator])
+	resourcePath := strings.TrimSpace(payload[separator+1:])
+	if skillID == "" || resourcePath == "" {
+		return "", "", fmt.Errorf("catalog resource payload %q must be <skill-id>:<resource-path>", payload)
+	}
+	return skillID, resourcePath, nil
 }
 
 func normalizeCatalogDirectoryAllowlist(entries []string) []string {

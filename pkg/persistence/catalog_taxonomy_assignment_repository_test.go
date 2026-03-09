@@ -182,6 +182,112 @@ func TestCatalogItemTaxonomyAssignmentRepository_List_InvalidFilter_ReturnsError
 	}
 }
 
+func TestCatalogItemTaxonomyAssignmentRepository_GetUsageByDomainIDAndSubdomainID_ReturnsCountsAndPreview(
+	t *testing.T,
+) {
+	db, ctx := openMigratedSQLiteRepositoryDB(t)
+	sourceRepo := newCatalogSourceRepositoryForTest(t, db)
+	domainRepo := newCatalogDomainRepositoryForTest(t, db)
+	subdomainRepo := newCatalogSubdomainRepositoryForTest(t, db)
+	repo := newCatalogItemTaxonomyAssignmentRepositoryForTest(t, db)
+
+	seedTaxonomyAssignmentFixtureSourceItems(t, ctx, sourceRepo)
+	seedTaxonomyAssignmentFixtureDomainsAndSubdomains(t, ctx, domainRepo, subdomainRepo)
+	mustUpsertCatalogSourceRow(t, ctx, sourceRepo, CatalogSourceRow{
+		ItemID:           "skill:item-d",
+		Classifier:       CatalogClassifierSkill,
+		SourceType:       CatalogSourceTypeLocal,
+		Name:             "item-d",
+		Description:      "taxonomy fixture",
+		Content:          "content",
+		ContentHash:      "sha256:skill:item-d",
+		ContentWritable:  true,
+		MetadataWritable: true,
+		LastSyncedAt:     time.Date(2026, time.March, 4, 14, 5, 0, 0, time.UTC),
+	})
+
+	updatedAt := time.Date(2026, time.March, 9, 10, 0, 0, 0, time.UTC)
+	for _, row := range []CatalogItemTaxonomyAssignmentRow{
+		{
+			ItemID:             "skill:item-a",
+			PrimaryDomainID:    stringPointer("domain-platform"),
+			PrimarySubdomainID: stringPointer("subdomain-platform-api"),
+			UpdatedAt:          updatedAt,
+			UpdatedBy:          stringPointer("tester-a"),
+		},
+		{
+			ItemID:               "skill:item-b",
+			SecondaryDomainID:    stringPointer("domain-platform"),
+			SecondarySubdomainID: stringPointer("subdomain-platform-api"),
+			UpdatedAt:            updatedAt.Add(1 * time.Minute),
+			UpdatedBy:            stringPointer("tester-b"),
+		},
+		{
+			ItemID:               "skill:item-c",
+			PrimaryDomainID:      stringPointer("domain-platform"),
+			PrimarySubdomainID:   stringPointer("subdomain-platform-api"),
+			SecondaryDomainID:    stringPointer("domain-platform"),
+			SecondarySubdomainID: stringPointer("subdomain-platform-api"),
+			UpdatedAt:            updatedAt.Add(2 * time.Minute),
+			UpdatedBy:            stringPointer("tester-c"),
+		},
+		{
+			ItemID:             "skill:item-d",
+			PrimaryDomainID:    stringPointer("domain-observability"),
+			PrimarySubdomainID: stringPointer("subdomain-observability-metrics"),
+			UpdatedAt:          updatedAt.Add(3 * time.Minute),
+			UpdatedBy:          stringPointer("tester-d"),
+		},
+	} {
+		if err := repo.Upsert(ctx, row); err != nil {
+			t.Fatalf("expected taxonomy assignment usage fixture upsert to succeed, got %v", err)
+		}
+	}
+
+	domainUsage, err := repo.GetUsageByDomainID(ctx, "domain-platform", 2)
+	if err != nil {
+		t.Fatalf("expected domain usage query to succeed, got %v", err)
+	}
+	if domainUsage.AssignmentCount != 4 {
+		t.Fatalf("expected domain assignment count 4, got %d", domainUsage.AssignmentCount)
+	}
+	if domainUsage.DistinctItemCount != 3 {
+		t.Fatalf("expected domain distinct item count 3, got %d", domainUsage.DistinctItemCount)
+	}
+	assertStringSliceEqual(
+		t,
+		domainUsage.PreviewItemIDs,
+		[]string{"skill:item-a", "skill:item-b"},
+		"domain usage preview item_ids",
+	)
+
+	subdomainUsage, err := repo.GetUsageBySubdomainID(ctx, "subdomain-platform-api", 0)
+	if err != nil {
+		t.Fatalf("expected subdomain usage query to succeed, got %v", err)
+	}
+	if subdomainUsage.AssignmentCount != 4 {
+		t.Fatalf("expected subdomain assignment count 4, got %d", subdomainUsage.AssignmentCount)
+	}
+	if subdomainUsage.DistinctItemCount != 3 {
+		t.Fatalf("expected subdomain distinct item count 3, got %d", subdomainUsage.DistinctItemCount)
+	}
+	if len(subdomainUsage.PreviewItemIDs) != 0 {
+		t.Fatalf("expected no subdomain preview item_ids when preview limit is zero, got %v", subdomainUsage.PreviewItemIDs)
+	}
+}
+
+func TestCatalogItemTaxonomyAssignmentRepository_GetUsageByDomainID_WithNegativePreviewLimit_ReturnsError(
+	t *testing.T,
+) {
+	db, ctx := openMigratedSQLiteRepositoryDB(t)
+	repo := newCatalogItemTaxonomyAssignmentRepositoryForTest(t, db)
+
+	_, err := repo.GetUsageByDomainID(ctx, "domain-platform", -1)
+	if err == nil {
+		t.Fatalf("expected negative preview limit error, got nil")
+	}
+}
+
 func TestCatalogItemTagAssignmentRepository_ReplaceForItemID_ListAndIdempotency(t *testing.T) {
 	db, ctx := openMigratedSQLiteRepositoryDB(t)
 	sourceRepo := newCatalogSourceRepositoryForTest(t, db)
@@ -349,6 +455,61 @@ func TestCatalogItemTagAssignmentRepository_ListItemIDsByTagIDs_MatchAnyAndAll(t
 	}
 }
 
+func TestCatalogItemTagAssignmentRepository_GetUsageByTagID_ReturnsCountsAndPreview(t *testing.T) {
+	db, ctx := openMigratedSQLiteRepositoryDB(t)
+	sourceRepo := newCatalogSourceRepositoryForTest(t, db)
+	tagRepo := newCatalogTagRepositoryForTest(t, db)
+	repo := newCatalogItemTagAssignmentRepositoryForTest(t, db)
+
+	seedTagAssignmentFixtureSources(t, ctx, sourceRepo)
+	seedTagAssignmentFixtureTags(t, ctx, tagRepo)
+
+	createdAt := time.Date(2026, time.March, 9, 11, 0, 0, 0, time.UTC)
+	for _, item := range []struct {
+		itemID string
+		tagIDs []string
+	}{
+		{itemID: "skill:item-a", tagIDs: []string{"tag-a", "tag-b"}},
+		{itemID: "skill:item-b", tagIDs: []string{"tag-a"}},
+		{itemID: "skill:item-c", tagIDs: []string{"tag-a", "tag-c"}},
+	} {
+		if err := repo.ReplaceForItemID(ctx, item.itemID, item.tagIDs, createdAt); err != nil {
+			t.Fatalf("expected tag assignment usage fixture replace for %q to succeed, got %v", item.itemID, err)
+		}
+	}
+
+	tagAUsage, err := repo.GetUsageByTagID(ctx, "tag-a", 2)
+	if err != nil {
+		t.Fatalf("expected tag-a usage query to succeed, got %v", err)
+	}
+	if tagAUsage.AssignmentCount != 3 {
+		t.Fatalf("expected tag-a assignment count 3, got %d", tagAUsage.AssignmentCount)
+	}
+	if tagAUsage.DistinctItemCount != 3 {
+		t.Fatalf("expected tag-a distinct item count 3, got %d", tagAUsage.DistinctItemCount)
+	}
+	assertStringSliceEqual(
+		t,
+		tagAUsage.PreviewItemIDs,
+		[]string{"skill:item-a", "skill:item-b"},
+		"tag-a usage preview item_ids",
+	)
+
+	tagBUsage, err := repo.GetUsageByTagID(ctx, "tag-b", 0)
+	if err != nil {
+		t.Fatalf("expected tag-b usage query to succeed, got %v", err)
+	}
+	if tagBUsage.AssignmentCount != 1 {
+		t.Fatalf("expected tag-b assignment count 1, got %d", tagBUsage.AssignmentCount)
+	}
+	if tagBUsage.DistinctItemCount != 1 {
+		t.Fatalf("expected tag-b distinct item count 1, got %d", tagBUsage.DistinctItemCount)
+	}
+	if len(tagBUsage.PreviewItemIDs) != 0 {
+		t.Fatalf("expected no tag-b preview item_ids when preview limit is zero, got %v", tagBUsage.PreviewItemIDs)
+	}
+}
+
 func TestCatalogItemTagAssignmentRepository_List_InvalidFilter_ReturnsError(t *testing.T) {
 	db, ctx := openMigratedSQLiteRepositoryDB(t)
 	repo := newCatalogItemTagAssignmentRepositoryForTest(t, db)
@@ -367,6 +528,18 @@ func TestCatalogItemTagAssignmentRepository_List_InvalidFilter_ReturnsError(t *t
 	})
 	if err == nil {
 		t.Fatalf("expected invalid tag filter error, got nil")
+	}
+}
+
+func TestCatalogItemTagAssignmentRepository_GetUsageByTagID_WithNegativePreviewLimit_ReturnsError(
+	t *testing.T,
+) {
+	db, ctx := openMigratedSQLiteRepositoryDB(t)
+	repo := newCatalogItemTagAssignmentRepositoryForTest(t, db)
+
+	_, err := repo.GetUsageByTagID(ctx, "tag-a", -1)
+	if err == nil {
+		t.Fatalf("expected negative tag preview limit error, got nil")
 	}
 }
 

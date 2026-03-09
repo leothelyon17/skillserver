@@ -277,6 +277,11 @@ func buildCatalogSourceListQuery(filter CatalogSourceListFilter) (string, []any,
 		return "", nil, fmt.Errorf("catalog source filter cannot include both item_id and item_ids")
 	}
 
+	normalizedLimit, err := normalizeOptionalPositiveLimit(filter.Limit, "catalog source filter limit")
+	if err != nil {
+		return "", nil, err
+	}
+
 	conditions := make([]string, 0, 6)
 	args := make([]any, 0, 8)
 
@@ -324,6 +329,11 @@ func buildCatalogSourceListQuery(filter CatalogSourceListFilter) (string, []any,
 		}
 	}
 
+	if normalizedCursor := strings.TrimSpace(filter.Cursor); normalizedCursor != "" {
+		conditions = append(conditions, "item_id > ?")
+		args = append(args, normalizedCursor)
+	}
+
 	queryBuilder := strings.Builder{}
 	queryBuilder.WriteString(`SELECT
 		item_id,
@@ -345,7 +355,12 @@ func buildCatalogSourceListQuery(filter CatalogSourceListFilter) (string, []any,
 		queryBuilder.WriteString(" WHERE ")
 		queryBuilder.WriteString(strings.Join(conditions, " AND "))
 	}
-	queryBuilder.WriteString(" ORDER BY item_id ASC;")
+	queryBuilder.WriteString(" ORDER BY item_id ASC")
+	if normalizedLimit > 0 {
+		queryBuilder.WriteString(" LIMIT ?")
+		args = append(args, normalizedLimit)
+	}
+	queryBuilder.WriteString(";")
 
 	return queryBuilder.String(), args, nil
 }
