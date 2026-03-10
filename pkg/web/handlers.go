@@ -264,6 +264,7 @@ type CatalogMetadataEffectiveResponse struct {
 
 type catalogListRequest struct {
 	TaxonomyFilter       domain.CatalogEffectiveListFilter
+	Classifier           *domain.CatalogClassifier
 	IncludeContent       bool
 	UseEnvelope          bool
 	Limit                int
@@ -726,7 +727,7 @@ func (s *Server) listCatalog(c *echo.Context) error {
 		})
 	}
 
-	items, err := s.loadCatalogItems(c.Request().Context(), "", nil, request.TaxonomyFilter)
+	items, err := s.loadCatalogItems(c.Request().Context(), "", request.Classifier, request.TaxonomyFilter)
 	if err != nil {
 		if errors.Is(err, errCatalogTaxonomyFiltersUnavailable) {
 			return c.JSON(http.StatusServiceUnavailable, map[string]string{
@@ -750,18 +751,6 @@ func (s *Server) searchCatalog(c *echo.Context) error {
 		})
 	}
 
-	var classifier *domain.CatalogClassifier
-	classifierRaw := strings.TrimSpace(c.QueryParam("classifier"))
-	if classifierRaw != "" {
-		parsedClassifier, err := domain.ParseCatalogClassifier(classifierRaw)
-		if err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error": err.Error(),
-			})
-		}
-		classifier = &parsedClassifier
-	}
-
 	request, err := decodeCatalogListRequest(c)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
@@ -774,7 +763,7 @@ func (s *Server) searchCatalog(c *echo.Context) error {
 		})
 	}
 
-	items, err := s.loadCatalogItems(c.Request().Context(), query, classifier, request.TaxonomyFilter)
+	items, err := s.loadCatalogItems(c.Request().Context(), query, request.Classifier, request.TaxonomyFilter)
 	if err != nil {
 		if errors.Is(err, errCatalogTaxonomyFiltersUnavailable) {
 			return c.JSON(http.StatusServiceUnavailable, map[string]string{
@@ -814,7 +803,21 @@ func (s *Server) loadCatalogItems(
 	}
 
 	if normalizedQuery == "" {
-		return s.skillManager.ListCatalogItems()
+		items, err := s.skillManager.ListCatalogItems()
+		if err != nil {
+			return nil, err
+		}
+		if classifier == nil {
+			return items, nil
+		}
+
+		filtered := make([]domain.CatalogItem, 0, len(items))
+		for _, item := range items {
+			if item.Classifier == *classifier {
+				filtered = append(filtered, item)
+			}
+		}
+		return filtered, nil
 	}
 	return s.skillManager.SearchCatalogItems(normalizedQuery, classifier)
 }
@@ -2252,6 +2255,10 @@ func decodeCatalogListRequest(c *echo.Context) (catalogListRequest, error) {
 	if err != nil {
 		return catalogListRequest{}, err
 	}
+	classifier, err := decodeCatalogClassifierQueryParam(c.QueryParam("classifier"))
+	if err != nil {
+		return catalogListRequest{}, err
+	}
 
 	includeContent, err := decodeCatalogTaxonomyBoolQueryParam(c.QueryParam("include_content"), "include_content")
 	if err != nil {
@@ -2275,6 +2282,7 @@ func decodeCatalogListRequest(c *echo.Context) (catalogListRequest, error) {
 
 	request := catalogListRequest{
 		TaxonomyFilter: taxonomyFilter,
+		Classifier:     classifier,
 	}
 	if includeContent != nil {
 		request.IncludeContent = *includeContent
@@ -2312,6 +2320,19 @@ func decodeCatalogListRequest(c *echo.Context) (catalogListRequest, error) {
 	}
 	request.Limit = limit
 	return request, nil
+}
+
+func decodeCatalogClassifierQueryParam(raw string) (*domain.CatalogClassifier, error) {
+	classifierRaw := strings.TrimSpace(raw)
+	if classifierRaw == "" {
+		return nil, nil
+	}
+
+	parsedClassifier, err := domain.ParseCatalogClassifier(classifierRaw)
+	if err != nil {
+		return nil, err
+	}
+	return &parsedClassifier, nil
 }
 
 func decodeCatalogListTaxonomyFilter(c *echo.Context) (domain.CatalogEffectiveListFilter, error) {

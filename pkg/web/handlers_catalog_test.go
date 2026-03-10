@@ -84,6 +84,44 @@ func TestListCatalog_ReturnsMixedCatalogItemsWithPromptMetadata(t *testing.T) {
 	}
 }
 
+func TestListCatalog_SupportsOptionalClassifierFiltering(t *testing.T) {
+	t.Parallel()
+
+	server := newResourceFixtureServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/catalog?classifier=Prompt", nil)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	items := decodeJSONArray(t, rec.Body.Bytes())
+	if len(items) != 1 {
+		t.Fatalf("expected 1 prompt catalog item, got %d payload=%q", len(items), rec.Body.String())
+	}
+	if classifier, _ := items[0]["classifier"].(string); classifier != "prompt" {
+		t.Fatalf("expected classifier prompt, got %q", classifier)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/catalog?classifier=skill", nil)
+	rec = httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	items = decodeJSONArray(t, rec.Body.Bytes())
+	if len(items) != 1 {
+		t.Fatalf("expected 1 skill catalog item, got %d payload=%q", len(items), rec.Body.String())
+	}
+	if classifier, _ := items[0]["classifier"].(string); classifier != "skill" {
+		t.Fatalf("expected classifier skill, got %q", classifier)
+	}
+}
+
 func TestSearchCatalog_SupportsOptionalClassifierFiltering(t *testing.T) {
 	t.Parallel()
 
@@ -222,6 +260,23 @@ func TestSearchCatalog_InvalidClassifier_ReturnsValidationError(t *testing.T) {
 	server := newResourceFixtureServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/catalog/search?q=fixture&classifier=skills", nil)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(strings.ToLower(rec.Body.String()), "invalid catalog classifier") {
+		t.Fatalf("expected invalid classifier validation message, got %q", rec.Body.String())
+	}
+}
+
+func TestListCatalog_InvalidClassifier_ReturnsValidationError(t *testing.T) {
+	t.Parallel()
+
+	server := newResourceFixtureServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/catalog?classifier=skills", nil)
 	rec := httptest.NewRecorder()
 	server.echo.ServeHTTP(rec, req)
 
