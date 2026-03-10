@@ -3207,6 +3207,10 @@
                     const normalizedQuery = String(query || '').trim().toLowerCase();
                     const seenResultKeys = new Set();
                     return items.filter((item) => {
+                        const resultKey = this.catalogItemResultKey(item);
+                        if (resultKey !== '' && seenResultKeys.has(resultKey)) {
+                            return false;
+                        }
                         if (!this.isItemVisibleForClassifierFilters(item)) {
                             return false;
                         }
@@ -3214,6 +3218,9 @@
                             return false;
                         }
                         if (!normalizedQuery) {
+                            if (resultKey !== '') {
+                                seenResultKeys.add(resultKey);
+                            }
                             return true;
                         }
 
@@ -3237,11 +3244,6 @@
                             .join(' ')
                             .toLowerCase();
                         if (!haystack.includes(normalizedQuery)) {
-                            return false;
-                        }
-
-                        const resultKey = this.catalogItemResultKey(item);
-                        if (resultKey !== '' && seenResultKeys.has(resultKey)) {
                             return false;
                         }
                         if (resultKey !== '') {
@@ -3343,6 +3345,55 @@
                     };
                 },
 
+                catalogPaginationCursorForItem(item) {
+                    return this.catalogItemResultKey(item);
+                },
+
+                paginateCatalogItemsLocally(items) {
+                    if (!Array.isArray(items) || items.length === 0) {
+                        return {
+                            items: [],
+                            nextCursor: '',
+                            hasMore: false,
+                            usedEnvelope: false
+                        };
+                    }
+
+                    const limit = Number(this.catalogPagination.limit) > 0
+                        ? Number(this.catalogPagination.limit)
+                        : 24;
+                    const cursor = String(this.catalogPagination.cursor || '').trim();
+                    let start = 0;
+                    if (cursor !== '') {
+                        while (start < items.length) {
+                            const itemCursor = this.catalogPaginationCursorForItem(items[start]);
+                            if (itemCursor.localeCompare(cursor) > 0) {
+                                break;
+                            }
+                            start += 1;
+                        }
+                    }
+
+                    if (start >= items.length) {
+                        return {
+                            items: [],
+                            nextCursor: '',
+                            hasMore: false,
+                            usedEnvelope: true
+                        };
+                    }
+
+                    const pageItems = items.slice(start, start + limit);
+                    const hasMore = start + pageItems.length < items.length;
+                    const lastItem = pageItems.length > 0 ? pageItems[pageItems.length - 1] : null;
+                    return {
+                        items: pageItems,
+                        nextCursor: hasMore && lastItem ? this.catalogPaginationCursorForItem(lastItem) : '',
+                        hasMore,
+                        usedEnvelope: true
+                    };
+                },
+
                 async fetchSelectedClassifierCatalogResults(query, signal) {
                     const selected = this.selectedClassifierFilters();
                     const payloads = await Promise.all(selected.map((classifier) => {
@@ -3355,7 +3406,8 @@
                             : this.buildCatalogListURL(requestOptions);
                         return this.fetchCatalogCollection(url, signal);
                     }));
-                    return this.mergeCatalogCollectionPayloads(payloads);
+                    const mergedPayload = this.mergeCatalogCollectionPayloads(payloads);
+                    return this.paginateCatalogItemsLocally(mergedPayload.items);
                 },
 
                 isSkillCatalogItem(item) {
@@ -3485,9 +3537,7 @@
                         return;
                     }
 
-                    if (useClassifierScopedFetch) {
-                        this.resetCatalogPagination();
-                    } else if (!preserveCursor) {
+                    if (!preserveCursor) {
                         this.resetCatalogPagination();
                     }
 

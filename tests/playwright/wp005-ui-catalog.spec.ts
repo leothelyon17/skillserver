@@ -174,6 +174,85 @@ test.describe("WP-005 unified catalog rendering and actions", () => {
     expect(requestClassifiers.slice(1).sort()).toEqual(["rule", "skill"]);
   });
 
+  test("preserves pagination when filtering down to two classifiers", async ({ page }) => {
+    const promptItems = Array.from({ length: 30 }, (_, index) => ({
+      id: `prompt:additive-skill:prompts/prompt-${String(index + 1).padStart(2, "0")}.md`,
+      classifier: "prompt",
+      name: `prompt-${String(index + 1).padStart(2, "0")}.md`,
+      description: "Prompt fixture",
+      parent_skill_id: "additive-skill",
+      resource_path: `prompts/prompt-${String(index + 1).padStart(2, "0")}.md`,
+    }));
+    const ruleItems = Array.from({ length: 12 }, (_, index) => ({
+      id: `rule:additive-skill:rules/rule-${String(index + 1).padStart(2, "0")}.md`,
+      classifier: "rule",
+      name: `rule-${String(index + 1).padStart(2, "0")}.md`,
+      description: "Rule fixture",
+      parent_skill_id: "additive-skill",
+      resource_path: `rules/rule-${String(index + 1).padStart(2, "0")}.md`,
+    }));
+    const skillItems = Array.from({ length: 20 }, (_, index) => ({
+      id: `skill:skill-${String(index + 1).padStart(2, "0")}`,
+      classifier: "skill",
+      name: `skill-${String(index + 1).padStart(2, "0")}`,
+      description: "Skill fixture",
+    }));
+
+    await page.route("**/api/catalog*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== "/api/catalog") {
+        await route.continue();
+        return;
+      }
+
+      const classifier = url.searchParams.get("classifier") ?? "mixed";
+      let body: unknown;
+      if (classifier === "skill") {
+        body = skillItems;
+      } else if (classifier === "rule") {
+        body = ruleItems;
+      } else {
+        const firstPage = promptItems.slice(0, 24);
+        body = {
+          items: firstPage,
+          next_cursor: firstPage[firstPage.length - 1].id,
+          has_more: true,
+        };
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+
+    await openHome(page);
+    await expect(page.locator(".skill-card")).toHaveCount(24);
+    await expect(page.locator(".catalog-pagination")).toBeVisible();
+
+    await page.getByLabel("Show Prompts").uncheck();
+
+    const pagination = page.locator(".catalog-pagination");
+    await expect(pagination).toBeVisible();
+    await expect(page.locator(".skill-card")).toHaveCount(24);
+    await expect(catalogCard(page, "rule-01.md")).toBeVisible();
+    await expect(catalogCard(page, "skill-01")).toBeVisible();
+    await expect(catalogCard(page, "skill-20")).toHaveCount(0);
+    await expect(pagination).toContainText("Page 1");
+    await expect(pagination).toContainText("24 items");
+    await expect(pagination).toContainText("more available");
+
+    await pagination.getByRole("button", { name: /Next/i }).click();
+
+    await expect(page.locator(".skill-card")).toHaveCount(8);
+    await expect(catalogCard(page, "rule-01.md")).toHaveCount(0);
+    await expect(catalogCard(page, "skill-13")).toBeVisible();
+    await expect(catalogCard(page, "skill-20")).toBeVisible();
+    await expect(pagination).toContainText("Page 2");
+    await expect(pagination).toContainText("8 items");
+  });
+
   test("keeps skill edit and create/delete flows stable", async ({ page }) => {
     await openHome(page);
 
