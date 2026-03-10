@@ -107,6 +107,73 @@ test.describe("WP-005 unified catalog rendering and actions", () => {
     await expect(page.locator(".skill-card")).toHaveCount(1);
   });
 
+  test("fetches selected classifiers directly when hiding prompts", async ({ page }) => {
+    const requestClassifiers: string[] = [];
+    const promptItem = {
+      id: "prompt:additive-skill:prompts/system.md",
+      classifier: "prompt",
+      name: "system.md",
+      description: "Prompt-heavy mixed page",
+    };
+    const skillItem = {
+      id: "skill:legacy-skill",
+      classifier: "skill",
+      name: "legacy-skill",
+      description: "Skill result returned from classifier-scoped fetch",
+    };
+    const ruleItem = {
+      id: "rule:additive-skill:rules/agents.md",
+      classifier: "rule",
+      name: "agents.md",
+      description: "Rule result returned from classifier-scoped fetch",
+      parent_skill_id: "additive-skill",
+      resource_path: "rules/agents.md",
+    };
+
+    await page.route("**/api/catalog*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== "/api/catalog") {
+        await route.continue();
+        return;
+      }
+
+      const classifier = url.searchParams.get("classifier") ?? "mixed";
+      requestClassifiers.push(classifier);
+
+      let body: unknown;
+      if (classifier === "skill") {
+        body = [skillItem];
+      } else if (classifier === "rule") {
+        body = [ruleItem];
+      } else {
+        body = {
+          items: [promptItem],
+          next_cursor: promptItem.id,
+          has_more: true,
+        };
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+
+    await openHome(page);
+    await expect(catalogCard(page, "system.md")).toBeVisible();
+
+    await page.getByLabel("Show Prompts").uncheck();
+
+    await expect(catalogCard(page, "system.md")).toHaveCount(0);
+    await expect(catalogCard(page, "legacy-skill")).toBeVisible();
+    await expect(catalogCard(page, "agents.md")).toBeVisible();
+    await expect(page.locator(".skill-card")).toHaveCount(2);
+
+    expect(requestClassifiers).toHaveLength(3);
+    expect(requestClassifiers.slice(1).sort()).toEqual(["rule", "skill"]);
+  });
+
   test("keeps skill edit and create/delete flows stable", async ({ page }) => {
     await openHome(page);
 

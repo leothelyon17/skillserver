@@ -3178,6 +3178,11 @@
                     return '';
                 },
 
+                shouldUseClassifierScopedFetch() {
+                    const selected = this.selectedClassifierFilters();
+                    return selected.length > 1 && selected.length < 3;
+                },
+
                 filterCatalogItems(items, query = '') {
                     if (!Array.isArray(items) || items.length === 0) {
                         return [];
@@ -3218,13 +3223,18 @@
                     });
                 },
 
-                buildCatalogListURL() {
+                buildCatalogListURL(options = {}) {
                     const params = new URLSearchParams();
-                    params.set('limit', String(this.catalogPagination.limit));
-                    if (this.catalogPagination.cursor !== '') {
-                        params.set('cursor', this.catalogPagination.cursor);
+                    const usePagination = !options || options.usePagination !== false;
+                    if (usePagination) {
+                        params.set('limit', String(this.catalogPagination.limit));
+                        if (this.catalogPagination.cursor !== '') {
+                            params.set('cursor', this.catalogPagination.cursor);
+                        }
                     }
-                    const classifier = this.classifierFilterParam();
+                    const classifier = options && Object.prototype.hasOwnProperty.call(options, 'classifier')
+                        ? String(options.classifier || '').trim()
+                        : this.classifierFilterParam();
                     if (classifier) {
                         params.set('classifier', classifier);
                     }
@@ -3236,14 +3246,19 @@
                     return queryString ? `/api/catalog?${queryString}` : '/api/catalog';
                 },
 
-                buildCatalogSearchURL(query) {
+                buildCatalogSearchURL(query, options = {}) {
                     const params = new URLSearchParams();
                     params.set('q', query);
-                    params.set('limit', String(this.catalogPagination.limit));
-                    if (this.catalogPagination.cursor !== '') {
-                        params.set('cursor', this.catalogPagination.cursor);
+                    const usePagination = !options || options.usePagination !== false;
+                    if (usePagination) {
+                        params.set('limit', String(this.catalogPagination.limit));
+                        if (this.catalogPagination.cursor !== '') {
+                            params.set('cursor', this.catalogPagination.cursor);
+                        }
                     }
-                    const classifier = this.classifierFilterParam();
+                    const classifier = options && Object.prototype.hasOwnProperty.call(options, 'classifier')
+                        ? String(options.classifier || '').trim()
+                        : this.classifierFilterParam();
                     if (classifier) {
                         params.set('classifier', classifier);
                     }
@@ -3252,6 +3267,57 @@
                         params.set(key, value);
                     }
                     return `/api/catalog/search?${params.toString()}`;
+                },
+
+                async fetchCatalogCollection(url, signal) {
+                    const response = await fetch(url, { signal });
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    return this.normalizeCatalogCollectionPayload(await response.json());
+                },
+
+                mergeCatalogCollectionPayloads(payloads) {
+                    const items = [];
+                    for (const payload of payloads) {
+                        if (payload && Array.isArray(payload.items)) {
+                            items.push(...payload.items);
+                        }
+                    }
+
+                    items.sort((left, right) => {
+                        const leftID = typeof (left && left.id) === 'string' ? left.id : '';
+                        const rightID = typeof (right && right.id) === 'string' ? right.id : '';
+                        if (leftID !== rightID) {
+                            return leftID.localeCompare(rightID);
+                        }
+
+                        const leftName = typeof (left && left.name) === 'string' ? left.name : '';
+                        const rightName = typeof (right && right.name) === 'string' ? right.name : '';
+                        return leftName.localeCompare(rightName);
+                    });
+
+                    return {
+                        items,
+                        nextCursor: '',
+                        hasMore: false,
+                        usedEnvelope: false
+                    };
+                },
+
+                async fetchSelectedClassifierCatalogResults(query, signal) {
+                    const selected = this.selectedClassifierFilters();
+                    const payloads = await Promise.all(selected.map((classifier) => {
+                        const requestOptions = {
+                            classifier,
+                            usePagination: false
+                        };
+                        const url = query
+                            ? this.buildCatalogSearchURL(query, requestOptions)
+                            : this.buildCatalogListURL(requestOptions);
+                        return this.fetchCatalogCollection(url, signal);
+                    }));
+                    return this.mergeCatalogCollectionPayloads(payloads);
                 },
 
                 isSkillCatalogItem(item) {
@@ -3369,6 +3435,7 @@
                 async searchSkills(options = {}) {
                     this.cancelSearchDebounce();
                     const preserveCursor = options && options.preserveCursor === true;
+                    const useClassifierScopedFetch = this.shouldUseClassifierScopedFetch();
 
                     if (!this.hasVisibleClassifierSelection()) {
                         this.searchRequestVersion += 1;
@@ -3380,7 +3447,9 @@
                         return;
                     }
 
-                    if (!preserveCursor) {
+                    if (useClassifierScopedFetch) {
+                        this.resetCatalogPagination();
+                    } else if (!preserveCursor) {
                         this.resetCatalogPagination();
                     }
 
@@ -3394,13 +3463,12 @@
 
                     this.isLoading = true;
                     try {
-                        const response = await fetch(query ? this.buildCatalogSearchURL(query) : this.buildCatalogListURL(), {
-                            signal: controller.signal
-                        });
-                        if (!response.ok) {
-                            throw new Error(`HTTP ${response.status}`);
-                        }
-                        const payload = this.normalizeCatalogCollectionPayload(await response.json());
+                        const payload = useClassifierScopedFetch
+                            ? await this.fetchSelectedClassifierCatalogResults(query, controller.signal)
+                            : await this.fetchCatalogCollection(
+                                query ? this.buildCatalogSearchURL(query) : this.buildCatalogListURL(),
+                                controller.signal
+                            );
                         if (requestVersion !== this.searchRequestVersion) {
                             return;
                         }
