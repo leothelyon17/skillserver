@@ -503,6 +503,101 @@ func TestCatalogPersistenceCoordinator_FullSyncAndRebuild_BackfillsLegacyLabelsI
 	}
 }
 
+func TestCatalogPersistenceCoordinator_FullSyncAndRebuild_ReconcilesStaleRelationshipRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	skillsDir := t.TempDir()
+	skillDir := filepath.Join(skillsDir, "relationship-reconcile-skill")
+	writeSkillFixture(
+		t,
+		skillDir,
+		"relationship-reconcile-skill",
+		"Relationship reconciliation fixture skill",
+		"# Relationship Reconcile Skill\n",
+	)
+	writeSkillResourceFixture(t, skillDir, "prompts/system.md", "# System Prompt\n")
+	writeSkillResourceFixture(t, skillDir, "rules/security.md", "# Security Rule\n")
+
+	manager, err := domain.NewFileSystemManager(skillsDir, nil)
+	if err != nil {
+		t.Fatalf("failed to initialize file system manager: %v", err)
+	}
+
+	persistenceDir := t.TempDir()
+	cfg := PersistenceRuntimeConfig{
+		Enabled: true,
+		Dir:     persistenceDir,
+		DBPath:  filepath.Join(persistenceDir, "catalog.sqlite"),
+	}
+	runtime, err := bootstrapCatalogPersistenceRuntime(
+		ctx,
+		cfg,
+		manager,
+		log.New(io.Discard, "", 0),
+	)
+	if err != nil {
+		t.Fatalf("failed to bootstrap persistence runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := runtime.Close(); closeErr != nil {
+			t.Fatalf("failed closing persistence runtime: %v", closeErr)
+		}
+	})
+
+	if err := runtime.coordinator.FullSyncAndRebuild(ctx); err != nil {
+		t.Fatalf("initial full sync and rebuild failed: %v", err)
+	}
+
+	skillItemID := domain.BuildSkillCatalogItemID("relationship-reconcile-skill")
+	promptItemID := domain.BuildPromptCatalogItemID("relationship-reconcile-skill", "prompts/system.md")
+	ruleItemID := domain.BuildRuleCatalogItemID("relationship-reconcile-skill", "rules/security.md")
+	updatedAt := time.Date(2026, time.March, 7, 16, 0, 0, 0, time.UTC)
+
+	ruleRepo, err := persistence.NewCatalogSkillRuleRelationshipRepository(runtime.db)
+	if err != nil {
+		t.Fatalf("failed to create skill-rule relationship repository: %v", err)
+	}
+	promptRepo, err := persistence.NewCatalogSkillPromptRelationshipRepository(runtime.db)
+	if err != nil {
+		t.Fatalf("failed to create skill-prompt relationship repository: %v", err)
+	}
+
+	if err := ruleRepo.ReplaceForSkillItemID(ctx, skillItemID, []string{ruleItemID}, updatedAt, nil); err != nil {
+		t.Fatalf("failed to set initial rule relationship: %v", err)
+	}
+	if err := promptRepo.SetForSkillItemID(ctx, skillItemID, promptItemID, updatedAt, nil); err != nil {
+		t.Fatalf("failed to set initial prompt relationship: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(skillDir, "prompts", "system.md")); err != nil {
+		t.Fatalf("failed to remove prompt fixture before reconciliation: %v", err)
+	}
+	if err := os.Remove(filepath.Join(skillDir, "rules", "security.md")); err != nil {
+		t.Fatalf("failed to remove rule fixture before reconciliation: %v", err)
+	}
+
+	if err := runtime.coordinator.FullSyncAndRebuild(ctx); err != nil {
+		t.Fatalf("full sync and rebuild with stale relationships failed: %v", err)
+	}
+
+	remainingRuleRows, err := ruleRepo.ListBySkillItemID(ctx, skillItemID)
+	if err != nil {
+		t.Fatalf("failed to list rule relationships after reconciliation: %v", err)
+	}
+	if len(remainingRuleRows) != 0 {
+		t.Fatalf("expected stale rule relationships to be pruned, got %+v", remainingRuleRows)
+	}
+
+	remainingPromptRows, err := promptRepo.ListBySkillItemID(ctx, skillItemID)
+	if err != nil {
+		t.Fatalf("failed to list prompt relationships after reconciliation: %v", err)
+	}
+	if len(remainingPromptRows) != 0 {
+		t.Fatalf("expected stale prompt relationships to be pruned, got %+v", remainingPromptRows)
+	}
+}
+
 func writeSkillFixture(t *testing.T, skillDir string, name string, description string, body string) {
 	t.Helper()
 
@@ -518,6 +613,18 @@ func writeSkillFixture(t *testing.T, skillDir string, name string, description s
 
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMarkdown), 0o644); err != nil {
 		t.Fatalf("failed to write skill fixture %q: %v", skillDir, err)
+	}
+}
+
+func writeSkillResourceFixture(t *testing.T, skillDir string, resourcePath string, content string) {
+	t.Helper()
+
+	fullPath := filepath.Join(skillDir, resourcePath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatalf("failed to create resource fixture directory %q: %v", filepath.Dir(fullPath), err)
+	}
+	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write resource fixture %q: %v", fullPath, err)
 	}
 }
 

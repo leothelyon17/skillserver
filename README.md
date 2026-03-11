@@ -807,6 +807,105 @@ export SKILLSERVER_MCP_TRANSPORT=stdio
 ./skillserver
 ```
 
+## Skill/Rule/Prompt Relationship Metadata (ADR-008)
+
+Canonical ADR: [`docs/adrs/008-skill-rule-and-prompt-relationship-metadata.md`](/home/jeff/skillserver/docs/adrs/008-skill-rule-and-prompt-relationship-metadata.md)
+
+Relationship metadata is additive:
+- a `skill` can reference zero-or-one `prompt`
+- a `skill` can reference zero-or-more `rule` items
+- `prompt` and `rule` metadata views expose reverse-related `skills`
+
+Behavior notes:
+- Relationship edits are metadata-only and do not change `content_writable`, `metadata_writable`, or Git-backed read-only semantics.
+- GUI and REST writes are skill-owned only in v1.
+- MCP is read-only for relationship metadata in v1.
+- `GET /api/catalog` and `GET /api/catalog/search` remain relationship-light.
+- Catalog tiles intentionally do not render relationship badges or chips in v1.
+
+### Relationship Read Surfaces
+
+- REST `GET /api/catalog/:id/metadata`
+- REST `GET /api/catalog/metadata?item_id=...`
+- MCP `get_catalog_item_relationships`
+
+All read surfaces return the same normalized envelope:
+
+```json
+{
+  "item_id": "skill:demo-skill",
+  "relationships": {
+    "prompt": {
+      "id": "prompt:demo-skill:prompts/system.md",
+      "classifier": "prompt",
+      "name": "system",
+      "parent_skill_id": "skill:demo-skill",
+      "resource_path": "prompts/system.md"
+    },
+    "rules": [
+      {
+        "id": "rule:demo-skill:rules/security.md",
+        "classifier": "rule",
+        "name": "security",
+        "parent_skill_id": "skill:demo-skill",
+        "resource_path": "rules/security.md"
+      }
+    ],
+    "skills": []
+  }
+}
+```
+
+Classifier semantics:
+- `skill` metadata populates forward `prompt` and `rules`; `skills` stays empty.
+- `prompt` metadata populates reverse `skills`; `prompt` is `null` and `rules` is empty.
+- `rule` metadata populates reverse `skills`; `prompt` is `null` and `rules` is empty.
+
+ID compatibility:
+- REST relationship surfaces are canonical-only.
+- MCP `get_catalog_item_relationships` accepts bare `<skill-id>` only when the target item is a `skill`.
+- `prompt` and `rule` reads require canonical item IDs on both REST and MCP surfaces.
+
+### Relationship Write Surface
+
+Use REST `PATCH /api/catalog/:id/relationships` to update skill-owned metadata:
+
+```json
+{
+  "prompt_item_id": "prompt:demo-skill:prompts/system.md",
+  "rule_item_ids": [
+    "rule:demo-skill:rules/security.md",
+    "rule:demo-skill:rules/style.md"
+  ],
+  "updated_by": "gui"
+}
+```
+
+Write semantics:
+- Path `:id` must resolve to a `skill` item.
+- `prompt_item_id`:
+  - canonical prompt ID string sets or replaces the current prompt link
+  - explicit `null` clears the current prompt link
+  - omission leaves the prompt link unchanged
+- `rule_item_ids`:
+  - present replaces the full rule set
+  - omission leaves rules unchanged
+  - duplicate IDs are rejected
+- Prompt and rule write attempts return `403`.
+- Unknown source/target items return `404`.
+- Validation failures return `400`.
+
+### Verification Evidence
+
+Treat the following as the release-readiness evidence for ADR-008:
+- [`WP-008 completion summary`](/home/jeff/skillserver/docs/implementation-plans/skill-rule-and-prompt-relationship-metadata/work-packages/completion-summaries/WP-008-completion-summary.md)
+- `go test ./pkg/web -run 'TestCatalogRelationshipMetadataEndpoints|TestCatalogMetadataEndpoints' -count=1`
+- `go test ./pkg/mcp -run 'TestMCPServer_StdioRegression' -count=1`
+- `npx playwright test tests/playwright/wp007-ui-relationship-metadata-editor.spec.ts --project=chromium`
+- `npx playwright test tests/playwright/wp008-ui.spec.ts --project=chromium`
+
+Detailed rollout and rollback runbook: [`docs/operations/skill-relationship-metadata-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/skill-relationship-metadata-rollout-rollback.md)
+
 ## MCP Client Configuration
 
 SkillServer supports MCP over stdio and Streamable HTTP. The examples below are stdio-based client configurations.
@@ -1017,7 +1116,14 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 - Empty or missing `q` for `/api/catalog/search` returns `400` (`query parameter 'q' is required`)
 - `POST /api/catalog/materialize` returns `403` (`catalog materialization capability is disabled`) when materialization capability is disabled.
 - `GET /api/catalog/:id/metadata` - Return source + overlay + effective metadata projections for one catalog item (canonical item IDs only)
+- `GET /api/catalog/metadata?item_id=...` - Query-form metadata read for one catalog item (canonical item IDs only)
 - `PATCH /api/catalog/:id/metadata` - Update metadata overlays for one catalog item (`display_name`, `description`, `labels`, `custom_metadata`, optional `updated_by`)
+- Metadata responses include an additive `relationships` object:
+  - `prompt` - zero-or-one related prompt for `skill` items, otherwise `null`
+  - `rules` - ordered related rules for `skill` items, otherwise empty
+  - `skills` - reverse-related skills for `prompt` and `rule` items, otherwise empty
+- `PATCH /api/catalog/:id/relationships` - Replace skill-owned relationship metadata (`prompt_item_id`, `rule_item_ids`, optional `updated_by`); REST is canonical-only and rejects prompt/rule write attempts
+- Relationship detail is intentionally absent from `GET /api/catalog` and `GET /api/catalog/search`; fetch it from metadata/detail surfaces only
 
 #### Taxonomy (ADR-005, additive; persistence mode required)
 - `GET /api/catalog/:id/taxonomy` - Get taxonomy assignment metadata for one catalog item (`has_assignment`, `is_fully_classified`, `missing_fields`, bare skill IDs accepted for `skill` items)
@@ -1057,6 +1163,7 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 #### Catalog (ADR-003 + ADR-007, additive)
 - `list_catalog` - List unified catalog items with optional `classifier` filter (`skill`, `prompt`, or `rule`), optional taxonomy filters (`primary_domain_id`, `secondary_domain_id`, `subdomain_id`, `tag_ids`, `tag_match`), optional classification-state filters (`unclassified`, `missing_primary_domain`, `missing_tags`), and optional `include_content`
 - `search_catalog` - Search unified catalog items by `query`, with optional classifier/taxonomy/classification-state filters and optional `include_content`
+- `get_catalog_item_relationships` - Return one catalog item's relationship metadata (`item_id`, `relationships.prompt`, `relationships.rules`, `relationships.skills`) using the same normalized envelope as REST metadata reads; accepts bare skill IDs only for `skill` items and requires canonical IDs for `prompt`/`rule` items
 - `export_catalog_items` - Export one or more catalog items as `tar.gz` with optional dry-run planning output, optional `archive_root_mode=flat|materialized`, and optional `include_archive_base64=true`
 - `materialize_catalog_items` - Materialize one or more catalog items into an allowed destination directory (registered only when materialization gate is enabled)
 - Taxonomy read tools (always registered):
@@ -1073,6 +1180,9 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
   - `create_taxonomy_tag`, `update_taxonomy_tag`, `delete_taxonomy_tag`
   - `patch_catalog_item_taxonomy`
   - `patch_catalog_items_taxonomy`
+- Relationship tooling note:
+  - MCP exposes relationship reads only in v1.
+  - No MCP relationship write tool is registered.
 - Optional migration strategy:
   - Existing clients can keep using `list_skills`/`search_skills`
   - New mixed-item clients should adopt `list_catalog`/`search_catalog` for classifier-aware behavior
@@ -1210,6 +1320,38 @@ export SKILLSERVER_GIT_ENABLE_STORED_CREDENTIALS=false
 ```
 
 Detailed rollout/rollback runbook: [`docs/operations/private-git-credential-sources-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/private-git-credential-sources-rollout-rollback.md)
+
+## Skill/Rule/Prompt Relationship Metadata Rollout and Rollback (ADR-008)
+
+Runtime controls:
+- ADR-008 adds no feature-specific flags or environment variables.
+- Relationship metadata depends on ADR-004 persistence runtime:
+  - `--persistence-data=true|false`
+  - `--persistence-dir=/path/to/writable/dir`
+  - `--persistence-db-path=skillserver.db` (or absolute path)
+  - `SKILLSERVER_PERSISTENCE_DATA`
+  - `SKILLSERVER_PERSISTENCE_DIR`
+  - `SKILLSERVER_PERSISTENCE_DB_PATH`
+
+Behavior notes:
+- Relationship metadata is additive; list/search payloads remain relationship-light.
+- GUI and REST writes stay skill-owned only.
+- MCP exposes read-only relationship lookup through `get_catalog_item_relationships`.
+- Preferred rollback is deployment rollback to the last pre-ADR-008 build while leaving SQLite data intact.
+- Broader fallback remains available by disabling ADR-004 persistence mode, but that also removes other persistence-backed metadata/taxonomy surfaces.
+
+Quick fallback:
+
+```bash
+# Broad metadata/taxonomy fallback
+./skillserver --persistence-data=false
+
+# Equivalent env override
+export SKILLSERVER_PERSISTENCE_DATA=false
+./skillserver
+```
+
+Detailed rollout/rollback runbook: [`docs/operations/skill-relationship-metadata-rollout-rollback.md`](/home/jeff/skillserver/docs/operations/skill-relationship-metadata-rollout-rollback.md)
 
 ## Dynamic Resource Discovery and Rollout Control
 

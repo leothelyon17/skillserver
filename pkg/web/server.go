@@ -47,6 +47,7 @@ type Server struct {
 	skillManager               domain.SkillManager
 	fsManager                  *domain.FileSystemManager
 	catalogMetadataService     *domain.CatalogMetadataService
+	catalogRelationshipService *domain.CatalogRelationshipService
 	taxonomyAssignment         *domain.CatalogTaxonomyAssignmentService
 	taxonomyRegistry           *domain.CatalogTaxonomyRegistryService
 	taxonomyUsage              *domain.CatalogTaxonomyUsageService
@@ -124,6 +125,7 @@ func NewServer(
 	api.PATCH("/catalog/metadata", server.patchCatalogMetadata)
 	api.GET("/catalog/:id/metadata", server.getCatalogMetadata)
 	api.PATCH("/catalog/:id/metadata", server.patchCatalogMetadata)
+	api.PATCH("/catalog/:id/relationships", server.patchCatalogRelationships)
 	api.PATCH("/catalog/taxonomy/batch", server.patchCatalogItemsTaxonomy)
 	api.GET("/catalog/taxonomy", server.getCatalogItemTaxonomy)
 	api.PATCH("/catalog/taxonomy", server.patchCatalogItemTaxonomy)
@@ -208,6 +210,11 @@ func NewServer(
 // SetCatalogMetadataService configures metadata overlay handlers.
 func (s *Server) SetCatalogMetadataService(service *domain.CatalogMetadataService) {
 	s.catalogMetadataService = service
+}
+
+// SetCatalogRelationshipService configures catalog relationship handlers.
+func (s *Server) SetCatalogRelationshipService(service *domain.CatalogRelationshipService) {
+	s.catalogRelationshipService = service
 }
 
 // SetCatalogTaxonomyAssignmentService configures catalog item taxonomy assignment handlers.

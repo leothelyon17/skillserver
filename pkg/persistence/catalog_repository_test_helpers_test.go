@@ -107,6 +107,34 @@ func newCatalogItemTagAssignmentRepositoryForTest(
 	return repo
 }
 
+func newCatalogSkillRuleRelationshipRepositoryForTest(
+	t *testing.T,
+	db *sql.DB,
+) *CatalogSkillRuleRelationshipRepository {
+	t.Helper()
+
+	repo, err := NewCatalogSkillRuleRelationshipRepository(db)
+	if err != nil {
+		t.Fatalf("expected catalog skill rule relationship repository creation to succeed, got %v", err)
+	}
+
+	return repo
+}
+
+func newCatalogSkillPromptRelationshipRepositoryForTest(
+	t *testing.T,
+	db *sql.DB,
+) *CatalogSkillPromptRelationshipRepository {
+	t.Helper()
+
+	repo, err := NewCatalogSkillPromptRelationshipRepository(db)
+	if err != nil {
+		t.Fatalf("expected catalog skill prompt relationship repository creation to succeed, got %v", err)
+	}
+
+	return repo
+}
+
 func newGitRepoCredentialCipherForTest(t *testing.T, masterKey string) *GitRepoCredentialCipher {
 	t.Helper()
 

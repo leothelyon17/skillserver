@@ -760,6 +760,14 @@ type GetCatalogItemTaxonomyInput struct {
 // GetCatalogItemTaxonomyOutput is the output for get_catalog_item_taxonomy tool.
 type GetCatalogItemTaxonomyOutput = domain.CatalogItemTaxonomyAssignment
 
+// GetCatalogItemRelationshipsInput is the input for get_catalog_item_relationships tool.
+type GetCatalogItemRelationshipsInput struct {
+	ItemID string `json:"item_id" jsonschema:"Catalog item identifier. Accepts bare skill IDs only for skill items; prompt/rule inputs must be canonical."`
+}
+
+// GetCatalogItemRelationshipsOutput is the output for get_catalog_item_relationships tool.
+type GetCatalogItemRelationshipsOutput = domain.CatalogRelationshipView
+
 func listTaxonomyDomains(
 	ctx context.Context,
 	req *mcp.CallToolRequest,
@@ -868,6 +876,37 @@ func getCatalogItemTaxonomy(
 	value, err := assignment.Get(ctx, itemID)
 	if err != nil {
 		return nil, GetCatalogItemTaxonomyOutput{}, fmt.Errorf("get catalog item taxonomy for %q: %w", itemID, err)
+	}
+
+	return nil, value, nil
+}
+
+func getCatalogItemRelationships(
+	ctx context.Context,
+	req *mcp.CallToolRequest,
+	input GetCatalogItemRelationshipsInput,
+	relationships CatalogRelationshipReader,
+) (
+	*mcp.CallToolResult,
+	GetCatalogItemRelationshipsOutput,
+	error,
+) {
+	if relationships == nil {
+		return nil, GetCatalogItemRelationshipsOutput{}, fmt.Errorf("catalog relationship API is unavailable")
+	}
+
+	itemID := strings.TrimSpace(input.ItemID)
+	if itemID == "" {
+		return nil, GetCatalogItemRelationshipsOutput{}, fmt.Errorf("item_id is required")
+	}
+
+	value, err := relationships.Get(ctx, itemID)
+	if err != nil {
+		return nil, GetCatalogItemRelationshipsOutput{}, fmt.Errorf(
+			"get catalog item relationships for %q: %w",
+			itemID,
+			err,
+		)
 	}
 
 	return nil, value, nil

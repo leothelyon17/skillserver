@@ -86,6 +86,11 @@ type CatalogTaxonomyUsageReader interface {
 	GetTagUsage(ctx context.Context, tagID string, previewLimit int) (domain.CatalogTaxonomyUsageSummary, error)
 }
 
+// CatalogRelationshipReader exposes relationship projection reads for MCP tools.
+type CatalogRelationshipReader interface {
+	Get(ctx context.Context, itemID string) (domain.CatalogRelationshipView, error)
+}
+
 // Server wraps the MCP server and provides access to the skill manager
 type Server struct {
 	mcpServer                              *mcp.Server
@@ -96,6 +101,7 @@ type Server struct {
 	taxonomyRegistry                       CatalogTaxonomyRegistryReader
 	taxonomyRegistryWrite                  CatalogTaxonomyRegistryWriter
 	taxonomyUsage                          CatalogTaxonomyUsageReader
+	relationships                          CatalogRelationshipReader
 	enableTaxonomyWriteTools               bool
 	enableMaterializationTools             bool
 	allowedMaterializationDestinationRoots []string
@@ -247,6 +253,17 @@ func registerReadTools(mcpServer *mcp.Server, server *Server) {
 		error,
 	) {
 		return getCatalogItemTaxonomy(ctx, req, input, server.taxonomyAssign)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "get_catalog_item_relationships",
+		Description: "Get relationship metadata for one catalog item by item_id",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input GetCatalogItemRelationshipsInput) (
+		*mcp.CallToolResult,
+		GetCatalogItemRelationshipsOutput,
+		error,
+	) {
+		return getCatalogItemRelationships(ctx, req, input, server.relationships)
 	})
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
@@ -492,6 +509,11 @@ func (s *Server) SetCatalogTaxonomyRegistryService(service CatalogTaxonomyRegist
 // SetCatalogTaxonomyUsageService configures taxonomy usage/preflight reads for MCP tools.
 func (s *Server) SetCatalogTaxonomyUsageService(service CatalogTaxonomyUsageReader) {
 	s.taxonomyUsage = service
+}
+
+// SetCatalogRelationshipService configures relationship projection reads for MCP tools.
+func (s *Server) SetCatalogRelationshipService(service CatalogRelationshipReader) {
+	s.relationships = service
 }
 
 // MaterializationToolsEnabled reports whether runtime config enabled write-capable materialization tools.

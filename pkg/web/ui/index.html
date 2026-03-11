@@ -883,6 +883,110 @@
                                     </div>
                                 </div>
                             </div>
+                            <div class="pt-2 border-t border-gray-200 dark:border-gray-700">
+                                <h4 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+                                    <i class="fas fa-link mr-2"></i>Relationships
+                                </h4>
+
+                                <p
+                                    x-show="metadataEditorModal.relationshipErrorMessage"
+                                    class="mb-3 text-sm rounded border border-red-200 bg-red-50 px-3 py-2 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+                                    x-text="metadataEditorModal.relationshipErrorMessage"
+                                ></p>
+
+                                <template x-if="isMetadataRelationshipSkillEditor()">
+                                    <div class="space-y-3">
+                                        <p class="text-xs text-gray-600 dark:text-gray-300">
+                                            Skill relationship edits are write-authoritative from this modal.
+                                        </p>
+
+                                        <p
+                                            x-show="metadataEditorModal.relationshipCandidates.errorMessage"
+                                            class="text-sm rounded border border-red-200 bg-red-50 px-3 py-2 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+                                            x-text="metadataEditorModal.relationshipCandidates.errorMessage"
+                                        ></p>
+
+                                        <div>
+                                            <label class="form-label">Prompt (single-select)</label>
+                                            <select
+                                                data-testid="metadata-relationship-prompt-select"
+                                                @change="metadataEditorModal.form.promptItemID = $event.target.value"
+                                                :disabled="!metadataEditorModal.metadataWritable || metadataEditorModal.saving || metadataEditorModal.relationshipCandidates.loading"
+                                                class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                            >
+                                                <option value="" :selected="metadataEditorModal.form.promptItemID === ''">No prompt relationship</option>
+                                                <template x-for="prompt in metadataEditorModal.relationshipCandidates.prompts" :key="`metadata-relationship-prompt-${prompt.id}`">
+                                                    <option :value="prompt.id" :selected="prompt.id === metadataEditorModal.form.promptItemID" x-text="catalogRelationshipSummary(prompt)"></option>
+                                                </template>
+                                            </select>
+                                        </div>
+
+                                        <div>
+                                            <label class="form-label">Rules (multi-select)</label>
+                                            <select
+                                                data-testid="metadata-relationship-rule-select"
+                                                multiple
+                                                size="6"
+                                                x-model="metadataEditorModal.form.ruleItemIDs"
+                                                :disabled="!metadataEditorModal.metadataWritable || metadataEditorModal.saving || metadataEditorModal.relationshipCandidates.loading"
+                                                class="skill-name-input full-width bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100"
+                                            >
+                                                <template x-for="rule in metadataEditorModal.relationshipCandidates.rules" :key="`metadata-relationship-rule-${rule.id}`">
+                                                    <option :value="rule.id" x-text="catalogRelationshipSummary(rule)"></option>
+                                                </template>
+                                            </select>
+                                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                                Hold Ctrl/Cmd to select multiple rules.
+                                            </p>
+                                        </div>
+
+                                        <div class="space-y-2">
+                                            <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                                                Selected Rule Relationships
+                                            </p>
+                                            <template x-if="metadataSelectedRelationshipRules().length === 0">
+                                                <p class="text-sm text-gray-500 dark:text-gray-400">
+                                                    No rule relationships selected.
+                                                </p>
+                                            </template>
+                                            <ul
+                                                x-show="metadataSelectedRelationshipRules().length > 0"
+                                                class="space-y-1"
+                                                style="display: none;"
+                                            >
+                                                <template x-for="rule in metadataSelectedRelationshipRules()" :key="`metadata-selected-rule-${rule.id}`">
+                                                    <li class="rounded bg-gray-50 px-2 py-1 text-sm text-gray-700 dark:bg-gray-900/40 dark:text-gray-200" x-text="catalogRelationshipSummary(rule)"></li>
+                                                </template>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </template>
+
+                                <template x-if="isMetadataRelationshipReverseView()">
+                                    <div class="space-y-3">
+                                        <p class="text-xs rounded border border-blue-200 bg-blue-50 px-3 py-2 text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                                            Relationship writes are skill-owned. This view is reverse-derived and read-only.
+                                        </p>
+                                        <template x-if="metadataEditorModal.relationships.skills.length === 0">
+                                            <p class="text-sm text-gray-500 dark:text-gray-400">
+                                                No associated skills.
+                                            </p>
+                                        </template>
+                                        <ul
+                                            x-show="metadataEditorModal.relationships.skills.length > 0"
+                                            class="space-y-2"
+                                            style="display: none;"
+                                        >
+                                            <template x-for="skill in metadataEditorModal.relationships.skills" :key="`metadata-relationship-skill-${skill.id}`">
+                                                <li class="rounded border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/40">
+                                                    <p class="font-medium text-gray-900 dark:text-gray-100" x-text="skill.name || skill.id"></p>
+                                                    <p class="font-mono text-xs text-gray-600 dark:text-gray-300" x-text="catalogRelationshipSummary(skill)"></p>
+                                                </li>
+                                            </template>
+                                        </ul>
+                                    </div>
+                                </template>
+                            </div>
                             <div>
                                 <label class="form-label">Custom Metadata (JSON object)</label>
                                 <textarea
@@ -2387,6 +2491,7 @@
                     saving: false,
                     itemID: '',
                     itemName: '',
+                    classifier: 'skill',
                     contentWritable: true,
                     metadataWritable: true,
                     originalTaxonomy: {
@@ -2395,6 +2500,10 @@
                         secondaryDomainID: '',
                         secondarySubdomainID: '',
                         tagIDs: []
+                    },
+                    originalRelationships: {
+                        promptItemID: '',
+                        ruleItemIDs: []
                     },
                     form: {
                         displayName: '',
@@ -2405,9 +2514,23 @@
                         secondaryDomainID: '',
                         secondarySubdomainID: '',
                         tagIDs: [],
+                        promptItemID: '',
+                        ruleItemIDs: [],
                         customMetadataJSON: '{}'
                     },
+                    relationships: {
+                        prompt: null,
+                        rules: [],
+                        skills: []
+                    },
+                    relationshipCandidates: {
+                        loading: false,
+                        prompts: [],
+                        rules: [],
+                        errorMessage: ''
+                    },
                     taxonomyErrorMessage: '',
+                    relationshipErrorMessage: '',
                     errorMessage: ''
                 },
                 materializationModal: {
@@ -4291,6 +4414,312 @@
                     return hasChanges ? payload : null;
                 },
 
+                normalizeCatalogRelationshipID(value) {
+                    return String(value || '').trim();
+                },
+
+                normalizeCatalogRelationshipIDs(values) {
+                    if (!Array.isArray(values)) {
+                        return [];
+                    }
+                    const seen = new Set();
+                    const normalized = [];
+                    for (const rawValue of values) {
+                        const value = this.normalizeCatalogRelationshipID(rawValue);
+                        if (value === '' || seen.has(value)) {
+                            continue;
+                        }
+                        seen.add(value);
+                        normalized.push(value);
+                    }
+                    normalized.sort((left, right) => left.localeCompare(right));
+                    return normalized;
+                },
+
+                sameStringArrays(left, right) {
+                    if (!Array.isArray(left) || !Array.isArray(right)) {
+                        return false;
+                    }
+                    if (left.length !== right.length) {
+                        return false;
+                    }
+                    for (let index = 0; index < left.length; index += 1) {
+                        if (left[index] !== right[index]) {
+                            return false;
+                        }
+                    }
+                    return true;
+                },
+
+                normalizeCatalogRelationshipItem(item) {
+                    if (!item || typeof item !== 'object') {
+                        return null;
+                    }
+                    const id = this.normalizeCatalogRelationshipID(item.id);
+                    if (!id) {
+                        return null;
+                    }
+                    const name = this.normalizeCatalogRelationshipID(item.name) || id;
+                    const parentSkillID = this.normalizeCatalogRelationshipID(item.parent_skill_id);
+                    const resourcePath = this.normalizeCatalogRelationshipID(item.resource_path);
+                    return {
+                        id,
+                        classifier: this.normalizeClassifier(item.classifier),
+                        name,
+                        parent_skill_id: parentSkillID,
+                        resource_path: resourcePath
+                    };
+                },
+
+                catalogRelationshipSetFromPayload(rawRelationships) {
+                    const normalizedSet = {
+                        prompt: null,
+                        rules: [],
+                        skills: []
+                    };
+                    if (!rawRelationships || typeof rawRelationships !== 'object') {
+                        return normalizedSet;
+                    }
+
+                    const prompt = this.normalizeCatalogRelationshipItem(rawRelationships.prompt);
+                    if (prompt) {
+                        normalizedSet.prompt = prompt;
+                    }
+
+                    const appendUniqueItems = (target, values) => {
+                        const seenIDs = new Set();
+                        for (const value of target) {
+                            seenIDs.add(value.id);
+                        }
+                        for (const rawValue of Array.isArray(values) ? values : []) {
+                            const normalized = this.normalizeCatalogRelationshipItem(rawValue);
+                            if (!normalized || seenIDs.has(normalized.id)) {
+                                continue;
+                            }
+                            seenIDs.add(normalized.id);
+                            target.push(normalized);
+                        }
+                        target.sort((left, right) => this.catalogRelationshipSummary(left).localeCompare(this.catalogRelationshipSummary(right)));
+                    };
+
+                    appendUniqueItems(normalizedSet.rules, rawRelationships.rules);
+                    appendUniqueItems(normalizedSet.skills, rawRelationships.skills);
+                    return normalizedSet;
+                },
+
+                catalogRelationshipSummary(item) {
+                    const normalized = this.normalizeCatalogRelationshipItem(item);
+                    if (!normalized) {
+                        return '';
+                    }
+                    const contextParts = [];
+                    if (normalized.parent_skill_id !== '') {
+                        contextParts.push(normalized.parent_skill_id);
+                    }
+                    if (normalized.resource_path !== '') {
+                        contextParts.push(normalized.resource_path);
+                    }
+                    if (contextParts.length === 0) {
+                        contextParts.push(normalized.id);
+                    }
+                    const context = contextParts.join(' • ');
+                    if (normalized.name === normalized.id && context === normalized.id) {
+                        return normalized.id;
+                    }
+                    return `${normalized.name} (${context})`;
+                },
+
+                normalizeCatalogRelationshipCandidates(items, classifier) {
+                    const expectedClassifier = this.normalizeClassifier(classifier);
+                    const normalized = [];
+                    const seen = new Set();
+                    for (const rawItem of Array.isArray(items) ? items : []) {
+                        const item = this.normalizeCatalogRelationshipItem(rawItem);
+                        if (!item || item.classifier !== expectedClassifier || seen.has(item.id)) {
+                            continue;
+                        }
+                        seen.add(item.id);
+                        normalized.push(item);
+                    }
+                    normalized.sort((left, right) => this.catalogRelationshipSummary(left).localeCompare(this.catalogRelationshipSummary(right)));
+                    return normalized;
+                },
+
+                catalogRelationshipsEndpoint(itemID) {
+                    return `/api/catalog/${encodeURIComponent(itemID)}/relationships`;
+                },
+
+                catalogRelationshipCandidatesEndpoint(classifier) {
+                    const params = new URLSearchParams();
+                    params.set('classifier', this.normalizeClassifier(classifier));
+                    return `/api/catalog?${params.toString()}`;
+                },
+
+                isMetadataRelationshipSkillEditor() {
+                    return this.normalizeClassifier(this.metadataEditorModal.classifier) === 'skill';
+                },
+
+                isMetadataRelationshipReverseView() {
+                    const classifier = this.normalizeClassifier(this.metadataEditorModal.classifier);
+                    return classifier === 'prompt' || classifier === 'rule';
+                },
+
+                metadataRelationshipRecordFromForm() {
+                    return {
+                        promptItemID: this.normalizeCatalogRelationshipID(this.metadataEditorModal.form.promptItemID),
+                        ruleItemIDs: this.normalizeCatalogRelationshipIDs(this.metadataEditorModal.form.ruleItemIDs)
+                    };
+                },
+
+                metadataRelationshipPatchPayload() {
+                    if (!this.isMetadataRelationshipSkillEditor()) {
+                        return null;
+                    }
+
+                    const originalPromptItemID = this.normalizeCatalogRelationshipID(this.metadataEditorModal.originalRelationships.promptItemID);
+                    const originalRuleItemIDs = this.normalizeCatalogRelationshipIDs(this.metadataEditorModal.originalRelationships.ruleItemIDs);
+                    const currentRelationships = this.metadataRelationshipRecordFromForm();
+                    const payload = {};
+                    let hasChanges = false;
+
+                    if (originalPromptItemID !== currentRelationships.promptItemID) {
+                        payload.prompt_item_id = currentRelationships.promptItemID || null;
+                        hasChanges = true;
+                    }
+
+                    if (!this.sameStringArrays(originalRuleItemIDs, currentRelationships.ruleItemIDs)) {
+                        payload.rule_item_ids = currentRelationships.ruleItemIDs;
+                        hasChanges = true;
+                    }
+
+                    if (!hasChanges) {
+                        return null;
+                    }
+                    payload.updated_by = 'web-ui';
+                    return payload;
+                },
+
+                metadataSelectedRelationshipRules() {
+                    const selectedRuleItemIDs = this.normalizeCatalogRelationshipIDs(this.metadataEditorModal.form.ruleItemIDs);
+                    if (selectedRuleItemIDs.length === 0) {
+                        return [];
+                    }
+
+                    const byID = new Map();
+                    for (const candidate of this.metadataEditorModal.relationshipCandidates.rules) {
+                        byID.set(candidate.id, candidate);
+                    }
+                    for (const existingRule of this.metadataEditorModal.relationships.rules) {
+                        if (!byID.has(existingRule.id)) {
+                            byID.set(existingRule.id, existingRule);
+                        }
+                    }
+
+                    return selectedRuleItemIDs.map((ruleItemID) => (
+                        byID.get(ruleItemID) || {
+                            id: ruleItemID,
+                            classifier: 'rule',
+                            name: ruleItemID,
+                            parent_skill_id: '',
+                            resource_path: ''
+                        }
+                    ));
+                },
+
+                async loadMetadataRelationshipCandidates() {
+                    if (!this.isMetadataRelationshipSkillEditor()) {
+                        this.metadataEditorModal.relationshipCandidates = {
+                            loading: false,
+                            prompts: [],
+                            rules: [],
+                            errorMessage: ''
+                        };
+                        return;
+                    }
+
+                    this.metadataEditorModal.relationshipCandidates.loading = true;
+                    this.metadataEditorModal.relationshipCandidates.errorMessage = '';
+                    const existingPrompt = this.normalizeCatalogRelationshipItem(this.metadataEditorModal.relationships.prompt);
+                    if (
+                        existingPrompt &&
+                        !this.metadataEditorModal.relationshipCandidates.prompts.some(
+                            (candidate) => candidate.id === existingPrompt.id
+                        )
+                    ) {
+                        this.metadataEditorModal.relationshipCandidates.prompts = [
+                            existingPrompt,
+                            ...this.metadataEditorModal.relationshipCandidates.prompts
+                        ];
+                    }
+                    for (const existingRuleRaw of this.metadataEditorModal.relationships.rules) {
+                        const existingRule = this.normalizeCatalogRelationshipItem(existingRuleRaw);
+                        if (
+                            !existingRule ||
+                            this.metadataEditorModal.relationshipCandidates.rules.some(
+                                (candidate) => candidate.id === existingRule.id
+                            )
+                        ) {
+                            continue;
+                        }
+                        this.metadataEditorModal.relationshipCandidates.rules = [
+                            ...this.metadataEditorModal.relationshipCandidates.rules,
+                            existingRule
+                        ];
+                    }
+
+                    try {
+                        const [promptPayload, rulePayload] = await Promise.all([
+                            this.fetchCatalogCollection(this.catalogRelationshipCandidatesEndpoint('prompt')),
+                            this.fetchCatalogCollection(this.catalogRelationshipCandidatesEndpoint('rule'))
+                        ]);
+                        const promptCandidates = this.normalizeCatalogRelationshipCandidates(
+                            promptPayload.items,
+                            'prompt'
+                        );
+                        const ruleCandidates = this.normalizeCatalogRelationshipCandidates(
+                            rulePayload.items,
+                            'rule'
+                        );
+
+                        if (existingPrompt && !promptCandidates.some((candidate) => candidate.id === existingPrompt.id)) {
+                            promptCandidates.unshift(existingPrompt);
+                        }
+
+                        for (const existingRuleRaw of this.metadataEditorModal.relationships.rules) {
+                            const existingRule = this.normalizeCatalogRelationshipItem(existingRuleRaw);
+                            if (!existingRule || ruleCandidates.some((candidate) => candidate.id === existingRule.id)) {
+                                continue;
+                            }
+                            ruleCandidates.push(existingRule);
+                        }
+                        ruleCandidates.sort(
+                            (left, right) => this.catalogRelationshipSummary(left).localeCompare(this.catalogRelationshipSummary(right))
+                        );
+
+                        this.metadataEditorModal.relationshipCandidates.prompts = promptCandidates;
+                        this.metadataEditorModal.relationshipCandidates.rules = ruleCandidates;
+
+                        const originalPromptItemID = this.normalizeCatalogRelationshipID(
+                            this.metadataEditorModal.originalRelationships.promptItemID
+                        );
+                        const currentPromptItemID = this.normalizeCatalogRelationshipID(this.metadataEditorModal.form.promptItemID);
+                        if (
+                            originalPromptItemID !== '' &&
+                            currentPromptItemID === '' &&
+                            promptCandidates.some((candidate) => candidate.id === originalPromptItemID)
+                        ) {
+                            this.metadataEditorModal.form.promptItemID = originalPromptItemID;
+                        }
+                    } catch (error) {
+                        console.error('Failed to load relationship candidates:', error);
+                        this.metadataEditorModal.relationshipCandidates.errorMessage = error && error.message
+                            ? error.message
+                            : 'Failed to load relationship candidates';
+                    } finally {
+                        this.metadataEditorModal.relationshipCandidates.loading = false;
+                    }
+                },
+
                 async openMetadataEditor(item) {
                     if (!item || !item.id) {
                         this.showToast('Cannot edit metadata: catalog item id is missing', 'error');
@@ -4308,6 +4737,7 @@
                         saving: false,
                         itemID: itemID,
                         itemName: item.name || itemID,
+                        classifier: this.normalizeClassifier(item.classifier),
                         contentWritable: this.itemContentWritable(item),
                         metadataWritable: this.itemMetadataWritable(item),
                         originalTaxonomy: {
@@ -4316,6 +4746,10 @@
                             secondaryDomainID: '',
                             secondarySubdomainID: '',
                             tagIDs: []
+                        },
+                        originalRelationships: {
+                            promptItemID: '',
+                            ruleItemIDs: []
                         },
                         form: {
                             displayName: '',
@@ -4326,9 +4760,23 @@
                             secondaryDomainID: '',
                             secondarySubdomainID: '',
                             tagIDs: [],
+                            promptItemID: '',
+                            ruleItemIDs: [],
                             customMetadataJSON: '{}'
                         },
+                        relationships: {
+                            prompt: null,
+                            rules: [],
+                            skills: []
+                        },
+                        relationshipCandidates: {
+                            loading: false,
+                            prompts: [],
+                            rules: [],
+                            errorMessage: ''
+                        },
                         taxonomyErrorMessage: '',
+                        relationshipErrorMessage: '',
                         errorMessage: ''
                     };
 
@@ -4346,6 +4794,14 @@
                         const payload = await response.json();
                         const overlay = payload && payload.overlay ? payload.overlay : {};
                         const effective = payload && payload.effective ? payload.effective : {};
+                        const sourceClassifier = this.normalizeClassifier(
+                            payload && payload.source ? payload.source.classifier : item.classifier
+                        );
+                        const relationships = this.catalogRelationshipSetFromPayload(payload && payload.relationships);
+                        const resolvedPromptItemID = relationships.prompt ? relationships.prompt.id : '';
+                        const resolvedRuleItemIDs = this.normalizeCatalogRelationshipIDs(
+                            relationships.rules.map((rule) => rule.id)
+                        );
 
                         const hasOverlayDisplayName = typeof overlay.display_name === 'string';
                         const hasOverlayDescription = typeof overlay.description === 'string';
@@ -4365,6 +4821,7 @@
                                 : {});
 
                         this.metadataEditorModal.loading = false;
+                        this.metadataEditorModal.classifier = sourceClassifier;
                         this.metadataEditorModal.contentWritable = typeof effective.content_writable === 'boolean'
                             ? effective.content_writable
                             : this.itemContentWritable(item);
@@ -4398,7 +4855,14 @@
                                     ? effective.tags.map((tag) => tag && tag.id)
                                     : []
                             ),
+                            promptItemID: resolvedPromptItemID,
+                            ruleItemIDs: resolvedRuleItemIDs,
                             customMetadataJSON: JSON.stringify(resolvedCustomMetadata || {}, null, 2)
+                        };
+                        this.metadataEditorModal.relationships = relationships;
+                        this.metadataEditorModal.originalRelationships = {
+                            promptItemID: resolvedPromptItemID,
+                            ruleItemIDs: resolvedRuleItemIDs
                         };
                         this.metadataEditorModal.originalTaxonomy = this.metadataTaxonomySnapshotFromForm(this.metadataEditorModal.form);
                         this.handleMetadataDomainChange('primary');
@@ -4406,6 +4870,23 @@
                         this.metadataEditorModal.taxonomyErrorMessage = this.taxonomyCatalog.available
                             ? ''
                             : this.taxonomyCatalog.errorMessage;
+                        this.metadataEditorModal.relationshipErrorMessage = '';
+                        const promptCandidates = relationships.prompt ? [relationships.prompt] : [];
+                        const ruleCandidates = [...relationships.rules];
+                        ruleCandidates.sort(
+                            (left, right) => this.catalogRelationshipSummary(left).localeCompare(this.catalogRelationshipSummary(right))
+                        );
+                        this.metadataEditorModal.relationshipCandidates = {
+                            loading: false,
+                            prompts: promptCandidates,
+                            rules: ruleCandidates,
+                            errorMessage: ''
+                        };
+                        this.loadMetadataRelationshipCandidates();
+                        this.$nextTick(() => {
+                            this.metadataEditorModal.form.promptItemID = resolvedPromptItemID;
+                            this.metadataEditorModal.form.ruleItemIDs = [...resolvedRuleItemIDs];
+                        });
                     } catch (error) {
                         console.error('Failed to load catalog metadata:', error);
                         const errorMessage = `Failed to load metadata: ${error.message || 'Unknown error'}`;
@@ -4504,11 +4985,18 @@
                         return;
                     }
 
+                    const relationshipPatchPayload = this.metadataRelationshipPatchPayload();
+
                     this.metadataEditorModal.errorMessage = '';
                     this.metadataEditorModal.taxonomyErrorMessage = '';
+                    this.metadataEditorModal.relationshipErrorMessage = '';
                     this.metadataEditorModal.saving = true;
 
                     try {
+                        let savedTaxonomy = false;
+                        let savedMetadata = false;
+                        let savedRelationships = false;
+
                         const taxonomySnapshot = this.metadataTaxonomySnapshotFromForm(this.metadataEditorModal.form);
                         const taxonomyPatchPayload = this.taxonomyCatalog.available
                             ? this.metadataTaxonomyPatchPayload(this.metadataEditorModal.originalTaxonomy, taxonomySnapshot)
@@ -4530,6 +5018,9 @@
                                 );
                                 return;
                             }
+
+                            savedTaxonomy = true;
+                            this.metadataEditorModal.originalTaxonomy = taxonomySnapshot;
                         }
 
                         const response = await fetch(this.catalogMetadataEndpoint(itemID), {
@@ -4547,24 +5038,63 @@
                         });
 
                         if (!response.ok) {
-                            const errorPayload = await response.json().catch(() => null);
-                            const errorMessage = errorPayload && errorPayload.error
-                                ? errorPayload.error
-                                : `HTTP ${response.status}`;
-                            this.metadataEditorModal.errorMessage = errorMessage;
+                            this.metadataEditorModal.errorMessage = await this.responseErrorMessage(
+                                response,
+                                'Failed to save metadata'
+                            );
                             return;
                         }
 
                         const payload = await response.json();
                         this.applyEffectiveMetadataToCatalogItem(itemID, payload.effective);
+                        savedMetadata = true;
+
+                        if (relationshipPatchPayload) {
+                            const relationshipResponse = await fetch(this.catalogRelationshipsEndpoint(itemID), {
+                                method: 'PATCH',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify(relationshipPatchPayload),
+                            });
+
+                            if (!relationshipResponse.ok) {
+                                const relationshipErrorMessage = await this.responseErrorMessage(
+                                    relationshipResponse,
+                                    'Failed to save relationships'
+                                );
+                                this.metadataEditorModal.relationshipErrorMessage = savedMetadata
+                                    ? `${relationshipErrorMessage} Metadata and taxonomy updates were saved.`
+                                    : relationshipErrorMessage;
+                                this.showToast(
+                                    savedMetadata
+                                        ? 'Metadata saved, but relationship updates failed'
+                                        : 'Relationship updates failed',
+                                    'warning'
+                                );
+                                return;
+                            }
+
+                            const relationshipPayload = await relationshipResponse.json();
+                            const normalizedRelationships = this.catalogRelationshipSetFromPayload(
+                                relationshipPayload && relationshipPayload.relationships
+                            );
+                            this.metadataEditorModal.relationships = normalizedRelationships;
+                            this.metadataEditorModal.originalRelationships = this.metadataRelationshipRecordFromForm();
+                            savedRelationships = true;
+                        }
+
                         this.metadataEditorModal.show = false;
                         await this.loadSkills();
-                        this.showToast(
-                            this.taxonomyCatalog.available
-                                ? 'Metadata and taxonomy saved successfully'
-                                : 'Metadata saved successfully',
-                            'success'
-                        );
+                        let successMessage = 'Metadata saved successfully';
+                        if (savedTaxonomy && savedRelationships) {
+                            successMessage = 'Metadata, taxonomy, and relationships saved successfully';
+                        } else if (savedTaxonomy) {
+                            successMessage = 'Metadata and taxonomy saved successfully';
+                        } else if (savedRelationships) {
+                            successMessage = 'Metadata and relationships saved successfully';
+                        }
+                        this.showToast(successMessage, 'success');
                     } catch (error) {
                         console.error('Failed to save catalog metadata:', error);
                         this.metadataEditorModal.errorMessage = 'Failed to save metadata';
@@ -4962,6 +5492,7 @@
                         saving: false,
                         itemID: '',
                         itemName: '',
+                        classifier: 'skill',
                         contentWritable: true,
                         metadataWritable: true,
                         originalTaxonomy: {
@@ -4970,6 +5501,10 @@
                             secondaryDomainID: '',
                             secondarySubdomainID: '',
                             tagIDs: []
+                        },
+                        originalRelationships: {
+                            promptItemID: '',
+                            ruleItemIDs: []
                         },
                         form: {
                             displayName: '',
@@ -4980,9 +5515,23 @@
                             secondaryDomainID: '',
                             secondarySubdomainID: '',
                             tagIDs: [],
+                            promptItemID: '',
+                            ruleItemIDs: [],
                             customMetadataJSON: '{}'
                         },
+                        relationships: {
+                            prompt: null,
+                            rules: [],
+                            skills: []
+                        },
+                        relationshipCandidates: {
+                            loading: false,
+                            prompts: [],
+                            rules: [],
+                            errorMessage: ''
+                        },
                         taxonomyErrorMessage: '',
+                        relationshipErrorMessage: '',
                         errorMessage: ''
                     };
                     this.resetMaterializationModal();
