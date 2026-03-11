@@ -432,6 +432,14 @@ func newCatalogMetadataFixtureServer(t *testing.T) (*Server, *persistence.Catalo
 	if err != nil {
 		t.Fatalf("expected source repository creation to succeed, got %v", err)
 	}
+	ruleRelationshipRepo, err := persistence.NewCatalogSkillRuleRelationshipRepository(db)
+	if err != nil {
+		t.Fatalf("expected skill-rule relationship repository creation to succeed, got %v", err)
+	}
+	promptRelationshipRepo, err := persistence.NewCatalogSkillPromptRelationshipRepository(db)
+	if err != nil {
+		t.Fatalf("expected skill-prompt relationship repository creation to succeed, got %v", err)
+	}
 	overlayRepo, err := persistence.NewCatalogMetadataOverlayRepository(db)
 	if err != nil {
 		t.Fatalf("expected overlay repository creation to succeed, got %v", err)
@@ -468,6 +476,15 @@ func newCatalogMetadataFixtureServer(t *testing.T) (*Server, *persistence.Catalo
 	if err != nil {
 		t.Fatalf("expected effective catalog service creation to succeed, got %v", err)
 	}
+	relationshipService, err := domain.NewCatalogRelationshipService(
+		sourceRepo,
+		ruleRelationshipRepo,
+		promptRelationshipRepo,
+		domain.CatalogRelationshipServiceOptions{},
+	)
+	if err != nil {
+		t.Fatalf("expected relationship service creation to succeed, got %v", err)
+	}
 	metadataService, err := domain.NewCatalogMetadataService(
 		sourceRepo,
 		overlayRepo,
@@ -476,6 +493,7 @@ func newCatalogMetadataFixtureServer(t *testing.T) (*Server, *persistence.Catalo
 			Now: func() time.Time {
 				return time.Date(2026, time.March, 5, 2, 0, 0, 0, time.UTC)
 			},
+			RelationshipService: relationshipService,
 		},
 	)
 	if err != nil {
@@ -517,6 +535,7 @@ func newCatalogMetadataFixtureServer(t *testing.T) (*Server, *persistence.Catalo
 
 	seedCatalogMetadataSourceRows(t, sourceRepo)
 	server.SetCatalogMetadataService(metadataService)
+	server.SetCatalogRelationshipService(relationshipService)
 	server.SetCatalogTaxonomyRegistryService(taxonomyRegistry)
 	server.SetCatalogTaxonomyAssignmentService(taxonomyAssignmentService)
 	server.SetCatalogTaxonomyUsageService(taxonomyUsageService)

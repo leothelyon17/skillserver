@@ -355,16 +355,20 @@ func main() {
 			persistenceRuntime.sourceRepo,
 			persistenceRuntime.overlayRepo,
 			persistenceRuntime.coordinator.effectiveService,
-			domain.CatalogMetadataServiceOptions{},
+			domain.CatalogMetadataServiceOptions{
+				RelationshipService: persistenceRuntime.relationshipService,
+			},
 		)
 		if metadataErr != nil {
 			log.Fatalf("Failed to initialize catalog metadata service: %v", metadataErr)
 		}
 		webServer.SetCatalogMetadataService(metadataService)
+		webServer.SetCatalogRelationshipService(persistenceRuntime.relationshipService)
 		webServer.SetCatalogTaxonomyAssignmentService(persistenceRuntime.taxonomyAssignment)
 		webServer.SetCatalogTaxonomyRegistryService(persistenceRuntime.taxonomyRegistryService)
 		webServer.SetCatalogTaxonomyUsageService(persistenceRuntime.taxonomyUsageService)
 		mcpServer.SetCatalogMetadataService(metadataService)
+		mcpServer.SetCatalogRelationshipService(persistenceRuntime.relationshipService)
 		mcpServer.SetCatalogTaxonomyAssignmentService(persistenceRuntime.taxonomyAssignment)
 		mcpServer.SetCatalogTaxonomyRegistryService(persistenceRuntime.taxonomyRegistryService)
 		mcpServer.SetCatalogTaxonomyUsageService(persistenceRuntime.taxonomyUsageService)

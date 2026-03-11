@@ -30,7 +30,8 @@ type catalogMetadataEffectiveService interface {
 
 // CatalogMetadataServiceOptions configures catalog metadata service behavior.
 type CatalogMetadataServiceOptions struct {
-	Now func() time.Time
+	Now                 func() time.Time
+	RelationshipService *CatalogRelationshipService
 }
 
 // CatalogMetadataPatchInput describes a partial metadata overlay mutation.
@@ -87,18 +88,20 @@ type CatalogMetadataEffectiveView struct {
 
 // CatalogMetadataView combines source, overlay, and effective metadata views.
 type CatalogMetadataView struct {
-	ItemID    string                       `json:"item_id"`
-	Source    CatalogMetadataSourceView    `json:"source"`
-	Overlay   CatalogMetadataOverlayView   `json:"overlay"`
-	Effective CatalogMetadataEffectiveView `json:"effective"`
+	ItemID        string                       `json:"item_id"`
+	Source        CatalogMetadataSourceView    `json:"source"`
+	Overlay       CatalogMetadataOverlayView   `json:"overlay"`
+	Effective     CatalogMetadataEffectiveView `json:"effective"`
+	Relationships CatalogRelationshipSet       `json:"relationships"`
 }
 
 // CatalogMetadataService orchestrates read/write metadata overlay operations.
 type CatalogMetadataService struct {
-	sourceRepo  catalogMetadataSourceRepository
-	overlayRepo catalogMetadataOverlayRepository
-	effective   catalogMetadataEffectiveService
-	now         func() time.Time
+	sourceRepo          catalogMetadataSourceRepository
+	overlayRepo         catalogMetadataOverlayRepository
+	effective           catalogMetadataEffectiveService
+	relationshipService *CatalogRelationshipService
+	now                 func() time.Time
 }
 
 // NewCatalogMetadataService creates a metadata overlay service.
@@ -124,10 +127,11 @@ func NewCatalogMetadataService(
 	}
 
 	return &CatalogMetadataService{
-		sourceRepo:  sourceRepo,
-		overlayRepo: overlayRepo,
-		effective:   effective,
-		now:         now,
+		sourceRepo:          sourceRepo,
+		overlayRepo:         overlayRepo,
+		effective:           effective,
+		relationshipService: options.RelationshipService,
+		now:                 now,
 	}, nil
 }
 
@@ -170,7 +174,23 @@ func (s *CatalogMetadataService) Get(ctx context.Context, itemID string) (Catalo
 	}
 
 	effectiveItem := effectiveItems[0]
-	return mapCatalogMetadataView(sourceRow, effectiveItem, overlayRow, hasOverlay)
+	relationships := newCatalogRelationshipSet()
+	if s.relationshipService != nil {
+		relationshipView, relationshipErr := s.relationshipService.Get(ctx, normalizedItemID)
+		if relationshipErr != nil {
+			if errors.Is(relationshipErr, ErrCatalogRelationshipItemNotFound) {
+				return CatalogMetadataView{}, ErrCatalogMetadataItemNotFound
+			}
+			return CatalogMetadataView{}, fmt.Errorf(
+				"get catalog relationship projection for %q: %w",
+				normalizedItemID,
+				relationshipErr,
+			)
+		}
+		relationships = relationshipView.Relationships
+	}
+
+	return mapCatalogMetadataView(sourceRow, effectiveItem, overlayRow, hasOverlay, relationships)
 }
 
 // Patch updates the metadata overlay for one catalog item ID and returns the effective view.
@@ -286,6 +306,7 @@ func mapCatalogMetadataView(
 	effectiveItem CatalogItem,
 	overlayRow persistence.CatalogMetadataOverlayRow,
 	hasOverlay bool,
+	relationships CatalogRelationshipSet,
 ) (CatalogMetadataView, error) {
 	classifier, err := mapCatalogMetadataClassifier(sourceRow.Classifier)
 	if err != nil {
@@ -351,10 +372,11 @@ func mapCatalogMetadataView(
 	}
 
 	return CatalogMetadataView{
-		ItemID:    sourceRow.ItemID,
-		Source:    source,
-		Overlay:   overlay,
-		Effective: effective,
+		ItemID:        sourceRow.ItemID,
+		Source:        source,
+		Overlay:       overlay,
+		Effective:     effective,
+		Relationships: copyCatalogRelationshipSet(relationships),
 	}, nil
 }
 

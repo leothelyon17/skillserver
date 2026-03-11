@@ -166,3 +166,130 @@ func TestCatalogMetadataService_Get_MapsRuleClassifierInSourceView(t *testing.T)
 		t.Fatalf("expected rule effective missing_fields %+v, got %+v", expectedMissingFields, view.Effective.MissingFields)
 	}
 }
+
+func TestCatalogMetadataService_Get_IncludesRelationshipProjectionWhenConfigured(t *testing.T) {
+	db, ctx := openCatalogSyncServiceTestDB(t)
+	sourceRepo := newCatalogSourceRepositoryForDomainTest(t, db)
+	overlayRepo := newCatalogOverlayRepositoryForDomainTest(t, db)
+	domainRepo := newCatalogDomainRepositoryForDomainTest(t, db)
+	subdomainRepo := newCatalogSubdomainRepositoryForDomainTest(t, db)
+	tagRepo := newCatalogTagRepositoryForDomainTest(t, db)
+	taxonomyAssignmentRepo := newCatalogItemTaxonomyAssignmentRepositoryForDomainTest(t, db)
+	tagAssignmentRepo := newCatalogItemTagAssignmentRepositoryForDomainTest(t, db)
+	ruleRelationshipRepo := newCatalogSkillRuleRelationshipRepositoryForDomainTest(t, db)
+	promptRelationshipRepo := newCatalogSkillPromptRelationshipRepositoryForDomainTest(t, db)
+
+	skillItemID := BuildSkillCatalogItemID("repo-a/metadata-relationship")
+	promptItemID := BuildPromptCatalogItemID("repo-a/metadata-relationship", "prompts/system.md")
+	ruleItemID := BuildRuleCatalogItemID("repo-a/metadata-relationship", "rules/security.md")
+	syncedAt := time.Date(2026, time.March, 7, 15, 0, 0, 0, time.UTC)
+
+	for _, row := range []persistence.CatalogSourceRow{
+		{
+			ItemID:           skillItemID,
+			Classifier:       persistence.CatalogClassifierSkill,
+			SourceType:       persistence.CatalogSourceTypeLocal,
+			Name:             "metadata-relationship",
+			Description:      "relationship metadata skill",
+			Content:          "skill content",
+			ContentHash:      buildCatalogContentHash("skill content"),
+			ContentWritable:  true,
+			MetadataWritable: true,
+			LastSyncedAt:     syncedAt,
+		},
+		{
+			ItemID:           promptItemID,
+			Classifier:       persistence.CatalogClassifierPrompt,
+			SourceType:       persistence.CatalogSourceTypeGit,
+			SourceRepo:       stringPointer("repo-a"),
+			ParentSkillID:    stringPointer("repo-a/metadata-relationship"),
+			ResourcePath:     stringPointer("prompts/system.md"),
+			Name:             "system.md",
+			Description:      "metadata relationship prompt",
+			Content:          "prompt content",
+			ContentHash:      buildCatalogContentHash("prompt content"),
+			ContentWritable:  false,
+			MetadataWritable: true,
+			LastSyncedAt:     syncedAt,
+		},
+		{
+			ItemID:           ruleItemID,
+			Classifier:       persistence.CatalogClassifierRule,
+			SourceType:       persistence.CatalogSourceTypeGit,
+			SourceRepo:       stringPointer("repo-a"),
+			ParentSkillID:    stringPointer("repo-a/metadata-relationship"),
+			ResourcePath:     stringPointer("rules/security.md"),
+			Name:             "security.md",
+			Description:      "metadata relationship rule",
+			Content:          "rule content",
+			ContentHash:      buildCatalogContentHash("rule content"),
+			ContentWritable:  false,
+			MetadataWritable: true,
+			LastSyncedAt:     syncedAt,
+		},
+	} {
+		mustUpsertCatalogSourceRowForDomainTest(t, ctx, sourceRepo, row)
+	}
+	mustSetCatalogPromptRelationshipForDomainTest(
+		t,
+		ctx,
+		promptRelationshipRepo,
+		skillItemID,
+		promptItemID,
+		syncedAt,
+	)
+	mustReplaceCatalogRuleRelationshipsForDomainTest(
+		t,
+		ctx,
+		ruleRelationshipRepo,
+		skillItemID,
+		[]string{ruleItemID},
+		syncedAt,
+	)
+
+	effectiveService, err := NewCatalogEffectiveService(
+		sourceRepo,
+		overlayRepo,
+		taxonomyAssignmentRepo,
+		tagAssignmentRepo,
+		domainRepo,
+		subdomainRepo,
+		tagRepo,
+	)
+	if err != nil {
+		t.Fatalf("expected effective catalog service creation to succeed, got %v", err)
+	}
+	relationshipService, err := NewCatalogRelationshipService(
+		sourceRepo,
+		ruleRelationshipRepo,
+		promptRelationshipRepo,
+		CatalogRelationshipServiceOptions{},
+	)
+	if err != nil {
+		t.Fatalf("expected relationship service creation to succeed, got %v", err)
+	}
+	service, err := NewCatalogMetadataService(
+		sourceRepo,
+		overlayRepo,
+		effectiveService,
+		CatalogMetadataServiceOptions{RelationshipService: relationshipService},
+	)
+	if err != nil {
+		t.Fatalf("expected metadata service creation to succeed, got %v", err)
+	}
+
+	view, err := service.Get(ctx, skillItemID)
+	if err != nil {
+		t.Fatalf("expected metadata get to succeed, got %v", err)
+	}
+
+	if view.Relationships.Prompt == nil || view.Relationships.Prompt.ID != promptItemID {
+		t.Fatalf("expected metadata relationship prompt %q, got %+v", promptItemID, view.Relationships.Prompt)
+	}
+	if len(view.Relationships.Rules) != 1 || view.Relationships.Rules[0].ID != ruleItemID {
+		t.Fatalf("expected metadata relationship rules [%q], got %+v", ruleItemID, view.Relationships.Rules)
+	}
+	if len(view.Relationships.Skills) != 0 {
+		t.Fatalf("expected skill metadata relationships to have no reverse skills, got %+v", view.Relationships.Skills)
+	}
+}

@@ -118,6 +118,8 @@ func TestRunMigrations_WithEmptyDatabase_AppliesCurrentSchema(t *testing.T) {
 		"catalog_item_taxonomy_assignments",
 		"catalog_item_tag_assignments",
 		"git_repo_credentials",
+		"catalog_skill_rule_relationships",
+		"catalog_skill_prompt_relationships",
 	}
 	for _, table := range requiredTables {
 		exists, err := sqliteObjectExists(ctx, db, "table", table)
@@ -141,6 +143,8 @@ func TestRunMigrations_WithEmptyDatabase_AppliesCurrentSchema(t *testing.T) {
 		"idx_catalog_item_taxonomy_secondary_subdomain",
 		"idx_catalog_item_tag_assignments_tag",
 		"idx_git_repo_credentials_key_metadata",
+		"idx_catalog_skill_rule_relationships_rule_item_id",
+		"idx_catalog_skill_prompt_relationships_prompt_item_id",
 	}
 	for _, index := range requiredIndexes {
 		exists, err := sqliteObjectExists(ctx, db, "index", index)
@@ -167,6 +171,12 @@ func TestRunMigrations_WithEmptyDatabase_AppliesCurrentSchema(t *testing.T) {
 		{table: "git_repo_credentials", column: "key_version"},
 		{table: "git_repo_credentials", column: "ciphertext"},
 		{table: "git_repo_credentials", column: "nonce"},
+		{table: "catalog_skill_rule_relationships", column: "skill_item_id"},
+		{table: "catalog_skill_rule_relationships", column: "rule_item_id"},
+		{table: "catalog_skill_rule_relationships", column: "created_at"},
+		{table: "catalog_skill_prompt_relationships", column: "skill_item_id"},
+		{table: "catalog_skill_prompt_relationships", column: "prompt_item_id"},
+		{table: "catalog_skill_prompt_relationships", column: "created_at"},
 	}
 	for _, expectation := range requiredColumns {
 		exists, err := sqliteColumnExists(ctx, db, expectation.table, expectation.column)
@@ -212,6 +222,34 @@ func TestRunMigrations_RepeatedExecution_IsIdempotent(t *testing.T) {
 	expectedVersion := strconv.Itoa(LatestSchemaVersion())
 	if systemStateVersion != expectedVersion {
 		t.Fatalf("expected system_state schema version %q, got %q", expectedVersion, systemStateVersion)
+	}
+
+	requiredRelationshipTables := []string{
+		"catalog_skill_rule_relationships",
+		"catalog_skill_prompt_relationships",
+	}
+	for _, table := range requiredRelationshipTables {
+		exists, err := sqliteObjectExists(ctx, db, "table", table)
+		if err != nil {
+			t.Fatalf("expected relationship table existence query to succeed for %q, got %v", table, err)
+		}
+		if !exists {
+			t.Fatalf("expected relationship table %q to exist after repeated migrations", table)
+		}
+	}
+
+	requiredRelationshipIndexes := []string{
+		"idx_catalog_skill_rule_relationships_rule_item_id",
+		"idx_catalog_skill_prompt_relationships_prompt_item_id",
+	}
+	for _, index := range requiredRelationshipIndexes {
+		exists, err := sqliteObjectExists(ctx, db, "index", index)
+		if err != nil {
+			t.Fatalf("expected relationship index existence query to succeed for %q, got %v", index, err)
+		}
+		if !exists {
+			t.Fatalf("expected relationship index %q to exist after repeated migrations", index)
+		}
 	}
 }
 
@@ -551,6 +589,338 @@ func TestRunMigrations_UpgradeFromPreRuleSchemaToLatest_PreservesRowsAndAllowsRu
 	}
 }
 
+func TestRunMigrations_UpgradeFromVersionFourToLatest_AppliesRelationshipSchema(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	db := openSQLiteTestDB(t, ctx)
+
+	relationshipMigrationIndex := -1
+	for i, nextMigration := range schemaMigrations {
+		if nextMigration.name == "catalog_skill_rule_and_prompt_relationships" {
+			relationshipMigrationIndex = i
+			break
+		}
+	}
+	if relationshipMigrationIndex <= 0 {
+		t.Fatalf("expected a pre-relationship migration chain before catalog_skill_rule_and_prompt_relationships")
+	}
+
+	preRelationshipRunner := &MigrationRunner{
+		db:         db,
+		migrations: slices.Clone(schemaMigrations[:relationshipMigrationIndex]),
+	}
+	if err := preRelationshipRunner.Run(ctx); err != nil {
+		t.Fatalf("expected pre-relationship migration run to succeed, got %v", err)
+	}
+
+	preRelationshipVersion, err := preRelationshipRunner.CurrentVersion(ctx)
+	if err != nil {
+		t.Fatalf("expected pre-relationship schema version query to succeed, got %v", err)
+	}
+	expectedPreRelationshipVersion := schemaMigrations[relationshipMigrationIndex-1].version
+	if preRelationshipVersion != expectedPreRelationshipVersion {
+		t.Fatalf(
+			"expected pre-relationship schema version %d, got %d",
+			expectedPreRelationshipVersion,
+			preRelationshipVersion,
+		)
+	}
+
+	if err := RunMigrations(ctx, db); err != nil {
+		t.Fatalf("expected schema upgrade from pre-relationship version to latest to succeed, got %v", err)
+	}
+
+	latestVersion, err := NewMigrationRunner(db).CurrentVersion(ctx)
+	if err != nil {
+		t.Fatalf("expected latest schema version query to succeed, got %v", err)
+	}
+	if latestVersion != LatestSchemaVersion() {
+		t.Fatalf("expected upgraded schema version %d, got %d", LatestSchemaVersion(), latestVersion)
+	}
+
+	requiredRelationshipTables := []string{
+		"catalog_skill_rule_relationships",
+		"catalog_skill_prompt_relationships",
+	}
+	for _, table := range requiredRelationshipTables {
+		exists, err := sqliteObjectExists(ctx, db, "table", table)
+		if err != nil {
+			t.Fatalf("expected relationship table existence query to succeed for %q, got %v", table, err)
+		}
+		if !exists {
+			t.Fatalf("expected relationship table %q to exist after upgrade", table)
+		}
+	}
+
+	requiredRelationshipIndexes := []string{
+		"idx_catalog_skill_rule_relationships_rule_item_id",
+		"idx_catalog_skill_prompt_relationships_prompt_item_id",
+	}
+	for _, index := range requiredRelationshipIndexes {
+		exists, err := sqliteObjectExists(ctx, db, "index", index)
+		if err != nil {
+			t.Fatalf("expected relationship index existence query to succeed for %q, got %v", index, err)
+		}
+		if !exists {
+			t.Fatalf("expected relationship index %q to exist after upgrade", index)
+		}
+	}
+}
+
+func TestRunMigrations_RelationshipPromptTable_RejectsDuplicateSkillPromptRows(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	db := openSQLiteTestDB(t, ctx)
+	if err := RunMigrations(ctx, db); err != nil {
+		t.Fatalf("expected migrations to succeed, got %v", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	insertCatalogSourceItem(t, ctx, db, catalogSourceInsert{
+		itemID:           "skill:prompt-constraint-skill",
+		classifier:       "skill",
+		sourceType:       "local",
+		name:             "prompt-constraint-skill",
+		description:      "skill for prompt uniqueness check",
+		content:          "skill content",
+		contentHash:      "sha256:prompt-constraint-skill",
+		contentWritable:  1,
+		metadataWritable: 1,
+		lastSyncedAt:     now,
+	})
+	insertCatalogSourceItem(t, ctx, db, catalogSourceInsert{
+		itemID:           "prompt:prompt-constraint:prompts/system-a.md",
+		classifier:       "prompt",
+		sourceType:       "git",
+		name:             "system-a.md",
+		description:      "first prompt relationship candidate",
+		content:          "prompt content a",
+		contentHash:      "sha256:prompt-constraint-a",
+		contentWritable:  0,
+		metadataWritable: 1,
+		lastSyncedAt:     now,
+	})
+	insertCatalogSourceItem(t, ctx, db, catalogSourceInsert{
+		itemID:           "prompt:prompt-constraint:prompts/system-b.md",
+		classifier:       "prompt",
+		sourceType:       "git",
+		name:             "system-b.md",
+		description:      "second prompt relationship candidate",
+		content:          "prompt content b",
+		contentHash:      "sha256:prompt-constraint-b",
+		contentWritable:  0,
+		metadataWritable: 1,
+		lastSyncedAt:     now,
+	})
+
+	_, err := db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_skill_prompt_relationships (
+			skill_item_id,
+			prompt_item_id,
+			created_at,
+			updated_at,
+			updated_by
+		) VALUES (?, ?, ?, ?, ?);`,
+		"skill:prompt-constraint-skill",
+		"prompt:prompt-constraint:prompts/system-a.md",
+		now,
+		now,
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("expected initial prompt relationship insert to succeed, got %v", err)
+	}
+
+	_, err = db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_skill_prompt_relationships (
+			skill_item_id,
+			prompt_item_id,
+			created_at,
+			updated_at,
+			updated_by
+		) VALUES (?, ?, ?, ?, ?);`,
+		"skill:prompt-constraint-skill",
+		"prompt:prompt-constraint:prompts/system-b.md",
+		now,
+		now,
+		"test",
+	)
+	if err == nil {
+		t.Fatalf("expected duplicate prompt relationship insert for a skill to fail, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "unique") && !strings.Contains(strings.ToLower(err.Error()), "constraint") {
+		t.Fatalf("expected duplicate prompt relationship insert to fail with unique constraint error, got %v", err)
+	}
+}
+
+func TestRunMigrations_RelationshipTables_EnforceForeignKeysAndCascadeDeletes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	db := openSQLiteTestDB(t, ctx)
+	if err := RunMigrations(ctx, db); err != nil {
+		t.Fatalf("expected migrations to succeed, got %v", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	insertCatalogSourceItem(t, ctx, db, catalogSourceInsert{
+		itemID:           "skill:relationship-fk-skill",
+		classifier:       "skill",
+		sourceType:       "local",
+		name:             "relationship-fk-skill",
+		description:      "skill for relationship foreign key checks",
+		content:          "skill content",
+		contentHash:      "sha256:relationship-fk-skill",
+		contentWritable:  1,
+		metadataWritable: 1,
+		lastSyncedAt:     now,
+	})
+	insertCatalogSourceItem(t, ctx, db, catalogSourceInsert{
+		itemID:           "prompt:relationship-fk:prompts/system.md",
+		classifier:       "prompt",
+		sourceType:       "git",
+		name:             "system.md",
+		description:      "prompt for relationship foreign key checks",
+		content:          "prompt content",
+		contentHash:      "sha256:relationship-fk-prompt",
+		contentWritable:  0,
+		metadataWritable: 1,
+		lastSyncedAt:     now,
+	})
+	insertCatalogSourceItem(t, ctx, db, catalogSourceInsert{
+		itemID:           "rule:relationship-fk:rules/security.md",
+		classifier:       "rule",
+		sourceType:       "git",
+		name:             "security.md",
+		description:      "rule for relationship foreign key checks",
+		content:          "rule content",
+		contentHash:      "sha256:relationship-fk-rule",
+		contentWritable:  0,
+		metadataWritable: 1,
+		lastSyncedAt:     now,
+	})
+
+	_, err := db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_skill_prompt_relationships (
+			skill_item_id,
+			prompt_item_id,
+			created_at,
+			updated_at,
+			updated_by
+		) VALUES (?, ?, ?, ?, ?);`,
+		"skill:relationship-fk-skill",
+		"prompt:relationship-fk:prompts/system.md",
+		now,
+		now,
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("expected prompt relationship insert to succeed, got %v", err)
+	}
+
+	_, err = db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_skill_rule_relationships (
+			skill_item_id,
+			rule_item_id,
+			created_at,
+			updated_at,
+			updated_by
+		) VALUES (?, ?, ?, ?, ?);`,
+		"skill:relationship-fk-skill",
+		"rule:relationship-fk:rules/security.md",
+		now,
+		now,
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("expected rule relationship insert to succeed, got %v", err)
+	}
+
+	_, err = db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_skill_prompt_relationships (
+			skill_item_id,
+			prompt_item_id,
+			created_at,
+			updated_at,
+			updated_by
+		) VALUES (?, ?, ?, ?, ?);`,
+		"skill:missing",
+		"prompt:relationship-fk:prompts/system.md",
+		now,
+		now,
+		"test",
+	)
+	if err == nil {
+		t.Fatalf("expected prompt relationship insert with missing skill source row to fail, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "foreign key") {
+		t.Fatalf("expected foreign key failure for prompt relationship insert with missing skill, got %v", err)
+	}
+
+	_, err = db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_skill_rule_relationships (
+			skill_item_id,
+			rule_item_id,
+			created_at,
+			updated_at,
+			updated_by
+		) VALUES (?, ?, ?, ?, ?);`,
+		"skill:relationship-fk-skill",
+		"rule:missing",
+		now,
+		now,
+		"test",
+	)
+	if err == nil {
+		t.Fatalf("expected rule relationship insert with missing rule source row to fail, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "foreign key") {
+		t.Fatalf("expected foreign key failure for rule relationship insert with missing rule, got %v", err)
+	}
+
+	if _, err := db.ExecContext(
+		ctx,
+		`DELETE FROM catalog_source_items WHERE item_id = ?;`,
+		"prompt:relationship-fk:prompts/system.md",
+	); err != nil {
+		t.Fatalf("expected prompt source row delete to succeed, got %v", err)
+	}
+
+	var promptRelationshipCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_skill_prompt_relationships WHERE skill_item_id = ?;`, "skill:relationship-fk-skill").Scan(&promptRelationshipCount); err != nil {
+		t.Fatalf("expected prompt relationship count query to succeed, got %v", err)
+	}
+	if promptRelationshipCount != 0 {
+		t.Fatalf("expected prompt relationships to cascade-delete with prompt source row, got %d", promptRelationshipCount)
+	}
+
+	if _, err := db.ExecContext(
+		ctx,
+		`DELETE FROM catalog_source_items WHERE item_id = ?;`,
+		"rule:relationship-fk:rules/security.md",
+	); err != nil {
+		t.Fatalf("expected rule source row delete to succeed, got %v", err)
+	}
+
+	var ruleRelationshipCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_skill_rule_relationships WHERE skill_item_id = ?;`, "skill:relationship-fk-skill").Scan(&ruleRelationshipCount); err != nil {
+		t.Fatalf("expected rule relationship count query to succeed, got %v", err)
+	}
+	if ruleRelationshipCount != 0 {
+		t.Fatalf("expected rule relationships to cascade-delete with rule source row, got %d", ruleRelationshipCount)
+	}
+}
+
 func TestRunMigrations_WithNilDatabase_ReturnsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -855,6 +1225,19 @@ type sqliteColumnExpectation struct {
 	column string
 }
 
+type catalogSourceInsert struct {
+	itemID           string
+	classifier       string
+	sourceType       string
+	name             string
+	description      string
+	content          string
+	contentHash      string
+	contentWritable  int
+	metadataWritable int
+	lastSyncedAt     string
+}
+
 func openSQLiteTestDB(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
 
@@ -870,6 +1253,39 @@ func openSQLiteTestDB(t *testing.T, ctx context.Context) *sql.DB {
 	})
 
 	return db
+}
+
+func insertCatalogSourceItem(t *testing.T, ctx context.Context, db *sql.DB, fixture catalogSourceInsert) {
+	t.Helper()
+
+	_, err := db.ExecContext(
+		ctx,
+		`INSERT INTO catalog_source_items (
+			item_id,
+			classifier,
+			source_type,
+			name,
+			description,
+			content,
+			content_hash,
+			content_writable,
+			metadata_writable,
+			last_synced_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+		fixture.itemID,
+		fixture.classifier,
+		fixture.sourceType,
+		fixture.name,
+		fixture.description,
+		fixture.content,
+		fixture.contentHash,
+		fixture.contentWritable,
+		fixture.metadataWritable,
+		fixture.lastSyncedAt,
+	)
+	if err != nil {
+		t.Fatalf("expected source item insert for %q to succeed, got %v", fixture.itemID, err)
+	}
 }
 
 func sqliteObjectExists(ctx context.Context, db *sql.DB, objectType, objectName string) (bool, error) {

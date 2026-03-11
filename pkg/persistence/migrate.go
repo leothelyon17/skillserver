@@ -341,6 +341,35 @@ var schemaMigrations = []migration{
 			`DROP TABLE catalog_item_tag_assignments_v4_backup;`,
 		},
 	},
+	{
+		version: 5,
+		name:    "catalog_skill_rule_and_prompt_relationships",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS catalog_skill_rule_relationships (
+				skill_item_id TEXT NOT NULL,
+				rule_item_id TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				updated_by TEXT,
+				PRIMARY KEY (skill_item_id, rule_item_id),
+				FOREIGN KEY (skill_item_id) REFERENCES catalog_source_items(item_id) ON UPDATE CASCADE ON DELETE CASCADE,
+				FOREIGN KEY (rule_item_id) REFERENCES catalog_source_items(item_id) ON UPDATE CASCADE ON DELETE CASCADE
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_skill_rule_relationships_rule_item_id
+			ON catalog_skill_rule_relationships (rule_item_id);`,
+			`CREATE TABLE IF NOT EXISTS catalog_skill_prompt_relationships (
+				skill_item_id TEXT PRIMARY KEY,
+				prompt_item_id TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				updated_by TEXT,
+				FOREIGN KEY (skill_item_id) REFERENCES catalog_source_items(item_id) ON UPDATE CASCADE ON DELETE CASCADE,
+				FOREIGN KEY (prompt_item_id) REFERENCES catalog_source_items(item_id) ON UPDATE CASCADE ON DELETE CASCADE
+			);`,
+			`CREATE INDEX IF NOT EXISTS idx_catalog_skill_prompt_relationships_prompt_item_id
+			ON catalog_skill_prompt_relationships (prompt_item_id);`,
+		},
+	},
 }
 
 // NewMigrationRunner creates a migration runner for the provided sqlite handle.

@@ -98,6 +98,13 @@ type PatchCatalogMetadataRequest struct {
 	UpdatedBy      *string         `json:"updated_by,omitempty"`
 }
 
+// PatchCatalogRelationshipsRequest represents one relationship mutation request.
+type PatchCatalogRelationshipsRequest struct {
+	PromptItemID catalogOptionalStringField      `json:"prompt_item_id,omitempty"`
+	RuleItemIDs  catalogOptionalStringSliceField `json:"rule_item_ids,omitempty"`
+	UpdatedBy    *string                         `json:"updated_by,omitempty"`
+}
+
 // CatalogTaxonomyDomainCreateRequest describes domain create payloads.
 type CatalogTaxonomyDomainCreateRequest struct {
 	DomainID    string `json:"domain_id"`
@@ -212,10 +219,11 @@ type CatalogMaterializeResponse struct {
 
 // CatalogMetadataResponse represents source, overlay, and effective metadata views.
 type CatalogMetadataResponse struct {
-	ItemID    string                           `json:"item_id"`
-	Source    CatalogMetadataSourceResponse    `json:"source"`
-	Overlay   CatalogMetadataOverlayResponse   `json:"overlay"`
-	Effective CatalogMetadataEffectiveResponse `json:"effective"`
+	ItemID        string                           `json:"item_id"`
+	Source        CatalogMetadataSourceResponse    `json:"source"`
+	Overlay       CatalogMetadataOverlayResponse   `json:"overlay"`
+	Effective     CatalogMetadataEffectiveResponse `json:"effective"`
+	Relationships CatalogRelationshipSetResponse   `json:"relationships"`
 }
 
 // CatalogMetadataSourceResponse represents immutable source snapshot metadata.
@@ -262,6 +270,74 @@ type CatalogMetadataEffectiveResponse struct {
 	MissingFields      []string                          `json:"missing_fields"`
 }
 
+// CatalogRelationshipsResponse represents one relationship view payload.
+type CatalogRelationshipsResponse struct {
+	ItemID        string                         `json:"item_id"`
+	Relationships CatalogRelationshipSetResponse `json:"relationships"`
+}
+
+// CatalogRelationshipSetResponse captures one normalized prompt/rules/skills relationship envelope.
+type CatalogRelationshipSetResponse struct {
+	Prompt *CatalogRelationshipItemResponse  `json:"prompt"`
+	Rules  []CatalogRelationshipItemResponse `json:"rules"`
+	Skills []CatalogRelationshipItemResponse `json:"skills"`
+}
+
+// CatalogRelationshipItemResponse represents one related catalog item descriptor.
+type CatalogRelationshipItemResponse struct {
+	ID            string                   `json:"id"`
+	Classifier    domain.CatalogClassifier `json:"classifier"`
+	Name          string                   `json:"name"`
+	ParentSkillID *string                  `json:"parent_skill_id,omitempty"`
+	ResourcePath  *string                  `json:"resource_path,omitempty"`
+}
+
+// catalogOptionalStringField preserves field presence semantics for nullable string payload fields.
+type catalogOptionalStringField struct {
+	Set   bool
+	Value *string
+}
+
+func (f *catalogOptionalStringField) UnmarshalJSON(data []byte) error {
+	f.Set = true
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		f.Value = nil
+		return nil
+	}
+
+	var value string
+	if err := json.Unmarshal(trimmed, &value); err != nil {
+		return err
+	}
+	f.Value = &value
+	return nil
+}
+
+// catalogOptionalStringSliceField preserves field presence semantics for []string payload fields.
+type catalogOptionalStringSliceField struct {
+	Set   bool
+	Null  bool
+	Value []string
+}
+
+func (f *catalogOptionalStringSliceField) UnmarshalJSON(data []byte) error {
+	f.Set = true
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		f.Null = true
+		f.Value = nil
+		return nil
+	}
+
+	var value []string
+	if err := json.Unmarshal(trimmed, &value); err != nil {
+		return err
+	}
+	f.Value = value
+	return nil
+}
+
 type catalogListRequest struct {
 	TaxonomyFilter       domain.CatalogEffectiveListFilter
 	Classifier           *domain.CatalogClassifier
@@ -291,6 +367,7 @@ const (
 	catalogMaterializeRequestMaxBodyBytes   = 32 * 1024
 	catalogTaxonomyRequestMaxBodyBytes      = 32 * 1024
 	catalogMetadataPatchMaxBodyBytes        = 32 * 1024
+	catalogRelationshipPatchMaxBodyBytes    = 32 * 1024
 	catalogMetadataDisplayNameMaxChars      = 256
 	catalogMetadataDescriptionMaxChars      = 4096
 	catalogMetadataMaxLabels                = 64
@@ -1094,6 +1171,43 @@ func (s *Server) patchCatalogMetadata(c *echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, catalogMetadataResponseFromView(view))
+}
+
+// patchCatalogRelationships updates one skill-owned relationship projection.
+func (s *Server) patchCatalogRelationships(c *echo.Context) error {
+	if s.catalogRelationshipService == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "catalog relationship API is unavailable",
+		})
+	}
+
+	itemID, err := decodeCatalogItemIDFromPath(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	request, err := decodeCatalogRelationshipPatchRequest(c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	input, err := normalizeCatalogRelationshipPatchInput(itemID, request)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	view, err := s.catalogRelationshipService.Patch(c.Request().Context(), input)
+	if err != nil {
+		return encodeCatalogRelationshipServiceError(c, err)
+	}
+
+	return c.JSON(http.StatusOK, catalogRelationshipsResponseFromView(view))
 }
 
 // getCatalogItemTaxonomy returns one catalog item's taxonomy assignment state.
@@ -2512,6 +2626,122 @@ func buildCatalogTaxonomyConflictResponse(serviceErr error) catalogTaxonomyConfl
 	return response
 }
 
+func encodeCatalogRelationshipServiceError(c *echo.Context, serviceErr error) error {
+	switch {
+	case errors.Is(serviceErr, domain.ErrCatalogRelationshipReadOnlySurface):
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": serviceErr.Error(),
+		})
+	case errors.Is(serviceErr, domain.ErrCatalogRelationshipItemNotFound):
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": "catalog item not found",
+		})
+	case errors.Is(serviceErr, domain.ErrCatalogRelationshipValidation):
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": serviceErr.Error(),
+		})
+	case isCatalogRelationshipConflictError(serviceErr):
+		return c.JSON(http.StatusConflict, map[string]string{
+			"error": serviceErr.Error(),
+		})
+	default:
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": serviceErr.Error(),
+		})
+	}
+}
+
+func isCatalogRelationshipConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	lowered := strings.ToLower(err.Error())
+	return strings.Contains(lowered, "unique constraint failed") ||
+		strings.Contains(lowered, "constraint failed")
+}
+
+func decodeCatalogRelationshipPatchRequest(c *echo.Context) (PatchCatalogRelationshipsRequest, error) {
+	limitedReader := io.LimitReader(c.Request().Body, catalogRelationshipPatchMaxBodyBytes+1)
+	payload, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return PatchCatalogRelationshipsRequest{}, fmt.Errorf("invalid request payload")
+	}
+	if len(payload) == 0 {
+		return PatchCatalogRelationshipsRequest{}, fmt.Errorf("request body is required")
+	}
+	if len(payload) > catalogRelationshipPatchMaxBodyBytes {
+		return PatchCatalogRelationshipsRequest{}, fmt.Errorf(
+			"request payload exceeds %d bytes",
+			catalogRelationshipPatchMaxBodyBytes,
+		)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+
+	var request PatchCatalogRelationshipsRequest
+	if err := decoder.Decode(&request); err != nil {
+		return PatchCatalogRelationshipsRequest{}, fmt.Errorf("invalid request payload")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return PatchCatalogRelationshipsRequest{}, fmt.Errorf("invalid request payload")
+	}
+
+	return request, nil
+}
+
+func normalizeCatalogRelationshipPatchInput(
+	itemID string,
+	request PatchCatalogRelationshipsRequest,
+) (domain.CatalogRelationshipPatchInput, error) {
+	normalized := domain.CatalogRelationshipPatchInput{
+		ItemID: strings.TrimSpace(itemID),
+	}
+
+	if request.PromptItemID.Set {
+		normalized.PromptItemIDSet = true
+		if request.PromptItemID.Value != nil {
+			promptItemID := strings.TrimSpace(*request.PromptItemID.Value)
+			if promptItemID == "" {
+				return domain.CatalogRelationshipPatchInput{}, fmt.Errorf("prompt_item_id cannot be empty")
+			}
+			normalized.PromptItemID = &promptItemID
+		}
+	}
+
+	if request.RuleItemIDs.Set {
+		if request.RuleItemIDs.Null {
+			return domain.CatalogRelationshipPatchInput{}, fmt.Errorf("rule_item_ids must be an array when provided")
+		}
+
+		ruleItemIDs := make([]string, 0, len(request.RuleItemIDs.Value))
+		for index, rawRuleItemID := range request.RuleItemIDs.Value {
+			ruleItemID := strings.TrimSpace(rawRuleItemID)
+			if ruleItemID == "" {
+				return domain.CatalogRelationshipPatchInput{}, fmt.Errorf("rule_item_ids[%d] cannot be empty", index)
+			}
+			ruleItemIDs = append(ruleItemIDs, ruleItemID)
+		}
+		normalized.RuleItemIDs = &ruleItemIDs
+	}
+
+	if request.UpdatedBy != nil {
+		updatedBy := strings.TrimSpace(*request.UpdatedBy)
+		if updatedBy != "" {
+			normalized.UpdatedBy = &updatedBy
+		}
+	}
+
+	if !normalized.PromptItemIDSet && normalized.RuleItemIDs == nil {
+		return domain.CatalogRelationshipPatchInput{}, fmt.Errorf(
+			"at least one of prompt_item_id or rule_item_ids is required",
+		)
+	}
+
+	return normalized, nil
+}
+
 func decodeCatalogMetadataPatchRequest(c *echo.Context) (PatchCatalogMetadataRequest, error) {
 	limitedReader := io.LimitReader(c.Request().Body, catalogMetadataPatchMaxBodyBytes+1)
 	payload, err := io.ReadAll(limitedReader)
@@ -2750,6 +2980,7 @@ func catalogMetadataResponseFromView(view domain.CatalogMetadataView) CatalogMet
 			IsFullyClassified:  view.Effective.IsFullyClassified,
 			MissingFields:      append([]string{}, view.Effective.MissingFields...),
 		},
+		Relationships: catalogRelationshipSetResponseFromDomain(view.Relationships),
 	}
 
 	if view.Overlay.UpdatedAt != nil {
@@ -2771,7 +3002,72 @@ func catalogMetadataResponseFromView(view domain.CatalogMetadataView) CatalogMet
 	if response.Effective.Labels == nil {
 		response.Effective.Labels = []string{}
 	}
+	if response.Relationships.Rules == nil {
+		response.Relationships.Rules = []CatalogRelationshipItemResponse{}
+	}
+	if response.Relationships.Skills == nil {
+		response.Relationships.Skills = []CatalogRelationshipItemResponse{}
+	}
 
+	return response
+}
+
+func catalogRelationshipsResponseFromView(view domain.CatalogRelationshipView) CatalogRelationshipsResponse {
+	response := CatalogRelationshipsResponse{
+		ItemID:        view.ItemID,
+		Relationships: catalogRelationshipSetResponseFromDomain(view.Relationships),
+	}
+	if response.Relationships.Rules == nil {
+		response.Relationships.Rules = []CatalogRelationshipItemResponse{}
+	}
+	if response.Relationships.Skills == nil {
+		response.Relationships.Skills = []CatalogRelationshipItemResponse{}
+	}
+	return response
+}
+
+func catalogRelationshipSetResponseFromDomain(
+	relationships domain.CatalogRelationshipSet,
+) CatalogRelationshipSetResponse {
+	response := CatalogRelationshipSetResponse{
+		Rules:  make([]CatalogRelationshipItemResponse, 0, len(relationships.Rules)),
+		Skills: make([]CatalogRelationshipItemResponse, 0, len(relationships.Skills)),
+	}
+
+	if relationships.Prompt != nil {
+		promptItem := catalogRelationshipItemResponseFromDomain(*relationships.Prompt)
+		response.Prompt = &promptItem
+	}
+	for _, item := range relationships.Rules {
+		response.Rules = append(response.Rules, catalogRelationshipItemResponseFromDomain(item))
+	}
+	for _, item := range relationships.Skills {
+		response.Skills = append(response.Skills, catalogRelationshipItemResponseFromDomain(item))
+	}
+
+	return response
+}
+
+func catalogRelationshipItemResponseFromDomain(
+	item domain.CatalogRelationshipItem,
+) CatalogRelationshipItemResponse {
+	response := CatalogRelationshipItemResponse{
+		ID:         item.ID,
+		Classifier: item.Classifier,
+		Name:       item.Name,
+	}
+	if item.ParentSkillID != nil {
+		parentSkillID := strings.TrimSpace(*item.ParentSkillID)
+		if parentSkillID != "" {
+			response.ParentSkillID = &parentSkillID
+		}
+	}
+	if item.ResourcePath != nil {
+		resourcePath := strings.TrimSpace(*item.ResourcePath)
+		if resourcePath != "" {
+			response.ResourcePath = &resourcePath
+		}
+	}
 	return response
 }
 

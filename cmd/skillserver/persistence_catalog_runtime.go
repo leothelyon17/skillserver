@@ -19,15 +19,17 @@ type catalogPersistenceRuntime struct {
 	taxonomyAssignment      *domain.CatalogTaxonomyAssignmentService
 	taxonomyRegistryService *domain.CatalogTaxonomyRegistryService
 	taxonomyUsageService    *domain.CatalogTaxonomyUsageService
+	relationshipService     *domain.CatalogRelationshipService
 	coordinator             *catalogPersistenceCoordinator
 }
 
 type catalogPersistenceCoordinator struct {
-	fsManager        *domain.FileSystemManager
-	syncService      *domain.CatalogSyncService
-	backfillService  *domain.CatalogTaxonomyLegacyLabelBackfillService
-	effectiveService *domain.CatalogEffectiveService
-	logger           *log.Logger
+	fsManager           *domain.FileSystemManager
+	syncService         *domain.CatalogSyncService
+	backfillService     *domain.CatalogTaxonomyLegacyLabelBackfillService
+	relationshipService *domain.CatalogRelationshipService
+	effectiveService    *domain.CatalogEffectiveService
+	logger              *log.Logger
 }
 
 func bootstrapCatalogPersistenceRuntime(
@@ -86,6 +88,26 @@ func bootstrapCatalogPersistenceRuntime(
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize catalog tag repository: %w", err)
 	}
+	skillRuleRelationshipRepo, err := persistence.NewCatalogSkillRuleRelationshipRepository(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize catalog skill-rule relationship repository: %w", err)
+	}
+	skillPromptRelationshipRepo, err := persistence.NewCatalogSkillPromptRelationshipRepository(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize catalog skill-prompt relationship repository: %w", err)
+	}
+	relationshipService, err := domain.NewCatalogRelationshipService(
+		sourceRepo,
+		skillRuleRelationshipRepo,
+		skillPromptRelationshipRepo,
+		domain.CatalogRelationshipServiceOptions{},
+	)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize catalog relationship service: %w", err)
+	}
 
 	coordinator, err := newCatalogPersistenceCoordinator(
 		fsManager,
@@ -96,6 +118,7 @@ func bootstrapCatalogPersistenceRuntime(
 		domainRepo,
 		subdomainRepo,
 		tagRepo,
+		relationshipService,
 		logger,
 	)
 	if err != nil {
@@ -149,6 +172,7 @@ func bootstrapCatalogPersistenceRuntime(
 		taxonomyAssignment:      taxonomyAssignmentService,
 		taxonomyRegistryService: taxonomyRegistryService,
 		taxonomyUsageService:    taxonomyUsageService,
+		relationshipService:     relationshipService,
 		coordinator:             coordinator,
 	}, nil
 }
@@ -162,6 +186,7 @@ func newCatalogPersistenceCoordinator(
 	domainRepo *persistence.CatalogDomainRepository,
 	subdomainRepo *persistence.CatalogSubdomainRepository,
 	tagRepo *persistence.CatalogTagRepository,
+	relationshipService *domain.CatalogRelationshipService,
 	logger *log.Logger,
 ) (*catalogPersistenceCoordinator, error) {
 	if fsManager == nil {
@@ -187,6 +212,9 @@ func newCatalogPersistenceCoordinator(
 	}
 	if tagRepo == nil {
 		return nil, fmt.Errorf("catalog tag repository is required for persistence synchronization")
+	}
+	if relationshipService == nil {
+		return nil, fmt.Errorf("catalog relationship service is required for persistence synchronization")
 	}
 
 	resolvedLogger := logger
@@ -224,11 +252,12 @@ func newCatalogPersistenceCoordinator(
 	}
 
 	return &catalogPersistenceCoordinator{
-		fsManager:        fsManager,
-		syncService:      syncService,
-		backfillService:  backfillService,
-		effectiveService: effectiveService,
-		logger:           resolvedLogger,
+		fsManager:           fsManager,
+		syncService:         syncService,
+		backfillService:     backfillService,
+		relationshipService: relationshipService,
+		effectiveService:    effectiveService,
+		logger:              resolvedLogger,
 	}, nil
 }
 
@@ -278,6 +307,19 @@ func (c *catalogPersistenceCoordinator) syncAndRebuild(
 			backfillReport.TagsCreated,
 			backfillReport.ItemAssignmentsUpdated,
 			len(backfillReport.NormalizationCollisions),
+		)
+	}
+	reconciliationReport, err := c.relationshipService.Reconcile(ctx)
+	if err != nil {
+		return fmt.Errorf("reconcile stale catalog relationship rows: %w", err)
+	}
+	if c.logger != nil && (reconciliationReport.SkillRuleRowsPruned > 0 || reconciliationReport.SkillPromptRowsPruned > 0) {
+		c.logger.Printf(
+			"Catalog relationship reconciliation completed: rule_rows_scanned=%d rule_rows_pruned=%d prompt_rows_scanned=%d prompt_rows_pruned=%d",
+			reconciliationReport.SkillRuleRowsScanned,
+			reconciliationReport.SkillRuleRowsPruned,
+			reconciliationReport.SkillPromptRowsScanned,
+			reconciliationReport.SkillPromptRowsPruned,
 		)
 	}
 

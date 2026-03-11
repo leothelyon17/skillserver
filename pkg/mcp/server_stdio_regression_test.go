@@ -35,6 +35,7 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 			"list_taxonomy_subdomains",
 			"list_taxonomy_tags",
 			"get_catalog_item_taxonomy",
+			"get_catalog_item_relationships",
 			"get_taxonomy_domain_usage",
 			"get_taxonomy_subdomain_usage",
 			"get_taxonomy_tag_usage",
@@ -64,6 +65,11 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 				t.Fatalf("expected materialization tool %q to be absent when materialization gate is disabled", writeTool)
 			}
 		}
+		for _, writeTool := range relationshipWriteToolNames() {
+			if _, ok := registered[writeTool]; ok {
+				t.Fatalf("expected relationship write tool %q to remain unavailable", writeTool)
+			}
+		}
 	})
 
 	t.Run("registers taxonomy write tools when enabled", func(t *testing.T) {
@@ -91,6 +97,11 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		for _, writeTool := range materializationWriteToolNames() {
 			if _, ok := registered[writeTool]; ok {
 				t.Fatalf("expected materialization tool %q to remain gated when materialization capability is disabled", writeTool)
+			}
+		}
+		for _, writeTool := range relationshipWriteToolNames() {
+			if _, ok := registered[writeTool]; ok {
+				t.Fatalf("expected relationship write tool %q to remain unavailable", writeTool)
 			}
 		}
 	})
@@ -132,6 +143,11 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		for _, writeTool := range materializationWriteToolNames() {
 			if _, ok := enabledRegistered[writeTool]; !ok {
 				t.Fatalf("expected materialization tool %q to be registered when gate is enabled", writeTool)
+			}
+		}
+		for _, writeTool := range relationshipWriteToolNames() {
+			if _, ok := enabledRegistered[writeTool]; ok {
+				t.Fatalf("expected relationship write tool %q to remain unavailable", writeTool)
 			}
 		}
 	})
@@ -860,6 +876,157 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		}
 	})
 
+	t.Run("invokes relationship read tool end-to-end for skill prompt and rule items", func(t *testing.T) {
+		manager := newFakeSkillManager()
+		server := NewServer(manager)
+		server.SetCatalogRelationshipService(newFakeCatalogRelationshipService())
+		session, cleanup := connectMCPClientSession(t, server)
+		defer cleanup()
+
+		skillItemID := domain.BuildSkillCatalogItemID("sample-skill")
+		promptItemID := domain.BuildPromptCatalogItemID("sample-skill", "imports/prompts/system.md")
+		ruleItemID := domain.BuildRuleCatalogItemID("sample-skill", "imports/rules/agents.md")
+
+		skillResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "get_catalog_item_relationships",
+			Arguments: map[string]any{
+				"item_id": skillItemID,
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_catalog_item_relationships skill call failed: %v", err)
+		}
+		if skillResult.IsError {
+			t.Fatalf("get_catalog_item_relationships skill call returned tool error: %s", toolResultErrorText(skillResult))
+		}
+		skillStructured, ok := skillResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf(
+				"expected get_catalog_item_relationships skill structured content map, got %T",
+				skillResult.StructuredContent,
+			)
+		}
+		if itemID, _ := skillStructured["item_id"].(string); itemID != skillItemID {
+			t.Fatalf("expected skill relationship item_id %q, got %q", skillItemID, itemID)
+		}
+		skillRelationships, ok := skillStructured["relationships"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected relationships object for skill response, got %T", skillStructured["relationships"])
+		}
+		skillPrompt, ok := skillRelationships["prompt"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected skill relationships.prompt object, got %T", skillRelationships["prompt"])
+		}
+		if id, _ := skillPrompt["id"].(string); id != promptItemID {
+			t.Fatalf("expected skill relationships.prompt.id %q, got %q", promptItemID, id)
+		}
+		skillRules, ok := skillRelationships["rules"].([]any)
+		if !ok {
+			t.Fatalf("expected skill relationships.rules array, got %T", skillRelationships["rules"])
+		}
+		if len(skillRules) != 1 {
+			t.Fatalf("expected 1 skill relationship rule, got %d", len(skillRules))
+		}
+		skillRule, ok := skillRules[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected skill relationship rule object, got %T", skillRules[0])
+		}
+		if id, _ := skillRule["id"].(string); id != ruleItemID {
+			t.Fatalf("expected skill relationships.rules[0].id %q, got %q", ruleItemID, id)
+		}
+		skillReverseSkills, ok := skillRelationships["skills"].([]any)
+		if !ok {
+			t.Fatalf("expected skill relationships.skills array, got %T", skillRelationships["skills"])
+		}
+		if len(skillReverseSkills) != 0 {
+			t.Fatalf("expected no reverse skills on skill view, got %+v", skillReverseSkills)
+		}
+
+		promptResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "get_catalog_item_relationships",
+			Arguments: map[string]any{
+				"item_id": promptItemID,
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_catalog_item_relationships prompt call failed: %v", err)
+		}
+		if promptResult.IsError {
+			t.Fatalf("get_catalog_item_relationships prompt call returned tool error: %s", toolResultErrorText(promptResult))
+		}
+		promptStructured, ok := promptResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf(
+				"expected get_catalog_item_relationships prompt structured content map, got %T",
+				promptResult.StructuredContent,
+			)
+		}
+		promptRelationships, ok := promptStructured["relationships"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected relationships object for prompt response, got %T", promptStructured["relationships"])
+		}
+		if promptRelationships["prompt"] != nil {
+			t.Fatalf("expected prompt relationships.prompt to be null, got %+v", promptRelationships["prompt"])
+		}
+		promptRules, ok := promptRelationships["rules"].([]any)
+		if !ok || len(promptRules) != 0 {
+			t.Fatalf("expected prompt relationships.rules to be empty, got %+v", promptRelationships["rules"])
+		}
+		promptSkills, ok := promptRelationships["skills"].([]any)
+		if !ok || len(promptSkills) != 1 {
+			t.Fatalf("expected prompt relationships.skills to contain one reverse skill, got %+v", promptRelationships["skills"])
+		}
+		promptSkill, ok := promptSkills[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected prompt reverse skill object, got %T", promptSkills[0])
+		}
+		if id, _ := promptSkill["id"].(string); id != skillItemID {
+			t.Fatalf("expected prompt reverse skill id %q, got %q", skillItemID, id)
+		}
+
+		ruleResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "get_catalog_item_relationships",
+			Arguments: map[string]any{
+				"item_id": ruleItemID,
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_catalog_item_relationships rule call failed: %v", err)
+		}
+		if ruleResult.IsError {
+			t.Fatalf("get_catalog_item_relationships rule call returned tool error: %s", toolResultErrorText(ruleResult))
+		}
+		ruleStructured, ok := ruleResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf(
+				"expected get_catalog_item_relationships rule structured content map, got %T",
+				ruleResult.StructuredContent,
+			)
+		}
+		ruleRelationships, ok := ruleStructured["relationships"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected relationships object for rule response, got %T", ruleStructured["relationships"])
+		}
+		if ruleRelationships["prompt"] != nil {
+			t.Fatalf("expected rule relationships.prompt to be null, got %+v", ruleRelationships["prompt"])
+		}
+		ruleRules, ok := ruleRelationships["rules"].([]any)
+		if !ok || len(ruleRules) != 0 {
+			t.Fatalf("expected rule relationships.rules to be empty, got %+v", ruleRelationships["rules"])
+		}
+		ruleSkills, ok := ruleRelationships["skills"].([]any)
+		if !ok || len(ruleSkills) != 1 {
+			t.Fatalf("expected rule relationships.skills to contain one reverse skill, got %+v", ruleRelationships["skills"])
+		}
+		ruleSkill, ok := ruleSkills[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected rule reverse skill object, got %T", ruleSkills[0])
+		}
+		if id, _ := ruleSkill["id"].(string); id != skillItemID {
+			t.Fatalf("expected rule reverse skill id %q, got %q", skillItemID, id)
+		}
+	})
+
 	t.Run("invokes taxonomy write tools end-to-end with additive and batch contracts", func(t *testing.T) {
 		manager := newFakeSkillManager()
 		server := NewServer(manager, ServerOptions{EnableTaxonomyWriteTools: true})
@@ -1343,6 +1510,50 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 			t.Fatalf("expected get_catalog_item_taxonomy missing item_id to return tool error")
 		}
 
+		missingRelationshipServiceResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name:      "get_catalog_item_relationships",
+			Arguments: map[string]any{"item_id": "skill:sample-skill"},
+		})
+		if err != nil {
+			t.Fatalf("get_catalog_item_relationships missing service call failed: %v", err)
+		}
+		if !missingRelationshipServiceResult.IsError {
+			t.Fatalf("expected get_catalog_item_relationships missing service call to return tool error")
+		}
+
+		serverWithRelationships := NewServer(newFakeSkillManager())
+		serverWithRelationships.SetCatalogRelationshipService(newFakeCatalogRelationshipService())
+		relationshipSession, relationshipCleanup := connectMCPClientSession(t, serverWithRelationships)
+		defer relationshipCleanup()
+
+		missingRelationshipItemIDResult, err := relationshipSession.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name:      "get_catalog_item_relationships",
+			Arguments: map[string]any{"item_id": " "},
+		})
+		if err != nil {
+			t.Fatalf("get_catalog_item_relationships missing item_id call failed: %v", err)
+		}
+		if !missingRelationshipItemIDResult.IsError {
+			t.Fatalf("expected get_catalog_item_relationships missing item_id to return tool error")
+		}
+
+		unknownRelationshipItemResult, err := relationshipSession.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name:      "get_catalog_item_relationships",
+			Arguments: map[string]any{"item_id": "skill:missing-skill"},
+		})
+		if err != nil {
+			t.Fatalf("get_catalog_item_relationships missing item call failed: %v", err)
+		}
+		if !unknownRelationshipItemResult.IsError {
+			t.Fatalf("expected get_catalog_item_relationships missing item to return tool error")
+		}
+		if !strings.Contains(strings.ToLower(toolResultErrorText(unknownRelationshipItemResult)), "catalog relationship item not found") {
+			t.Fatalf(
+				"expected relationship missing-item error to include catalog relationship item not found, got %s",
+				toolResultErrorText(unknownRelationshipItemResult),
+			)
+		}
+
 		invalidLimitResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
 			Name: "list_catalog",
 			Arguments: map[string]any{
@@ -1576,6 +1787,12 @@ func taxonomyWriteToolNames() []string {
 func materializationWriteToolNames() []string {
 	return []string{
 		"materialize_catalog_items",
+	}
+}
+
+func relationshipWriteToolNames() []string {
+	return []string{
+		"patch_catalog_item_relationships",
 	}
 }
 
@@ -2308,6 +2525,100 @@ func normalizeFakeCatalogTaxonomyAssignmentItemID(itemID string) string {
 		return normalized
 	}
 	return reference.ItemID
+}
+
+type fakeCatalogRelationshipService struct {
+	byItemID map[string]domain.CatalogRelationshipView
+}
+
+func newFakeCatalogRelationshipService() *fakeCatalogRelationshipService {
+	skillItemID := domain.BuildSkillCatalogItemID("sample-skill")
+	promptItemID := domain.BuildPromptCatalogItemID("sample-skill", "imports/prompts/system.md")
+	ruleItemID := domain.BuildRuleCatalogItemID("sample-skill", "imports/rules/agents.md")
+
+	parentSkillID := "sample-skill"
+	promptResourcePath := "imports/prompts/system.md"
+	ruleResourcePath := "imports/rules/agents.md"
+
+	return &fakeCatalogRelationshipService{
+		byItemID: map[string]domain.CatalogRelationshipView{
+			skillItemID: {
+				ItemID: skillItemID,
+				Relationships: domain.CatalogRelationshipSet{
+					Prompt: &domain.CatalogRelationshipItem{
+						ID:            promptItemID,
+						Classifier:    domain.CatalogClassifierPrompt,
+						Name:          "system.md",
+						ParentSkillID: &parentSkillID,
+						ResourcePath:  &promptResourcePath,
+					},
+					Rules: []domain.CatalogRelationshipItem{
+						{
+							ID:            ruleItemID,
+							Classifier:    domain.CatalogClassifierRule,
+							Name:          "agents.md",
+							ParentSkillID: &parentSkillID,
+							ResourcePath:  &ruleResourcePath,
+						},
+					},
+					Skills: []domain.CatalogRelationshipItem{},
+				},
+			},
+			promptItemID: {
+				ItemID: promptItemID,
+				Relationships: domain.CatalogRelationshipSet{
+					Prompt: nil,
+					Rules:  []domain.CatalogRelationshipItem{},
+					Skills: []domain.CatalogRelationshipItem{
+						{
+							ID:         skillItemID,
+							Classifier: domain.CatalogClassifierSkill,
+							Name:       "sample-skill",
+						},
+					},
+				},
+			},
+			ruleItemID: {
+				ItemID: ruleItemID,
+				Relationships: domain.CatalogRelationshipSet{
+					Prompt: nil,
+					Rules:  []domain.CatalogRelationshipItem{},
+					Skills: []domain.CatalogRelationshipItem{
+						{
+							ID:         skillItemID,
+							Classifier: domain.CatalogClassifierSkill,
+							Name:       "sample-skill",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func (s *fakeCatalogRelationshipService) Get(
+	ctx context.Context,
+	itemID string,
+) (domain.CatalogRelationshipView, error) {
+	normalized := strings.TrimSpace(itemID)
+	reference, err := domain.NormalizeCatalogItemReference(normalized)
+	if err != nil {
+		return domain.CatalogRelationshipView{}, fmt.Errorf(
+			"%w: field=item_id detail=is invalid",
+			domain.ErrCatalogRelationshipValidation,
+		)
+	}
+
+	view, ok := s.byItemID[reference.ItemID]
+	if !ok {
+		return domain.CatalogRelationshipView{}, fmt.Errorf(
+			"%w: item_id=%q",
+			domain.ErrCatalogRelationshipItemNotFound,
+			reference.ItemID,
+		)
+	}
+
+	return view, nil
 }
 
 type fakeCatalogTaxonomyUsageService struct{}
