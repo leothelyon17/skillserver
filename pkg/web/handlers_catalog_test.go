@@ -344,6 +344,15 @@ func TestCatalogEndpoints_KeepSkillsRoutesStable(t *testing.T) {
 	if _, exists := skills[0]["classifier"]; exists {
 		t.Fatalf("did not expect classifier field on /api/skills response, got payload=%q", rec.Body.String())
 	}
+	if id, _ := skills[0]["id"].(string); id != "demo-skill" {
+		t.Fatalf("expected id demo-skill on /api/skills response, got %q", id)
+	}
+	if sourcePath, _ := skills[0]["sourcePath"].(string); sourcePath != "demo-skill" {
+		t.Fatalf("expected sourcePath demo-skill on /api/skills response, got %q", sourcePath)
+	}
+	if _, exists := skills[0]["sourceRepo"]; exists {
+		t.Fatalf("did not expect sourceRepo for local /api/skills response, got payload=%q", rec.Body.String())
+	}
 	if readOnly, ok := skills[0]["readOnly"].(bool); !ok || readOnly {
 		t.Fatalf("expected readOnly=false for local skill, got %v", skills[0]["readOnly"])
 	}
@@ -362,6 +371,54 @@ func TestCatalogEndpoints_KeepSkillsRoutesStable(t *testing.T) {
 	}
 	if name, _ := searchResults[0]["name"].(string); name != "demo-skill" {
 		t.Fatalf("expected /api/skills search result demo-skill, got %q", name)
+	}
+	if id, _ := searchResults[0]["id"].(string); id != "demo-skill" {
+		t.Fatalf("expected /api/skills search result id demo-skill, got %q", id)
+	}
+	if sourcePath, _ := searchResults[0]["sourcePath"].(string); sourcePath != "demo-skill" {
+		t.Fatalf("expected /api/skills search result sourcePath demo-skill, got %q", sourcePath)
+	}
+}
+
+func TestSearchCatalog_GitBackedItemsExposeSourceIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newGitBackedIdentityFixtureServer(t)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/catalog/search?q=architecture",
+		nil,
+	)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	items := decodeJSONArray(t, rec.Body.Bytes())
+	if len(items) < 2 {
+		t.Fatalf("expected at least 2 catalog search items, got %d payload=%q", len(items), rec.Body.String())
+	}
+
+	skill := findCatalogItemByClassifier(t, items, "skill")
+	if sourceRepo, _ := skill["source_repo"].(string); sourceRepo != "agents" {
+		t.Fatalf("expected git skill source_repo agents, got %q", sourceRepo)
+	}
+	if sourcePath, _ := skill["source_path"].(string); sourcePath != "plugins/documentation-generation/skills/architecture-decision-records" {
+		t.Fatalf("expected git skill source_path to identify nested repo path, got %q", sourcePath)
+	}
+
+	prompt := findCatalogItemByResourcePath(t, items, "prompts/architecture-decision-record-template.md")
+	if sourceRepo, _ := prompt["source_repo"].(string); sourceRepo != "agents" {
+		t.Fatalf("expected git prompt source_repo agents, got %q", sourceRepo)
+	}
+	if sourcePath, _ := prompt["source_path"].(string); sourcePath != "plugins/documentation-generation/skills/architecture-decision-records" {
+		t.Fatalf("expected git prompt source_path to identify owning skill path, got %q", sourcePath)
+	}
+	if parentSkillID, _ := prompt["parent_skill_id"].(string); parentSkillID != "agents/architecture-decision-records" {
+		t.Fatalf("expected git prompt parent_skill_id agents/architecture-decision-records, got %q", parentSkillID)
 	}
 }
 
@@ -385,5 +442,18 @@ func findCatalogItemByClassifier(t *testing.T, items []map[string]any, classifie
 	}
 
 	t.Fatalf("expected catalog item with classifier %q, got %+v", classifier, items)
+	return nil
+}
+
+func findCatalogItemByResourcePath(t *testing.T, items []map[string]any, resourcePath string) map[string]any {
+	t.Helper()
+
+	for _, item := range items {
+		if value, _ := item["resource_path"].(string); value == resourcePath {
+			return item
+		}
+	}
+
+	t.Fatalf("expected catalog item with resource_path %q, got %+v", resourcePath, items)
 	return nil
 }
