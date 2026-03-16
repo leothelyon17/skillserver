@@ -66,7 +66,11 @@ func (m *FileSystemManager) buildCatalogItems(skills []Skill) ([]CatalogItem, er
 			continue
 		}
 
-		resources, err := m.ListSkillResources(skillID)
+		resources, err := m.listSkillResources(skillID, skillResourceListOptions{
+			includeExplicitImports:         m.enableImportDiscovery,
+			includeImplicitGitPromptShares: m.enablePromptCatalog,
+			includeImplicitGitRuleShares:   m.enableRuleCatalog,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list resources for skill %q: %w", skillID, err)
 		}

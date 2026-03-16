@@ -38,6 +38,12 @@ type FileSystemManager struct {
 	ruleFilenameAllowlist    []string
 }
 
+type skillResourceListOptions struct {
+	includeExplicitImports         bool
+	includeImplicitGitPromptShares bool
+	includeImplicitGitRuleShares   bool
+}
+
 // NewFileSystemManager creates a new FileSystemManager
 func NewFileSystemManager(skillsDir string, gitRepos []string) (*FileSystemManager, error) {
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
@@ -460,6 +466,15 @@ func (m *FileSystemManager) getSkillPath(skillID string) (string, error) {
 
 // ListSkillResources lists all resources in a skill's optional directories
 func (m *FileSystemManager) ListSkillResources(skillID string) ([]SkillResource, error) {
+	return m.listSkillResources(skillID, skillResourceListOptions{
+		includeExplicitImports: m.enableImportDiscovery,
+	})
+}
+
+func (m *FileSystemManager) listSkillResources(
+	skillID string,
+	options skillResourceListOptions,
+) ([]SkillResource, error) {
 	skillPath, err := m.getSkillPath(skillID)
 	if err != nil {
 		return nil, err
@@ -520,9 +535,13 @@ func (m *FileSystemManager) ListSkillResources(skillID string) ([]SkillResource,
 	}
 
 	if m.enableImportDiscovery {
-		resources = append(resources, m.listImportedSkillResources(skillPath, allowedRoot)...)
-		resources = append(resources, m.listImplicitGitPromptResources(skillPath, allowedRoot)...)
-		if m.enableRuleCatalog {
+		if options.includeExplicitImports {
+			resources = append(resources, m.listImportedSkillResources(skillPath, allowedRoot)...)
+		}
+		if options.includeImplicitGitPromptShares {
+			resources = append(resources, m.listImplicitGitPromptResources(skillPath, allowedRoot)...)
+		}
+		if options.includeImplicitGitRuleShares && m.enableRuleCatalog {
 			resources = append(
 				resources,
 				m.listImplicitGitRuleResources(
