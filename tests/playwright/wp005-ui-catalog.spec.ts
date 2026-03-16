@@ -170,8 +170,9 @@ test.describe("WP-005 unified catalog rendering and actions", () => {
     await expect(catalogCard(page, "agents.md")).toBeVisible();
     await expect(page.locator(".skill-card")).toHaveCount(2);
 
-    expect(requestClassifiers).toHaveLength(3);
-    expect(requestClassifiers.slice(1).sort()).toEqual(["rule", "skill"]);
+    expect(requestClassifiers).toHaveLength(4);
+    expect(requestClassifiers.slice(0, 2)).toEqual(["mixed", "mixed"]);
+    expect(requestClassifiers.slice(2).sort()).toEqual(["rule", "skill"]);
   });
 
   test("preserves pagination when filtering down to two classifiers", async ({ page }) => {
@@ -251,6 +252,86 @@ test.describe("WP-005 unified catalog rendering and actions", () => {
     await expect(catalogCard(page, "skill-20")).toBeVisible();
     await expect(pagination).toContainText("Page 2");
     await expect(pagination).toContainText("8 items");
+  });
+
+  test("tops up paginated search pages before exposing next-page navigation", async ({ page }) => {
+    const pageOneItems = Array.from({ length: 4 }, (_, index) => ({
+      id: `skill:kubernetes-${String(index + 1).padStart(2, "0")}`,
+      classifier: "skill",
+      name: `kubernetes-${String(index + 1).padStart(2, "0")}`,
+      description: "Kubernetes fixture",
+    }));
+    const pageTwoItems = Array.from({ length: 20 }, (_, index) => ({
+      id: `skill:kubernetes-${String(index + 5).padStart(2, "0")}`,
+      classifier: "skill",
+      name: `kubernetes-${String(index + 5).padStart(2, "0")}`,
+      description: "Kubernetes fixture",
+    }));
+    const pageThreeItems = Array.from({ length: 8 }, (_, index) => ({
+      id: `skill:kubernetes-${String(index + 25).padStart(2, "0")}`,
+      classifier: "skill",
+      name: `kubernetes-${String(index + 25).padStart(2, "0")}`,
+      description: "Kubernetes fixture",
+    }));
+    const firstCursor = pageOneItems[pageOneItems.length - 1].id;
+    const secondCursor = pageTwoItems[pageTwoItems.length - 1].id;
+    const searchCursors: string[] = [];
+
+    await page.route("**/api/catalog/search*", async (route) => {
+      const url = new URL(route.request().url());
+      const cursor = url.searchParams.get("cursor") ?? "";
+      searchCursors.push(cursor);
+
+      let body: unknown;
+      if (cursor === "") {
+        body = {
+          items: pageOneItems,
+          next_cursor: firstCursor,
+          has_more: true,
+        };
+      } else if (cursor === firstCursor) {
+        body = {
+          items: pageTwoItems,
+          next_cursor: secondCursor,
+          has_more: true,
+        };
+      } else if (cursor === secondCursor) {
+        body = {
+          items: pageThreeItems,
+          has_more: false,
+        };
+      } else {
+        throw new Error(`unexpected cursor: ${cursor}`);
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+
+    await openHome(page);
+
+    await page.fill("#search-input", "kubernetes");
+
+    const pagination = page.locator(".catalog-pagination");
+    await expect(page.locator(".skill-card")).toHaveCount(24);
+    await expect(catalogCard(page, "kubernetes-24")).toBeVisible();
+    await expect(catalogCard(page, "kubernetes-25")).toHaveCount(0);
+    await expect(pagination).toContainText("Page 1");
+    await expect(pagination).toContainText("24 items");
+    await expect(pagination).toContainText("more available");
+    await expect.poll(() => searchCursors).toEqual(["", firstCursor]);
+
+    await pagination.getByRole("button", { name: /Next/i }).click();
+
+    await expect(page.locator(".skill-card")).toHaveCount(8);
+    await expect(catalogCard(page, "kubernetes-25")).toBeVisible();
+    await expect(catalogCard(page, "kubernetes-24")).toHaveCount(0);
+    await expect(pagination).toContainText("Page 2");
+    await expect(pagination).toContainText("8 items");
+    await expect.poll(() => searchCursors).toEqual(["", firstCursor, secondCursor]);
   });
 
   test("keeps skill edit and create/delete flows stable", async ({ page }) => {

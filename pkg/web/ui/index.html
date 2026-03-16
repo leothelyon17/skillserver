@@ -3211,6 +3211,14 @@
                     return summary.join(' • ');
                 },
 
+                catalogPaginationLimit() {
+                    const limit = Number(this.catalogPagination.limit);
+                    if (Number.isFinite(limit) && limit > 0) {
+                        return limit;
+                    }
+                    return 24;
+                },
+
                 normalizeCatalogCollectionPayload(payload) {
                     if (Array.isArray(payload)) {
                         return {
@@ -3380,9 +3388,15 @@
                     const params = new URLSearchParams();
                     const usePagination = !options || options.usePagination !== false;
                     if (usePagination) {
-                        params.set('limit', String(this.catalogPagination.limit));
-                        if (this.catalogPagination.cursor !== '') {
-                            params.set('cursor', this.catalogPagination.cursor);
+                        const limit = Number(options && options.limit) > 0
+                            ? Number(options.limit)
+                            : this.catalogPaginationLimit();
+                        params.set('limit', String(limit));
+                        const cursor = options && Object.prototype.hasOwnProperty.call(options, 'cursor')
+                            ? String(options.cursor || '').trim()
+                            : String(this.catalogPagination.cursor || '').trim();
+                        if (cursor !== '') {
+                            params.set('cursor', cursor);
                         }
                     }
                     const classifier = options && Object.prototype.hasOwnProperty.call(options, 'classifier')
@@ -3404,9 +3418,15 @@
                     params.set('q', query);
                     const usePagination = !options || options.usePagination !== false;
                     if (usePagination) {
-                        params.set('limit', String(this.catalogPagination.limit));
-                        if (this.catalogPagination.cursor !== '') {
-                            params.set('cursor', this.catalogPagination.cursor);
+                        const limit = Number(options && options.limit) > 0
+                            ? Number(options.limit)
+                            : this.catalogPaginationLimit();
+                        params.set('limit', String(limit));
+                        const cursor = options && Object.prototype.hasOwnProperty.call(options, 'cursor')
+                            ? String(options.cursor || '').trim()
+                            : String(this.catalogPagination.cursor || '').trim();
+                        if (cursor !== '') {
+                            params.set('cursor', cursor);
                         }
                     }
                     const classifier = options && Object.prototype.hasOwnProperty.call(options, 'classifier')
@@ -3428,6 +3448,51 @@
                         throw new Error(`HTTP ${response.status}`);
                     }
                     return this.normalizeCatalogCollectionPayload(await response.json());
+                },
+
+                async topUpCatalogCollectionPayload(payload, query, signal) {
+                    if (!payload || payload.usedEnvelope !== true || payload.hasMore !== true) {
+                        return payload;
+                    }
+
+                    const limit = this.catalogPaginationLimit();
+                    const accumulatedItems = Array.isArray(payload.items) ? [...payload.items] : [];
+                    let nextCursor = typeof payload.nextCursor === 'string' ? payload.nextCursor.trim() : '';
+                    let hasMore = payload.hasMore === true;
+                    const seenRequestCursors = new Set();
+                    let additionalRequests = 0;
+                    const maxAdditionalRequests = 10;
+
+                    while (hasMore && nextCursor !== '') {
+                        const visibleCount = this.filterCatalogItems(accumulatedItems, query).length;
+                        if (visibleCount >= limit) {
+                            break;
+                        }
+                        if (seenRequestCursors.has(nextCursor) || additionalRequests >= maxAdditionalRequests) {
+                            break;
+                        }
+
+                        seenRequestCursors.add(nextCursor);
+                        additionalRequests += 1;
+
+                        const url = query
+                            ? this.buildCatalogSearchURL(query, { cursor: nextCursor, limit })
+                            : this.buildCatalogListURL({ cursor: nextCursor, limit });
+                        const nextPayload = await this.fetchCatalogCollection(url, signal);
+                        if (Array.isArray(nextPayload.items) && nextPayload.items.length > 0) {
+                            accumulatedItems.push(...nextPayload.items);
+                        }
+
+                        nextCursor = typeof nextPayload.nextCursor === 'string' ? nextPayload.nextCursor.trim() : '';
+                        hasMore = nextPayload.hasMore === true;
+                    }
+
+                    return {
+                        items: accumulatedItems,
+                        nextCursor,
+                        hasMore,
+                        usedEnvelope: true
+                    };
                 },
 
                 mergeCatalogCollectionPayloads(payloads) {
@@ -3482,9 +3547,7 @@
                         };
                     }
 
-                    const limit = Number(this.catalogPagination.limit) > 0
-                        ? Number(this.catalogPagination.limit)
-                        : 24;
+                    const limit = this.catalogPaginationLimit();
                     const cursor = String(this.catalogPagination.cursor || '').trim();
                     let start = 0;
                     if (cursor !== '') {
@@ -3674,12 +3737,15 @@
 
                     this.isLoading = true;
                     try {
-                        const payload = useClassifierScopedFetch
+                        let payload = useClassifierScopedFetch
                             ? await this.fetchSelectedClassifierCatalogResults(query, controller.signal)
                             : await this.fetchCatalogCollection(
                                 query ? this.buildCatalogSearchURL(query) : this.buildCatalogListURL(),
                                 controller.signal
                             );
+                        if (!useClassifierScopedFetch) {
+                            payload = await this.topUpCatalogCollectionPayload(payload, query, controller.signal);
+                        }
                         if (requestVersion !== this.searchRequestVersion) {
                             return;
                         }
