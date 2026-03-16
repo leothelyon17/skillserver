@@ -27,6 +27,7 @@ import (
 
 // SkillResponse represents a skill in API responses
 type SkillResponse struct {
+	ID            string            `json:"id"`
 	Name          string            `json:"name"`
 	Content       string            `json:"content"`
 	Description   string            `json:"description,omitempty"`
@@ -34,6 +35,8 @@ type SkillResponse struct {
 	Compatibility string            `json:"compatibility,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
 	AllowedTools  string            `json:"allowed-tools,omitempty"`
+	SourceRepo    string            `json:"sourceRepo,omitempty"`
+	SourcePath    string            `json:"sourcePath,omitempty"`
 	ReadOnly      bool              `json:"readOnly"`
 }
 
@@ -67,6 +70,8 @@ type CatalogItemResponse struct {
 	Content            string                            `json:"content,omitempty"`
 	ParentSkillID      string                            `json:"parent_skill_id,omitempty"`
 	ResourcePath       string                            `json:"resource_path,omitempty"`
+	SourceRepo         string                            `json:"source_repo,omitempty"`
+	SourcePath         string                            `json:"source_path,omitempty"`
 	PrimaryDomain      *domain.CatalogTaxonomyReference  `json:"primary_domain,omitempty"`
 	PrimarySubdomain   *domain.CatalogTaxonomyReference  `json:"primary_subdomain,omitempty"`
 	SecondaryDomain    *domain.CatalogTaxonomyReference  `json:"secondary_domain,omitempty"`
@@ -420,6 +425,145 @@ func catalogResponseFromItemWithContent(item domain.CatalogItem, includeContent 
 	}
 }
 
+type skillSourceDescriptor struct {
+	repo string
+	path string
+}
+
+func (s *Server) resolveSkillsDir() string {
+	if s != nil && s.fsManager != nil {
+		return strings.TrimSpace(s.fsManager.GetSkillsDir())
+	}
+	if s != nil {
+		if fsManager, ok := s.skillManager.(*domain.FileSystemManager); ok && fsManager != nil {
+			return strings.TrimSpace(fsManager.GetSkillsDir())
+		}
+	}
+	return ""
+}
+
+func normalizeRelativeSourcePath(basePath, targetPath string) (string, bool) {
+	basePath = strings.TrimSpace(basePath)
+	targetPath = strings.TrimSpace(targetPath)
+	if basePath == "" || targetPath == "" {
+		return "", false
+	}
+
+	canonicalBasePath, err := filepath.Abs(basePath)
+	if err != nil {
+		return "", false
+	}
+	canonicalTargetPath, err := filepath.Abs(targetPath)
+	if err != nil {
+		return "", false
+	}
+
+	relativePath, err := filepath.Rel(canonicalBasePath, canonicalTargetPath)
+	if err != nil {
+		return "", false
+	}
+
+	normalizedRelativePath := filepath.ToSlash(filepath.Clean(relativePath))
+	if normalizedRelativePath == "." || normalizedRelativePath == "" || normalizedRelativePath == ".." ||
+		strings.HasPrefix(normalizedRelativePath, "../") {
+		return "", false
+	}
+	return normalizedRelativePath, true
+}
+
+func deriveSkillSourceDescriptor(skill domain.Skill, skillsDir string) skillSourceDescriptor {
+	descriptor := skillSourceDescriptor{}
+	skillID := strings.TrimSpace(skill.ID)
+	if repoName, _, hasRepo := strings.Cut(skillID, "/"); hasRepo {
+		descriptor.repo = strings.TrimSpace(repoName)
+	}
+
+	sourcePath := strings.TrimSpace(skill.SourcePath)
+	if sourcePath == "" {
+		return descriptor
+	}
+
+	if skillsDir != "" {
+		if descriptor.repo != "" {
+			if relativePath, ok := normalizeRelativeSourcePath(filepath.Join(skillsDir, descriptor.repo), sourcePath); ok {
+				descriptor.path = relativePath
+				return descriptor
+			}
+		}
+		if relativePath, ok := normalizeRelativeSourcePath(skillsDir, sourcePath); ok {
+			descriptor.path = relativePath
+			return descriptor
+		}
+	}
+
+	return descriptor
+}
+
+func (s *Server) skillResponseFromDomainSkill(skill domain.Skill) SkillResponse {
+	response := SkillResponse{
+		ID:       skill.ID,
+		Name:     skill.Name,
+		Content:  skill.Content,
+		ReadOnly: skill.ReadOnly,
+	}
+	if skill.Metadata != nil {
+		response.Description = skill.Metadata.Description
+		response.License = skill.Metadata.License
+		response.Compatibility = skill.Metadata.Compatibility
+		response.Metadata = skill.Metadata.Metadata
+		response.AllowedTools = skill.Metadata.AllowedTools
+	}
+
+	sourceDescriptor := deriveSkillSourceDescriptor(skill, s.resolveSkillsDir())
+	response.SourceRepo = sourceDescriptor.repo
+	response.SourcePath = sourceDescriptor.path
+	return response
+}
+
+func associatedSkillIDForCatalogItem(item domain.CatalogItem) string {
+	if parentSkillID := strings.TrimSpace(item.ParentSkillID); parentSkillID != "" {
+		return parentSkillID
+	}
+	if strings.HasPrefix(item.ID, "skill:") {
+		return strings.TrimSpace(strings.TrimPrefix(item.ID, "skill:"))
+	}
+	return ""
+}
+
+func (s *Server) catalogItemResponseFromDomainItem(
+	item domain.CatalogItem,
+	includeContent bool,
+	sourceCache map[string]skillSourceDescriptor,
+) CatalogItemResponse {
+	response := catalogResponseFromItemWithContent(item, includeContent)
+	if sourceCache == nil {
+		sourceCache = map[string]skillSourceDescriptor{}
+	}
+
+	skillID := associatedSkillIDForCatalogItem(item)
+	if skillID == "" {
+		return response
+	}
+
+	if descriptor, ok := sourceCache[skillID]; ok {
+		response.SourceRepo = descriptor.repo
+		response.SourcePath = descriptor.path
+		return response
+	}
+
+	skill, err := s.skillManager.ReadSkill(skillID)
+	if err != nil || skill == nil {
+		sourceCache[skillID] = skillSourceDescriptor{}
+		return response
+	}
+
+	descriptor := deriveSkillSourceDescriptor(*skill, s.resolveSkillsDir())
+	sourceCache[skillID] = descriptor
+	response.SourceRepo = descriptor.repo
+	response.SourcePath = descriptor.path
+	return response
+}
+
 func skillNameFromRoute(c *echo.Context) string {
 	repo := strings.TrimSpace(c.Param("repo"))
 	name := strings.TrimSpace(c.Param("name"))
@@ -440,18 +584,7 @@ func (s *Server) listSkills(c *echo.Context) error {
 
 	responses := make([]SkillResponse, len(skills))
 	for i, skill := range skills {
-		responses[i] = SkillResponse{
-			Name:     skill.Name,
-			Content:  skill.Content,
-			ReadOnly: skill.ReadOnly,
-		}
-		if skill.Metadata != nil {
-			responses[i].Description = skill.Metadata.Description
-			responses[i].License = skill.Metadata.License
-			responses[i].Compatibility = skill.Metadata.Compatibility
-			responses[i].Metadata = skill.Metadata.Metadata
-			responses[i].AllowedTools = skill.Metadata.AllowedTools
-		}
+		responses[i] = s.skillResponseFromDomainSkill(skill)
 	}
 
 	return c.JSON(http.StatusOK, responses)
@@ -467,18 +600,7 @@ func (s *Server) getSkill(c *echo.Context) error {
 		})
 	}
 
-	response := SkillResponse{
-		Name:     skill.Name,
-		Content:  skill.Content,
-		ReadOnly: skill.ReadOnly,
-	}
-	if skill.Metadata != nil {
-		response.Description = skill.Metadata.Description
-		response.License = skill.Metadata.License
-		response.Compatibility = skill.Metadata.Compatibility
-		response.Metadata = skill.Metadata.Metadata
-		response.AllowedTools = skill.Metadata.AllowedTools
-	}
+	response := s.skillResponseFromDomainSkill(*skill)
 
 	return c.JSON(http.StatusOK, response)
 }
@@ -585,18 +707,7 @@ func (s *Server) createSkill(c *echo.Context) error {
 		})
 	}
 
-	response := SkillResponse{
-		Name:     skill.Name,
-		Content:  skill.Content,
-		ReadOnly: skill.ReadOnly,
-	}
-	if skill.Metadata != nil {
-		response.Description = skill.Metadata.Description
-		response.License = skill.Metadata.License
-		response.Compatibility = skill.Metadata.Compatibility
-		response.Metadata = skill.Metadata.Metadata
-		response.AllowedTools = skill.Metadata.AllowedTools
-	}
+	response := s.skillResponseFromDomainSkill(*skill)
 
 	return c.JSON(http.StatusCreated, response)
 }
@@ -695,20 +806,7 @@ func (s *Server) updateSkill(c *echo.Context) error {
 		})
 	}
 
-	response := SkillResponse{
-		Name:     skill.Name,
-		Content:  skill.Content,
-		ReadOnly: skill.ReadOnly,
-	}
-	if skill.Metadata != nil {
-		response.Description = skill.Metadata.Description
-		response.License = skill.Metadata.License
-		response.Compatibility = skill.Metadata.Compatibility
-		response.Metadata = skill.Metadata.Metadata
-		response.AllowedTools = skill.Metadata.AllowedTools
-	}
-
-	return c.JSON(http.StatusOK, response)
+	return c.JSON(http.StatusOK, s.skillResponseFromDomainSkill(*skill))
 }
 
 // deleteSkill deletes a skill
@@ -773,18 +871,7 @@ func (s *Server) searchSkills(c *echo.Context) error {
 
 	responses := make([]SkillResponse, len(skills))
 	for i, skill := range skills {
-		responses[i] = SkillResponse{
-			Name:     skill.Name,
-			Content:  skill.Content,
-			ReadOnly: skill.ReadOnly,
-		}
-		if skill.Metadata != nil {
-			responses[i].Description = skill.Metadata.Description
-			responses[i].License = skill.Metadata.License
-			responses[i].Compatibility = skill.Metadata.Compatibility
-			responses[i].Metadata = skill.Metadata.Metadata
-			responses[i].AllowedTools = skill.Metadata.AllowedTools
-		}
+		responses[i] = s.skillResponseFromDomainSkill(skill)
 	}
 
 	return c.JSON(http.StatusOK, responses)
@@ -816,7 +903,7 @@ func (s *Server) listCatalog(c *echo.Context) error {
 		})
 	}
 
-	return c.JSON(http.StatusOK, buildCatalogCollectionResponse(items, request))
+	return c.JSON(http.StatusOK, s.buildCatalogCollectionResponse(items, request))
 }
 
 // searchCatalog searches catalog items by query with an optional classifier filter.
@@ -852,7 +939,7 @@ func (s *Server) searchCatalog(c *echo.Context) error {
 		})
 	}
 
-	return c.JSON(http.StatusOK, buildCatalogCollectionResponse(items, request))
+	return c.JSON(http.StatusOK, s.buildCatalogCollectionResponse(items, request))
 }
 
 func (s *Server) loadCatalogItems(
@@ -950,7 +1037,7 @@ func normalizeCatalogItemForResponse(item domain.CatalogItem) domain.CatalogItem
 	return item
 }
 
-func buildCatalogCollectionResponse(items []domain.CatalogItem, request catalogListRequest) any {
+func (s *Server) buildCatalogCollectionResponse(items []domain.CatalogItem, request catalogListRequest) any {
 	normalizedItems := make([]domain.CatalogItem, 0, len(items))
 	for _, item := range items {
 		normalizedItem := normalizeCatalogItemForResponse(item)
@@ -974,8 +1061,9 @@ func buildCatalogCollectionResponse(items []domain.CatalogItem, request catalogL
 	}
 
 	responses := make([]CatalogItemResponse, len(pageItems))
+	sourceCache := make(map[string]skillSourceDescriptor, len(pageItems))
 	for i, item := range pageItems {
-		responses[i] = catalogResponseFromItemWithContent(item, request.IncludeContent)
+		responses[i] = s.catalogItemResponseFromDomainItem(item, request.IncludeContent, sourceCache)
 	}
 
 	if !request.UseEnvelope {
@@ -3650,20 +3738,7 @@ func (s *Server) importSkill(c *echo.Context) error {
 		})
 	}
 
-	response := SkillResponse{
-		Name:     skill.Name,
-		Content:  skill.Content,
-		ReadOnly: skill.ReadOnly,
-	}
-	if skill.Metadata != nil {
-		response.Description = skill.Metadata.Description
-		response.License = skill.Metadata.License
-		response.Compatibility = skill.Metadata.Compatibility
-		response.Metadata = skill.Metadata.Metadata
-		response.AllowedTools = skill.Metadata.AllowedTools
-	}
-
-	return c.JSON(http.StatusCreated, response)
+	return c.JSON(http.StatusCreated, s.skillResponseFromDomainSkill(*skill))
 }
 
 // Git repository management handlers

@@ -252,6 +252,38 @@ description: Fixture git-backed skill
 	}
 }
 
+func TestGetSkill_ByIDRoute_ExposesGitSourceIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := newGitBackedIdentityFixtureServer(t)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/skills/by-id/agents/architecture-decision-records",
+		nil,
+	)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload := decodeJSONObject(t, rec.Body.Bytes())
+	if id, _ := payload["id"].(string); id != "agents/architecture-decision-records" {
+		t.Fatalf("expected skill id agents/architecture-decision-records, got %q", id)
+	}
+	if sourceRepo, _ := payload["sourceRepo"].(string); sourceRepo != "agents" {
+		t.Fatalf("expected sourceRepo agents, got %q", sourceRepo)
+	}
+	if sourcePath, _ := payload["sourcePath"].(string); sourcePath != "plugins/documentation-generation/skills/architecture-decision-records" {
+		t.Fatalf("expected nested git sourcePath, got %q", sourcePath)
+	}
+	if readOnly, ok := payload["readOnly"].(bool); !ok || !readOnly {
+		t.Fatalf("expected readOnly=true for git-backed skill, got %v", payload["readOnly"])
+	}
+}
+
 func TestListSkillResources_ByIDRoute_DoesNotLeakImplicitGitSharedPrompts(t *testing.T) {
 	t.Parallel()
 
@@ -343,6 +375,55 @@ description: Fixture git-backed ADR skill
 func newResourceFixtureServer(t *testing.T) *Server {
 	t.Helper()
 	return newFixtureServer(t, true)
+}
+
+func newGitBackedIdentityFixtureServer(t *testing.T) *Server {
+	t.Helper()
+
+	skillsDir := t.TempDir()
+	repoName := "agents"
+	skillDir := filepath.Join(
+		skillsDir,
+		repoName,
+		"plugins",
+		"documentation-generation",
+		"skills",
+		"architecture-decision-records",
+	)
+	directories := []string{"assets", "prompts", "references"}
+	for _, dir := range directories {
+		if err := os.MkdirAll(filepath.Join(skillDir, dir), 0o755); err != nil {
+			t.Fatalf("failed to create fixture directory %q: %v", dir, err)
+		}
+	}
+
+	skillMarkdown := `---
+name: architecture-decision-records
+description: Fixture git-backed ADR skill
+---
+# Architecture Decision Records
+`
+	files := map[string][]byte{
+		"SKILL.md": []byte(skillMarkdown),
+		"assets/architecture-decision-record-template.md":   []byte("# ADR Asset Template\n"),
+		"prompts/architecture-decision-record-template.md":  []byte("Architecture decision record template.\n"),
+		"references/architecture-decision-records-guide.md": []byte("# ADR Guide\n"),
+	}
+	for relPath, content := range files {
+		if err := os.WriteFile(filepath.Join(skillDir, relPath), content, 0o644); err != nil {
+			t.Fatalf("failed to write fixture file %q: %v", relPath, err)
+		}
+	}
+
+	manager, err := domain.NewFileSystemManager(skillsDir, []string{repoName})
+	if err != nil {
+		t.Fatalf("failed to create file system manager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = manager.Close()
+	})
+
+	return NewServer(manager, manager, nil, nil, nil, false, nil, "")
 }
 
 func newLegacyResourceFixtureServer(t *testing.T) *Server {

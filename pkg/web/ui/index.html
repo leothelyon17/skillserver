@@ -265,6 +265,31 @@
                         </div>
                     </div>
                     <p x-text="item.description || 'No description'" class="skill-description text-gray-600 dark:text-gray-400"></p>
+                    <div
+                        x-show="catalogItemSourceRepo(item) || catalogItemSourcePath(item) || (isFileBackedCatalogItem(item) && item.resource_path)"
+                        class="mb-3 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
+                    >
+                        <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+                            <div x-show="catalogItemSourceRepo(item)" class="flex items-center gap-1">
+                                <i class="fas fa-code-branch text-gray-400 dark:text-gray-500"></i>
+                                <span class="font-semibold">Repo:</span>
+                                <span x-text="catalogItemSourceRepo(item)"></span>
+                            </div>
+                            <div x-show="catalogItemSourcePath(item)" class="flex items-center gap-1 min-w-0">
+                                <i class="fas fa-folder-tree text-gray-400 dark:text-gray-500"></i>
+                                <span class="font-semibold">Path:</span>
+                                <span class="font-mono break-all" x-text="catalogItemSourcePath(item)"></span>
+                            </div>
+                        </div>
+                        <div
+                            x-show="isFileBackedCatalogItem(item) && item.resource_path"
+                            class="mt-1 flex items-center gap-1 min-w-0"
+                        >
+                            <i class="fas fa-file-code text-gray-400 dark:text-gray-500"></i>
+                            <span class="font-semibold">Resource:</span>
+                            <span class="font-mono break-all" x-text="item.resource_path"></span>
+                        </div>
+                    </div>
                     <div class="catalog-classification mb-3 space-y-2" x-show="itemNeedsClassificationAttention(item) || itemHasTaxonomy(item)">
                         <div class="flex flex-wrap gap-2" x-show="itemNeedsClassificationAttention(item)">
                             <span
@@ -383,6 +408,25 @@
             </div>
             <div x-show="editingSkill && editingSkill.readOnly" class="read-only-warning bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800 text-yellow-800 dark:text-yellow-300">
                 <i class="fas fa-lock mr-2"></i><strong>Read-only:</strong> This skill is from a git repository and cannot be edited.
+            </div>
+            <div
+                x-show="editingSkill && (skillSourceRepo(editingSkill) || skillSourcePath(editingSkill) || skillIdentifier(editingSkill))"
+                class="mb-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
+            >
+                <div class="grid grid-cols-1 gap-2 md:grid-cols-3">
+                    <div x-show="skillIdentifier(editingSkill)">
+                        <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Skill ID</p>
+                        <p class="font-mono break-all" x-text="skillIdentifier(editingSkill)"></p>
+                    </div>
+                    <div x-show="skillSourceRepo(editingSkill)">
+                        <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Source Repo</p>
+                        <p class="break-all" x-text="skillSourceRepo(editingSkill)"></p>
+                    </div>
+                    <div x-show="skillSourcePath(editingSkill)">
+                        <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Source Path</p>
+                        <p class="font-mono break-all" x-text="skillSourcePath(editingSkill)"></p>
+                    </div>
+                </div>
             </div>
             
             <!-- Tabs -->
@@ -3693,6 +3737,71 @@
                     return !this.canEditItemContent(item);
                 },
 
+                skillIdentifier(skill) {
+                    if (!skill || typeof skill !== 'object') {
+                        return '';
+                    }
+                    if (typeof skill.id === 'string' && skill.id.trim() !== '') {
+                        return skill.id.trim();
+                    }
+                    if (typeof skill.name === 'string') {
+                        return skill.name.trim();
+                    }
+                    return '';
+                },
+
+                skillSourceRepo(skill) {
+                    if (!skill || typeof skill !== 'object') {
+                        return '';
+                    }
+                    const explicitRepo = typeof skill.sourceRepo === 'string'
+                        ? skill.sourceRepo.trim()
+                        : (typeof skill.source_repo === 'string' ? skill.source_repo.trim() : '');
+                    if (explicitRepo !== '') {
+                        return explicitRepo;
+                    }
+
+                    const identifier = this.skillIdentifier(skill);
+                    if (identifier.includes('/')) {
+                        return identifier.split('/')[0].trim();
+                    }
+                    return '';
+                },
+
+                skillSourcePath(skill) {
+                    if (!skill || typeof skill !== 'object') {
+                        return '';
+                    }
+                    const explicitPath = typeof skill.sourcePath === 'string'
+                        ? skill.sourcePath.trim()
+                        : (typeof skill.source_path === 'string' ? skill.source_path.trim() : '');
+                    return explicitPath;
+                },
+
+                catalogItemSourceRepo(item) {
+                    if (!item || typeof item !== 'object') {
+                        return '';
+                    }
+                    if (typeof item.source_repo === 'string' && item.source_repo.trim() !== '') {
+                        return item.source_repo.trim();
+                    }
+                    const skillIdentifier = this.catalogSkillIdentifier(item);
+                    if (skillIdentifier.includes('/')) {
+                        return skillIdentifier.split('/')[0].trim();
+                    }
+                    return '';
+                },
+
+                catalogItemSourcePath(item) {
+                    if (!item || typeof item !== 'object') {
+                        return '';
+                    }
+                    if (typeof item.source_path === 'string' && item.source_path.trim() !== '') {
+                        return item.source_path.trim();
+                    }
+                    return '';
+                },
+
                 classifierBadgeClass(classifier) {
                     const normalized = this.normalizeClassifier(classifier);
                     if (normalized === 'prompt') {
@@ -5608,7 +5717,7 @@
                     this.resources = this.getDefaultResourceGroups();
                     
                     try {
-                        const response = await fetch(this.buildSkillResourceApiPath(this.editingSkill.name));
+                        const response = await fetch(this.buildSkillResourceApiPath(this.skillIdentifier(this.editingSkill)));
                         if (response.ok) {
                             const data = await response.json();
                             this.resources = this.normalizeResourceGroups(data);
@@ -5627,13 +5736,13 @@
                 async viewResource(resource, type) {
                     if (!resource.readable) {
                         // For binary files, download
-                        window.open(this.buildSkillResourceApiPath(this.editingSkill.name, resource.path), '_blank');
+                        window.open(this.buildSkillResourceApiPath(this.skillIdentifier(this.editingSkill), resource.path), '_blank');
                         return;
                     }
                     
                     // For text files, show in editor
                     try {
-                        const response = await fetch(this.buildSkillResourceApiPath(this.editingSkill.name, resource.path));
+                        const response = await fetch(this.buildSkillResourceApiPath(this.skillIdentifier(this.editingSkill), resource.path));
                         if (response.ok) {
                             const content = await response.text();
                             const writable = this.isResourceWritable(resource);
@@ -5684,7 +5793,7 @@
                         return;
                     }
                     try {
-                        const response = await fetch(this.buildSkillResourceApiPath(this.editingSkill.name, path), {
+                        const response = await fetch(this.buildSkillResourceApiPath(this.skillIdentifier(this.editingSkill), path), {
                             method: 'PUT',
                             headers: {
                                 'Content-Type': 'text/plain',
@@ -5726,7 +5835,7 @@
 
                     this.isLoading = true;
                     try {
-                        const response = await fetch(this.buildSkillResourceApiPath(this.editingSkill.name), {
+                        const response = await fetch(this.buildSkillResourceApiPath(this.skillIdentifier(this.editingSkill)), {
                             method: 'POST',
                             body: formData,
                         });
@@ -5754,7 +5863,7 @@
 
                     this.isLoading = true;
                     try {
-                        const response = await fetch(this.buildSkillResourceApiPath(this.editingSkill.name, path), {
+                        const response = await fetch(this.buildSkillResourceApiPath(this.skillIdentifier(this.editingSkill), path), {
                             method: 'DELETE',
                         });
 
