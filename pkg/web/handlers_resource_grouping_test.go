@@ -252,6 +252,94 @@ description: Fixture git-backed skill
 	}
 }
 
+func TestListSkillResources_ByIDRoute_DoesNotLeakImplicitGitSharedPrompts(t *testing.T) {
+	t.Parallel()
+
+	skillsDir := t.TempDir()
+	repoName := "agents"
+	skillDir := filepath.Join(
+		skillsDir,
+		repoName,
+		"plugins",
+		"documentation-generation",
+		"skills",
+		"architecture-decision-records",
+	)
+	sharedAgentsDir := filepath.Join(skillsDir, repoName, "plugins", "documentation-generation", "agents")
+	if err := os.MkdirAll(filepath.Join(skillDir, "assets"), 0o755); err != nil {
+		t.Fatalf("failed to create skill asset directories: %v", err)
+	}
+	if err := os.MkdirAll(sharedAgentsDir, 0o755); err != nil {
+		t.Fatalf("failed to create shared agent directories: %v", err)
+	}
+
+	skillMarkdown := `---
+name: architecture-decision-records
+description: Fixture git-backed ADR skill
+---
+# Architecture Decision Records
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMarkdown), 0o644); err != nil {
+		t.Fatalf("failed to write fixture skill: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(skillDir, "assets", "architecture-decision-record-template.md"),
+		[]byte("# ADR Template\n"),
+		0o644,
+	); err != nil {
+		t.Fatalf("failed to write direct asset: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedAgentsDir, "api-documenter.md"), []byte("# API Documenter\n"), 0o644); err != nil {
+		t.Fatalf("failed to write sibling shared prompt: %v", err)
+	}
+
+	manager, err := domain.NewFileSystemManager(skillsDir, []string{repoName})
+	if err != nil {
+		t.Fatalf("failed to create file system manager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = manager.Close()
+	})
+
+	server := NewServer(manager, manager, nil, nil, nil, false, nil, "")
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/skills/by-id/agents/architecture-decision-records/resources",
+		nil,
+	)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload := decodeJSONObject(t, rec.Body.Bytes())
+	asset := findResourceByPath(t, payload["assets"], "assets/architecture-decision-record-template.md")
+	if origin, _ := asset["origin"].(string); origin != string(domain.ResourceOriginDirect) {
+		t.Fatalf("expected asset origin=%q, got %q", domain.ResourceOriginDirect, origin)
+	}
+	if writable, ok := asset["writable"].(bool); !ok || writable {
+		t.Fatalf("expected git-backed asset writable=false, got %v", asset["writable"])
+	}
+
+	if _, ok := payload["prompts"]; ok {
+		t.Fatalf("did not expect implicit shared prompts in skill resource payload")
+	}
+	if _, ok := payload["imported"]; ok {
+		t.Fatalf("did not expect imported group without explicit imports")
+	}
+
+	groups, ok := payload["groups"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected groups object, got %T", payload["groups"])
+	}
+	if _, exists := groups["prompts"]; exists {
+		t.Fatalf("did not expect prompts group for implicit shared prompts")
+	}
+}
+
 func newResourceFixtureServer(t *testing.T) *Server {
 	t.Helper()
 	return newFixtureServer(t, true)

@@ -567,7 +567,7 @@ description: Plugin skill importing shared prompts
 			}
 		})
 
-		It("should discover shared plugin agents without explicit SKILL imports", func() {
+		It("should not associate shared plugin agents without explicit SKILL imports", func() {
 			repoName := "demo-repo"
 			skillPath := filepath.Join(tempDir, repoName, "plugins", "kubernetes-operations", "skills", "k8s-manifest-generator")
 			sharedAgentsDir := filepath.Join(tempDir, repoName, "plugins", "kubernetes-operations", "agents")
@@ -588,16 +588,10 @@ No explicit imports in this skill.
 			manager.UpdateGitRepos([]string{repoName})
 			resources, err := manager.ListSkillResources(repoName + "/k8s-manifest-generator")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(resources).To(HaveLen(1))
-
-			resource := resources[0]
-			Expect(resource.Path).To(Equal("imports/plugins/kubernetes-operations/agents/kubernetes-architect.md"))
-			Expect(resource.Type).To(Equal(domain.ResourceTypePrompt))
-			Expect(resource.Origin).To(Equal(domain.ResourceOriginImported))
-			Expect(resource.Writable).To(BeFalse())
+			Expect(resources).To(BeEmpty())
 		})
 
-		It("should discover shared repo rules without explicit SKILL imports", func() {
+		It("should not associate shared repo rules without explicit SKILL imports", func() {
 			repoName := "demo-repo"
 			skillPath := filepath.Join(tempDir, repoName, "skills", "k8s-manifest-generator")
 			sharedRulesDir := filepath.Join(tempDir, repoName, "rules")
@@ -618,12 +612,7 @@ No explicit imports in this skill.
 			manager.UpdateGitRepos([]string{repoName})
 			resources, err := manager.ListSkillResources(repoName + "/k8s-manifest-generator")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(resources).To(HaveLen(1))
-
-			resource := resources[0]
-			Expect(resource.Path).To(Equal("imports/rules/coding-standards.md"))
-			Expect(resource.Origin).To(Equal(domain.ResourceOriginImported))
-			Expect(resource.Writable).To(BeFalse())
+			Expect(resources).To(BeEmpty())
 		})
 	})
 })
