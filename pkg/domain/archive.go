@@ -281,16 +281,10 @@ func ImportSkill(archiveData []byte, skillsDir string) (string, error) {
 		return "", fmt.Errorf("failed to read SKILL.md: %w", err)
 	}
 
-	metadata, _, err := ParseFrontmatter(string(content))
+	_, _, err = ParseFrontmatter(string(content))
 	if err != nil {
 		os.RemoveAll(skillDir) // Clean up on error
 		return "", fmt.Errorf("failed to parse SKILL.md: %w", err)
-	}
-
-	// Validate that name in frontmatter matches directory name
-	if metadata.Name != skillName {
-		os.RemoveAll(skillDir) // Clean up on error
-		return "", fmt.Errorf("skill name in frontmatter (%s) does not match directory name (%s)", metadata.Name, skillName)
 	}
 
 	return skillName, nil
