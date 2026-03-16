@@ -207,10 +207,12 @@ func (m *FileSystemManager) readSkillFromPath(skillPath, skillName string, isRea
 		return nil, fmt.Errorf("failed to parse frontmatter: %w", err)
 	}
 
-	// Validate that name in frontmatter matches directory name
+	// The directory name is the canonical identity used throughout SkillServer.
+	// Some imported/shared repos contain stale frontmatter names; keep indexing them
+	// rather than dropping the skill entirely.
 	dirName := filepath.Base(skillPath)
 	if metadata.Name != dirName {
-		return nil, fmt.Errorf("skill name in frontmatter (%s) does not match directory name (%s)", metadata.Name, dirName)
+		metadata.Name = dirName
 	}
 
 	return &Skill{
