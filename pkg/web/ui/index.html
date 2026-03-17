@@ -4721,7 +4721,7 @@
                 },
 
                 catalogRelationshipsEndpoint(itemID) {
-                    return `/api/catalog/${encodeURIComponent(itemID)}/relationships`;
+                    return `/api/catalog/relationships?item_id=${encodeURIComponent(itemID)}`;
                 },
 
                 catalogRelationshipCandidatesEndpoint(classifier) {

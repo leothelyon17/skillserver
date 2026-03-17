@@ -291,6 +291,47 @@ func TestCatalogRelationshipMetadataEndpoints_PatchSkillSupportsPromptAndRuleRep
 	}
 }
 
+func TestCatalogRelationshipMetadataEndpoints_PatchSkillSupportsQueryItemIDRoute(t *testing.T) {
+	t.Parallel()
+
+	server, sourceRepo := newCatalogMetadataFixtureServer(t)
+	seedCatalogRelationshipSourceRows(t, sourceRepo, "demo-skill")
+
+	skillItemID := domain.BuildSkillCatalogItemID("demo-skill")
+	promptItemID := domain.BuildPromptCatalogItemID("demo-skill", "prompts/system.md")
+	ruleItemID := domain.BuildRuleCatalogItemID("demo-skill", "rules/security.md")
+
+	target := "/api/catalog/relationships?item_id=" + url.QueryEscape(skillItemID)
+	req := httptest.NewRequest(
+		http.MethodPatch,
+		target,
+		strings.NewReader(`{"prompt_item_id":"`+promptItemID+`","rule_item_ids":["`+ruleItemID+`"],"updated_by":"gui"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected query patch status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	payload := decodeJSONObject(t, rec.Body.Bytes())
+	relationships, ok := payload["relationships"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected relationships object in query patch response, got %T", payload["relationships"])
+	}
+	prompt, ok := relationships["prompt"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected query patch prompt object, got %T", relationships["prompt"])
+	}
+	if id, _ := prompt["id"].(string); id != promptItemID {
+		t.Fatalf("expected query patch prompt id %q, got %q", promptItemID, id)
+	}
+	rules := decodeCatalogRelationshipArray(t, relationships["rules"], "query patch relationships.rules")
+	if len(rules) != 1 || rules[0]["id"] != ruleItemID {
+		t.Fatalf("expected query patch rule relationship [%q], got %+v", ruleItemID, rules)
+	}
+}
+
 func TestCatalogRelationshipMetadataEndpoints_PatchValidationAndAuthorityErrors(t *testing.T) {
 	t.Parallel()
 

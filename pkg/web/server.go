@@ -125,6 +125,7 @@ func NewServer(
 	api.PATCH("/catalog/metadata", server.patchCatalogMetadata)
 	api.GET("/catalog/:id/metadata", server.getCatalogMetadata)
 	api.PATCH("/catalog/:id/metadata", server.patchCatalogMetadata)
+	api.PATCH("/catalog/relationships", server.patchCatalogRelationships)
 	api.PATCH("/catalog/:id/relationships", server.patchCatalogRelationships)
 	api.PATCH("/catalog/taxonomy/batch", server.patchCatalogItemsTaxonomy)
 	api.GET("/catalog/taxonomy", server.getCatalogItemTaxonomy)
