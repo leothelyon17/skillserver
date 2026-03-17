@@ -1269,7 +1269,7 @@ func (s *Server) patchCatalogRelationships(c *echo.Context) error {
 		})
 	}
 
-	itemID, err := decodeCatalogItemIDFromPath(c.Param("id"))
+	itemID, err := decodeCatalogItemIDFromRequest(c)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": err.Error(),

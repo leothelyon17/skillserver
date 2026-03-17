@@ -23,12 +23,12 @@ async function patchSkillRelationships(
   request: APIRequestContext,
   payload: Record<string, unknown>,
 ) {
-  const response = await request.patch(`/api/catalog/${encodeURIComponent(SKILL_ITEM_ID)}/relationships`, {
+  const response = await request.patch(`/api/catalog/relationships?item_id=${encodeURIComponent(SKILL_ITEM_ID)}`, {
     data: payload,
   });
   if (!response.ok()) {
     throw new Error(
-      `Failed PATCH /api/catalog/:id/relationships for ${SKILL_ITEM_ID}: ${response.status()} ${await responseErrorBody(response)}`,
+      `Failed PATCH /api/catalog/relationships for ${SKILL_ITEM_ID}: ${response.status()} ${await responseErrorBody(response)}`,
     );
   }
 }
@@ -172,7 +172,7 @@ test.describe("WP-007 relationship metadata editor UX", () => {
       updated_by: "playwright-wp007",
     });
 
-    await page.route("**/api/catalog/**/relationships", async (route) => {
+    await page.route("**/api/catalog/relationships*", async (route) => {
       if (route.request().method() !== "PATCH") {
         await route.continue();
         return;
