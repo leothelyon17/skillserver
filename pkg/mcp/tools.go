@@ -184,6 +184,14 @@ type SearchCatalogOutput struct {
 	HasMore    bool              `json:"has_more"`
 }
 
+// ReadCatalogItemInput is the input for read_catalog_item tool.
+type ReadCatalogItemInput struct {
+	ItemID string `json:"item_id" jsonschema:"Catalog item identifier. Accepts bare skill IDs only for skill items; prompt/rule inputs must be canonical."`
+}
+
+// ReadCatalogItemOutput is the output for read_catalog_item tool.
+type ReadCatalogItemOutput = CatalogItemInfo
+
 var errCatalogTaxonomyFiltersUnavailable = errors.New("catalog taxonomy filters are unavailable")
 
 // CatalogItemInfo represents a classifier-aware catalog item in MCP responses.
@@ -321,6 +329,39 @@ func searchCatalog(
 		NextCursor: page.NextCursor,
 		HasMore:    page.HasMore,
 	}, nil
+}
+
+// readCatalogItem reads one unified catalog item by exact ID.
+func readCatalogItem(
+	ctx context.Context,
+	req *mcp.CallToolRequest,
+	input ReadCatalogItemInput,
+	manager domain.SkillManager,
+	catalogMetadata CatalogMetadataReader,
+) (
+	*mcp.CallToolResult,
+	ReadCatalogItemOutput,
+	error,
+) {
+	itemID := strings.TrimSpace(input.ItemID)
+	if itemID == "" {
+		return nil, ReadCatalogItemOutput{}, fmt.Errorf("item_id is required")
+	}
+	if _, err := domain.NormalizeCatalogItemID(itemID); err != nil {
+		return nil, ReadCatalogItemOutput{}, fmt.Errorf("item_id is invalid: %w", err)
+	}
+
+	item, err := domain.GetCatalogItemByID(ctx, itemID, manager, catalogMetadata)
+	if err != nil {
+		return nil, ReadCatalogItemOutput{}, fmt.Errorf("read catalog item %q: %w", itemID, err)
+	}
+
+	items := buildCatalogItemInfos([]domain.CatalogItem{item}, true)
+	if len(items) == 0 {
+		return nil, ReadCatalogItemOutput{}, fmt.Errorf("read catalog item %q: %w", itemID, domain.ErrCatalogItemNotFound)
+	}
+
+	return nil, items[0], nil
 }
 
 type catalogToolCollectionRequest struct {

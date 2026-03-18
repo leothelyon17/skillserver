@@ -942,6 +942,44 @@ func (s *Server) searchCatalog(c *echo.Context) error {
 	return c.JSON(http.StatusOK, s.buildCatalogCollectionResponse(items, request))
 }
 
+// getCatalogItem returns one catalog item by exact ID, including full content.
+func (s *Server) getCatalogItem(c *echo.Context) error {
+	itemID, err := decodeCatalogItemIDFromRequest(c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	if _, err := domain.NormalizeCatalogItemID(itemID); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	var metadataReader interface {
+		List(ctx context.Context, filter domain.CatalogEffectiveListFilter) ([]domain.CatalogItem, error)
+	}
+	if s.catalogMetadataService != nil {
+		metadataReader = s.catalogMetadataService
+	}
+
+	item, err := domain.GetCatalogItemByID(c.Request().Context(), itemID, s.skillManager, metadataReader)
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrCatalogItemNotFound):
+			return c.JSON(http.StatusNotFound, map[string]string{
+				"error": "catalog item not found",
+			})
+		default:
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
+		}
+	}
+
+	return c.JSON(http.StatusOK, s.catalogItemResponseFromDomainItem(item, true, nil))
+}
+
 func (s *Server) loadCatalogItems(
 	ctx context.Context,
 	query string,

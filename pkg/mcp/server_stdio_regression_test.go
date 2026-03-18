@@ -30,6 +30,7 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 			"search_skills",
 			"list_catalog",
 			"search_catalog",
+			"read_catalog_item",
 			"export_catalog_items",
 			"list_taxonomy_domains",
 			"list_taxonomy_subdomains",
@@ -426,6 +427,91 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 		}
 		if _, exists := searchPrompt["content"]; exists {
 			t.Fatalf("did not expect search result content without include_content=true, got %+v", searchPrompt)
+		}
+	})
+
+	t.Run("invokes exact-id catalog read tool end-to-end", func(t *testing.T) {
+		manager := newFakeSkillManager()
+		server := NewServer(manager)
+		server.SetCatalogMetadataService(newFakeCatalogMetadataService(manager.catalogItems))
+		session, cleanup := connectMCPClientSession(t, server)
+		defer cleanup()
+
+		skillResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "read_catalog_item",
+			Arguments: map[string]any{
+				"item_id": "sample-skill",
+			},
+		})
+		if err != nil {
+			t.Fatalf("read_catalog_item bare-skill call failed: %v", err)
+		}
+		if skillResult.IsError {
+			t.Fatalf("read_catalog_item bare-skill call returned tool error: %s", toolResultErrorText(skillResult))
+		}
+
+		skillStructured, ok := skillResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected read_catalog_item skill structured content map, got %T", skillResult.StructuredContent)
+		}
+		if itemID, _ := skillStructured["id"].(string); itemID != domain.BuildSkillCatalogItemID("sample-skill") {
+			t.Fatalf("expected canonical skill id %q, got %q", domain.BuildSkillCatalogItemID("sample-skill"), itemID)
+		}
+		if content, _ := skillStructured["content"].(string); !strings.Contains(content, "Sample skill content") {
+			t.Fatalf("expected skill content in read_catalog_item output, got %q", content)
+		}
+
+		promptItemID := domain.BuildPromptCatalogItemID("sample-skill", "imports/prompts/system.md")
+		promptResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "read_catalog_item",
+			Arguments: map[string]any{
+				"item_id": promptItemID,
+			},
+		})
+		if err != nil {
+			t.Fatalf("read_catalog_item prompt call failed: %v", err)
+		}
+		if promptResult.IsError {
+			t.Fatalf("read_catalog_item prompt call returned tool error: %s", toolResultErrorText(promptResult))
+		}
+
+		promptStructured, ok := promptResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected read_catalog_item prompt structured content map, got %T", promptResult.StructuredContent)
+		}
+		if classifier, _ := promptStructured["classifier"].(string); classifier != string(domain.CatalogClassifierPrompt) {
+			t.Fatalf("expected prompt classifier %q, got %q", domain.CatalogClassifierPrompt, classifier)
+		}
+		if resourcePath, _ := promptStructured["resource_path"].(string); resourcePath != "imports/prompts/system.md" {
+			t.Fatalf("expected prompt resource_path imports/prompts/system.md, got %q", resourcePath)
+		}
+		if content, _ := promptStructured["content"].(string); content != "# System Prompt" {
+			t.Fatalf("expected prompt content %q, got %q", "# System Prompt", content)
+		}
+
+		ruleItemID := domain.BuildRuleCatalogItemID("sample-skill", "imports/rules/agents.md")
+		ruleResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name: "read_catalog_item",
+			Arguments: map[string]any{
+				"item_id": ruleItemID,
+			},
+		})
+		if err != nil {
+			t.Fatalf("read_catalog_item rule call failed: %v", err)
+		}
+		if ruleResult.IsError {
+			t.Fatalf("read_catalog_item rule call returned tool error: %s", toolResultErrorText(ruleResult))
+		}
+
+		ruleStructured, ok := ruleResult.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("expected read_catalog_item rule structured content map, got %T", ruleResult.StructuredContent)
+		}
+		if classifier, _ := ruleStructured["classifier"].(string); classifier != string(domain.CatalogClassifierRule) {
+			t.Fatalf("expected rule classifier %q, got %q", domain.CatalogClassifierRule, classifier)
+		}
+		if content, _ := ruleStructured["content"].(string); content != "# AGENTS\nFollow project rules." {
+			t.Fatalf("expected rule content %q, got %q", "# AGENTS\nFollow project rules.", content)
 		}
 	})
 
@@ -1499,6 +1585,34 @@ func TestMCPServer_StdioRegression(t *testing.T) {
 			t.Fatalf("expected list_catalog taxonomy-filter without metadata service to return tool error")
 		}
 
+		missingReadItemIDResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name:      "read_catalog_item",
+			Arguments: map[string]any{"item_id": " "},
+		})
+		if err != nil {
+			t.Fatalf("read_catalog_item missing item_id call failed: %v", err)
+		}
+		if !missingReadItemIDResult.IsError {
+			t.Fatalf("expected read_catalog_item missing item_id to return tool error")
+		}
+
+		unknownReadItemResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name:      "read_catalog_item",
+			Arguments: map[string]any{"item_id": "rule:sample-skill:imports/rules/missing.md"},
+		})
+		if err != nil {
+			t.Fatalf("read_catalog_item missing item call failed: %v", err)
+		}
+		if !unknownReadItemResult.IsError {
+			t.Fatalf("expected read_catalog_item missing item to return tool error")
+		}
+		if !strings.Contains(strings.ToLower(toolResultErrorText(unknownReadItemResult)), "catalog item not found") {
+			t.Fatalf(
+				"expected read_catalog_item missing-item error to include catalog item not found, got %s",
+				toolResultErrorText(unknownReadItemResult),
+			)
+		}
+
 		missingItemIDResult, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
 			Name:      "get_catalog_item_taxonomy",
 			Arguments: map[string]any{"item_id": " "},
@@ -2120,7 +2234,16 @@ func (s *fakeCatalogMetadataService) List(
 	filter domain.CatalogEffectiveListFilter,
 ) ([]domain.CatalogItem, error) {
 	results := make([]domain.CatalogItem, 0, len(s.items))
+	itemIDSet := toStringSet(filter.ItemIDs)
 	for _, item := range s.items {
+		if filter.ItemID != "" && item.ID != filter.ItemID {
+			continue
+		}
+		if len(itemIDSet) > 0 {
+			if _, exists := itemIDSet[item.ID]; !exists {
+				continue
+			}
+		}
 		if filter.Classifier != nil && item.Classifier != *filter.Classifier {
 			continue
 		}
