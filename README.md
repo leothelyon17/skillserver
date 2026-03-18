@@ -28,8 +28,10 @@ rollout, plus the release-readiness gate operators should use before promotion.
 |---------|-------|---------|-------|
 | MCP `list_skills`, `search_skills` | Canonical skill item IDs in `id` (`skill:<skill-id>`); populated `name`. | N/A | Bare skill IDs stop being emitted after rollout. |
 | MCP `read_skill` and skill-resource tools | N/A | Bare `<skill-id>` and canonical `skill:<skill-id>`. | Normalized to the same parent skill; prompt/rule item IDs are rejected. |
+| MCP `read_catalog_item` | Canonical `id` values in the returned item. | Bare skill IDs only for skill items; prompt/rule IDs are canonical-only. | Exact-id lookup returns full catalog-item content. |
 | MCP taxonomy, export, and materialization item tools | Canonical `item_id` values. | Bare skill IDs only for skill items; prompt/rule IDs are canonical-only. | Legacy fallback is intentionally bounded to skill items. |
 | REST `/api/catalog` and `/api/catalog/search` | Canonical `id` values only. | N/A | These remain the canonical catalog list/search surfaces. |
+| REST `GET /api/catalog/item?item_id=...` and `GET /api/catalog/:id` | Canonical `id` values in the returned item. | Bare skill IDs only for skill items; prompt/rule IDs are canonical-only. | Exact-id lookup returns full catalog-item content. |
 | REST `/api/catalog/:id/taxonomy` and `PATCH /api/catalog/taxonomy/batch` | Canonical `item_id` values. | Bare skill IDs or canonical `skill:<skill-id>` for skill items; prompt/rule IDs are canonical-only. | Batch results preserve canonical `item_id` values and keep the original input in `requested_item_id`. |
 | REST `/api/catalog/:id/metadata` and `/api/catalog/metadata?item_id=...` | Canonical `item_id` values. | Canonical item IDs only. | Bare skill fallback is intentionally not enabled on the metadata surface. |
 | REST `/api/catalog/export` and `/api/catalog/materialize` request bodies | Canonical `item_id` values in manifests/results. | Bare skill IDs or canonical `skill:<skill-id>` for skill items; prompt/rule IDs are canonical-only. | Shared export/materialization normalization is bounded to skill items for legacy compatibility. |
@@ -1098,6 +1100,8 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 #### Catalog (ADR-003 + ADR-007, additive)
 - `GET /api/catalog` - List unified catalog items (`skill` + `prompt` + `rule`) with metadata-first fields including `id`, `classifier`, `name`, `description`, `parent_skill_id`, `resource_path`, `custom_metadata`, `labels`, `content_writable`, `metadata_writable`, `read_only`, `has_assignment`, `is_fully_classified`, and `missing_fields`
 - `GET /api/catalog/search?q=query&classifier=skill|prompt|rule` - Search unified catalog items with optional classifier filter and the same metadata-first item fields
+- `GET /api/catalog/item?item_id=...` - Read one unified catalog item by exact ID with full content; accepts bare skill IDs only for `skill` items
+- `GET /api/catalog/:id` - Path-form exact catalog-item read with the same full-content response contract; accepts bare skill IDs only for `skill` items
 - REST list/search compatibility note: omitting both `limit` and `cursor` keeps the legacy array response shape; paginated calls return `{items, next_cursor, has_more}`
 - `POST /api/catalog/export` - Export one or more catalog items as a `tar.gz` archive with optional dry-run planning (`item_ids`, optional `format`, optional `dry_run`); accepts bare skill IDs only for `skill` items
 - `POST /api/catalog/materialize` - Plan or materialize one or more catalog items into an absolute destination directory (`item_ids`, `destination_dir`, optional `conflict_policy=error|overwrite|skip`, optional `dry_run`)
@@ -1163,6 +1167,7 @@ Imported resources referenced by `SKILL.md` links/includes are exposed as virtua
 #### Catalog (ADR-003 + ADR-007, additive)
 - `list_catalog` - List unified catalog items with optional `classifier` filter (`skill`, `prompt`, or `rule`), optional taxonomy filters (`primary_domain_id`, `secondary_domain_id`, `subdomain_id`, `tag_ids`, `tag_match`), optional classification-state filters (`unclassified`, `missing_primary_domain`, `missing_tags`), and optional `include_content`
 - `search_catalog` - Search unified catalog items by `query`, with optional classifier/taxonomy/classification-state filters and optional `include_content`
+- `read_catalog_item` - Read one unified catalog item by exact `item_id`, including full content; accepts bare skill IDs only for `skill` items and requires canonical IDs for `prompt`/`rule` items
 - `get_catalog_item_relationships` - Return one catalog item's relationship metadata (`item_id`, `relationships.prompt`, `relationships.rules`, `relationships.skills`) using the same normalized envelope as REST metadata reads; accepts bare skill IDs only for `skill` items and requires canonical IDs for `prompt`/`rule` items
 - `export_catalog_items` - Export one or more catalog items as `tar.gz` with optional dry-run planning output, optional `archive_root_mode=flat|materialized`, and optional `include_archive_base64=true`
 - `materialize_catalog_items` - Materialize one or more catalog items into an allowed destination directory (registered only when materialization gate is enabled)

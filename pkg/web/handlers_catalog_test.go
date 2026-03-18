@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/mudler/skillserver/pkg/domain"
 )
 
 func TestListCatalog_ReturnsMixedCatalogItemsWithPromptMetadata(t *testing.T) {
@@ -189,6 +191,101 @@ func TestSearchCatalog_SupportsOptionalClassifierFiltering(t *testing.T) {
 	}
 	if _, exists := items[0]["content"]; exists {
 		t.Fatalf("did not expect content in metadata-first search response, got %+v", items[0])
+	}
+}
+
+func TestGetCatalogItem_ReturnsPromptContentByExactID(t *testing.T) {
+	t.Parallel()
+
+	server := newResourceFixtureServer(t)
+	promptItemID := domain.BuildPromptCatalogItemID("demo-skill", "prompts/system.md")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/catalog/"+url.PathEscape(promptItemID), nil)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	item := decodeJSONObject(t, rec.Body.Bytes())
+	if id, _ := item["id"].(string); id != promptItemID {
+		t.Fatalf("expected prompt id %q, got %q", promptItemID, id)
+	}
+	if classifier, _ := item["classifier"].(string); classifier != "prompt" {
+		t.Fatalf("expected classifier prompt, got %q", classifier)
+	}
+	if content, _ := item["content"].(string); content != "You are helpful.\n" {
+		t.Fatalf("expected exact prompt content, got %q", content)
+	}
+}
+
+func TestGetCatalogItem_QueryFormAcceptsBareSkillID(t *testing.T) {
+	t.Parallel()
+
+	server := newResourceFixtureServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/catalog/item?item_id="+url.QueryEscape("demo-skill"), nil)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	item := decodeJSONObject(t, rec.Body.Bytes())
+	if id, _ := item["id"].(string); id != domain.BuildSkillCatalogItemID("demo-skill") {
+		t.Fatalf("expected canonical skill id %q, got %q", domain.BuildSkillCatalogItemID("demo-skill"), id)
+	}
+	if content, _ := item["content"].(string); !strings.Contains(content, "# Demo Skill") {
+		t.Fatalf("expected skill content in exact lookup response, got %q", content)
+	}
+}
+
+func TestGetCatalogItem_UsesMetadataServiceForRuleExactLookup(t *testing.T) {
+	t.Parallel()
+
+	server, sourceRepo := newCatalogMetadataFixtureServer(t)
+	seedCatalogRelationshipSourceRows(t, sourceRepo, "demo-skill")
+	ruleItemID := domain.BuildRuleCatalogItemID("demo-skill", "rules/security.md")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/catalog/"+url.PathEscape(ruleItemID), nil)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	item := decodeJSONObject(t, rec.Body.Bytes())
+	if id, _ := item["id"].(string); id != ruleItemID {
+		t.Fatalf("expected rule id %q, got %q", ruleItemID, id)
+	}
+	if classifier, _ := item["classifier"].(string); classifier != "rule" {
+		t.Fatalf("expected classifier rule, got %q", classifier)
+	}
+	if content, _ := item["content"].(string); content != "rule content" {
+		t.Fatalf("expected exact rule content, got %q", content)
+	}
+}
+
+func TestGetCatalogItem_MissingItemReturnsNotFound(t *testing.T) {
+	t.Parallel()
+
+	server := newResourceFixtureServer(t)
+	missingItemID := domain.BuildRuleCatalogItemID("demo-skill", "rules/missing.md")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/catalog/"+url.PathEscape(missingItemID), nil)
+	rec := httptest.NewRecorder()
+	server.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusNotFound, rec.Code, rec.Body.String())
+	}
+
+	payload := decodeJSONObject(t, rec.Body.Bytes())
+	if errText, _ := payload["error"].(string); errText != "catalog item not found" {
+		t.Fatalf("expected catalog item not found error, got %q", errText)
 	}
 }
 

@@ -201,6 +201,17 @@ func registerReadTools(mcpServer *mcp.Server, server *Server) {
 	})
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "read_catalog_item",
+		Description: "Read one unified catalog item by exact item_id, including full content",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input ReadCatalogItemInput) (
+		*mcp.CallToolResult,
+		ReadCatalogItemOutput,
+		error,
+	) {
+		return readCatalogItem(ctx, req, input, server.skillManager, server.catalogMetadata)
+	})
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "export_catalog_items",
 		Description: "Export catalog items into a tar.gz archive with optional dry-run planning output",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input ExportCatalogItemsInput) (
